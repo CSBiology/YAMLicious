@@ -1,0 +1,6 @@
+.venv/
+.vs/
+tests/**/py/
+tests/**/js/
+**/obj/
+**/bin/
