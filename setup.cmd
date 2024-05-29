@@ -1,5 +1,5 @@
-dotnet tool restore
+CALL dotnet tool restore
 
-npm install
+CALL npm install
 
-python -m venv ./.venv
+CALL python -m venv ./.venv
