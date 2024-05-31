@@ -1,6 +1,7 @@
 module YAMLicious.AST
 
 open System.Text
+open System.Collections.Generic
 
 type Config = {
     Whitespace: int
@@ -17,8 +18,13 @@ module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
 
+type Yaml = {
+    AST: YamlAST
+    StringMap: Dictionary<int, string>
+    CommentMap: Dictionary<int, string>
+} 
 
-type YamlAST =
+and YamlAST =
     | Level of YamlAST list
     | Intendation of YamlAST list
     | Line of string
@@ -41,9 +47,7 @@ type YamlAST =
         sb.ToString()
 
     static member read(yamlStr: string) =
-        let lines = 
-            Persil.encodingCleanUp yamlStr
-            |> fun x -> x.Split([|'\n'|], System.StringSplitOptions.RemoveEmptyEntries)
+        let content = Persil.pipeline yamlStr
         let rec loop (lines: string list) (currentIntendation: int) (acc: YamlAST list) =
             match lines with
             | [] -> acc
@@ -58,9 +62,15 @@ type YamlAST =
                     let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
                     let children = lineEle::otherChildren
                     loop currentLevelLines currentIntendation (Intendation children::acc)
-        let ast = loop (List.ofArray lines) 0 []
-        List.rev ast
-        |> Level
+        let ast = 
+            loop (List.ofArray content.Lines) 0 [] 
+            |> List.rev
+            |> Level
+        {
+            AST = ast
+            StringMap = content.StringMap
+            CommentMap = content.CommentMap
+        }
 
     override this.ToString() =
         let sb = StringBuilder()

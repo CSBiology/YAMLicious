@@ -5,14 +5,14 @@ open YAMLicious
 open AST
 
 let Main = testList "YamlRead" [
-    testCase "Example 1" <| fun _ ->
+    testCase "Example KeyValue" <| fun _ ->
         let yaml = "My Key: My Value"
         let actual = YamlAST.read yaml
         let expected = Level [
             Line "My Key: My Value"
         ]
-        Expect.equal actual expected ""
-    testCase "Example 2" <| fun _ ->
+        Expect.equal actual.AST expected ""
+    testCase "Example list" <| fun _ ->
         let yaml = """
 - My Value 1
 - My Value 2
@@ -24,8 +24,8 @@ let Main = testList "YamlRead" [
             Line "- My Value 2"
             Line "- My Value 3"
         ]
-        Expect.equal actual expected ""
-    testCase "Example 3" <| fun _ ->
+        Expect.equal actual.AST expected ""
+    testCase "Example list shifted" <| fun _ ->
         let yaml = """
 -
   My Key1: My Value1
@@ -51,8 +51,8 @@ let Main = testList "YamlRead" [
                 Line "My Key6: My Value6"
             ]
         ]
-        Expect.equal actual expected ""
-    testCase "Example-Mermaid" <| fun _ ->
+        Expect.equal actual.AST expected ""
+    testCase "Example Mermaid" <| fun _ ->
         let yaml = """
 classDiagram
     Animal <|-- Duck
@@ -108,6 +108,26 @@ classDiagram
                 Line "}"
             ]
         ]
-        Expect.equal actual expected ""
-        
+        Expect.equal actual.AST expected ""
+    testCase "Example Comment + String" <| fun _ ->
+        let yaml = "
+My Key: # This is a comment
+  My Value1 
+  \"# This is not a comment!\"
+  My Value3 # :::: \"This is also a comment\""
+        printfn "---HERE---"
+        let actual = YamlAST.read yaml
+        let expected = Level [
+            Line "My Key: <c f=0/>"
+            Intendation [
+                Line "My Value1"
+                Line "<s f=0/>"
+                Line "My Value3 <c f=1/>"
+            ]
+        ]
+        let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
+        let expectedStringDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, "# This is not a comment!"])
+        Expect.equal actual.AST expected "ast"
+        Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
+        Expect.dictEqual actual.StringMap expectedStringDict "strings"
 ]

@@ -4,6 +4,7 @@ let all = testList "all" [
     Tests.YamlRead.Main
     Tests.EncodingCleanUp.Main
     Tests.StringCleanUp.Main
+    Tests.CommentCleanUp.Main
 ]
 
 [<EntryPoint>]
