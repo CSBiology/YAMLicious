@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Persil.fs" />
     <Compile Include="AST.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>

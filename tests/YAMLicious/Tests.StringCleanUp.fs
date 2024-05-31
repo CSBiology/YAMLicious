@@ -2,6 +2,7 @@
 
 open Fable.Pyxpecto
 open System.Collections.Generic
+open YAMLicious
 
 module private Examples =
 
@@ -20,7 +21,7 @@ My Key2: "Ehhhhh makarena" ### A # in string is allowed!
 
 let Main = testList "StringCleanUp" [
     testCase "single special char" <| fun () ->
-        let actual = YAMLicious.Persil.stringCleanUp(Examples.StringReplace)
+        let actual = Persil.stringCleanUp(Examples.StringReplace)
         let expected = """
 My Key: </0> # A # in string is allowed!
 """
@@ -30,7 +31,7 @@ My Key: </0> # A # in string is allowed!
         Expect.dictEqual actual.StringMap expectedDict "map"
 
     testCase "multiple comments" <| fun () ->
-        let actual = YAMLicious.Persil.stringCleanUp(Examples.StringsReplace)
+        let actual = Persil.stringCleanUp(Examples.StringsReplace)
         let expected = """
 My Key: </0> ### A # in string is allowed!
 My Key2: </1> ### A # in string is allowed!

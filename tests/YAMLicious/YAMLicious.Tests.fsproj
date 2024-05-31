@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Util.fs" />
+    <Compile Include="Tests.YamlRead.fs" />
     <Compile Include="Tests.EncodingCleanUp.fs" />
     <Compile Include="Tests.StringCleanUp.fs" />
     <Compile Include="Main.fs" />
