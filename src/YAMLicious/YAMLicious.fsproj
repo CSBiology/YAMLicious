@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="PatternMatcher.fs" />
     <Compile Include="Persil.fs" />
     <Compile Include="AST.fs" />
     <Compile Include="Library.fs" />
