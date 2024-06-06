@@ -1,35 +1,34 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
     <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
+
   <ItemGroup>
-    <Content Include="release_package.json" />
-    <Compile Include="Helpers.fs" />
-    <Compile Include="MessagePrompts.fs" />
+    <Compile Include="Util.fs" />
     <Compile Include="ProjectInfo.fs" />
-    <Compile Include="ReleaseNotesTasks.fs" />
-    <Compile Include="BasicTasks.fs" />
-    <Compile Include="GenerateIndexJs.fs" />
-    <Compile Include="GenerateIndexPy.fs" />
-    <Compile Include="PerformanceTasks.fs" />
-    <Compile Include="TestTasks.fs" />
-    <Compile Include="PackageTasks.fs" />
-    <Compile Include="ReleaseTasks.fs" />
-    <Compile Include="Build.fs" />
+    <Compile Include="CodeGen.fs" />
+    <Compile Include="IndexFiles\WhiteList.fs" />
+    <Compile Include="IndexFiles\Util.fs" />
+    <Compile Include="IndexFiles\Indexjs.fs" />
+    <Compile Include="IndexFiles\Indexpy.fs" />
+    <Compile Include="Bundle\Net.fs" />
+    <Compile Include="Bundle\TypeScript.fs" />
+    <Compile Include="Bundle\Python.fs" />
+    <Compile Include="Publish\Nuget.fs" />
+    <Compile Include="Publish\PyPi.fs" />
+    <Compile Include="Publish\Npm.fs" />
+    <Compile Include="Test\CSharp.fs" />
+    <Compile Include="Test\Python.fs" />
+    <Compile Include="Test\JavaScript.fs" />
+    <Compile Include="Test\FSharp.fs" />
+    <Compile Include="Main.fs" />
   </ItemGroup>
+
   <ItemGroup>
-    <PackageReference Include="BlackFox.Fake.BuildTask" Version="0.1.3" />
-    <PackageReference Include="Fake.Api.Github" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.Core.Process" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.Core.ReleaseNotes" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.Core.Target" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.DotNet.Cli" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.DotNet.MSBuild" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.IO.FileSystem" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.JavaScript.Npm" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.Tools.Git" Version="5.23.0-alpha002" />
-    <PackageReference Include="Fake.Extensions.Release" Version="0.3.0" />
+    <PackageReference Include="BlackFox.CommandLine" Version="1.0.0" />
+    <PackageReference Include="SimpleExec" Version="12.0.0" />
   </ItemGroup>
+
 </Project>

@@ -1,3 +1,3 @@
 @echo off
-cls 
-dotnet run --project ./build/Build.fsproj %*
+
+dotnet run --project ./build/Build.fsproj -- %*

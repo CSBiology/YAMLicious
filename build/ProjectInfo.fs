@@ -1,54 +1,82 @@
 ﻿module ProjectInfo
 
-open Fake.Core
-open Helpers
+open System.IO
+open Utils
+open Utils.Path
+open Utils.Path.Operators
 
-let project = "YAMLicious"
+let root = Path.Resolve()
 
-/// Dotnet and JS test paths
-let testProjects = 
-    [
-        "tests/YAMLicious"
-    ]
+let Owner = "{Owner}"
 
-///// Native JS test paths
-//let jsTestProjects =
-//    [
-//        "tests/JavaScript"
-//    ]
+[<Literal>]
+let ProjectName = "YAMLicious"
 
-///// Native JS test paths
-//let pyTestProjects =
-//    [
-//        "tests/Python"
-//    ]
+[<Literal>]
+let ProjectNameCSharp = "YAMLicious.CSharp"
 
-let solutionFile  = $"{project}.sln"
+/// This might require adjustment. If you adjust this also update pyproject.toml!
+[<Literal>]
+let ProjectNamePython = "YAMLicious"
 
-let configuration = "Release"
+/// This might require adjustment. If you adjust this also update package.json!
+[<Literal>]
+let ProjectNameJavaScript = "YAMLicious"
 
-let gitOwner = "CSBiology"
+[<Literal>]
+let Version = "0.1.0"
 
-let gitHome = $"https://github.com/{gitOwner}"
+[<Literal>]
+let PyprojectTOML = "pyproject.toml"
 
-let projectRepo = $"https://github.com/{gitOwner}/{project}"
+[<Literal>]
+let PackageJSON = "package.json"
+
+[<Literal>]
+let README = "README.md"
 
 
-let netPkgDir = "./dist/net"
-let npmPkgDir = "./dist/js"
-let pyPkgDir = "./dist/py"
 
-// Create RELEASE_NOTES.md if not existing. Or "release" would throw an error.
-Fake.Extensions.Release.ReleaseNotes.ensure()
+module Keys =
+    
+    let [<Literal>] PyPi = "PYPI_KEY"
+    let [<Literal>] NPM = "NPM_KEY" // not used currently
+    let [<Literal>] Nuget = "NUGET_KEY"
 
-let release = ReleaseNotes.load "RELEASE_NOTES.md"
 
-let stableVersion = SemVer.parse release.NugetVersion
 
-let stableVersionTag = (sprintf "%i.%i.%i" stableVersion.Major stableVersion.Minor stableVersion.Patch )
+module TestPaths =
 
-let mutable prereleaseSuffix = PreReleaseFlag.Alpha
+    [<Literal>]
+    let BaseDirectory = "tests"
 
-let mutable prereleaseSuffixNumber = 0
+    let CoreDirectory = BaseDirectory </> $"{ProjectName}.Tests"
 
-let mutable isPrerelease = false
+    let CSharpDirectory = BaseDirectory  </> $"{ProjectName}.CSharp.Tests"
+
+    let JSNativeDirectory = BaseDirectory </> $"{ProjectName}.JavaScript.Tests"
+
+    let PyNativeDirectory = BaseDirectory </> $"{ProjectName}.Python.Tests"
+
+module Packages =
+    [<Literal>]
+    let PackageFolder = "./dist"
+    let FSHARP = Path.Resolve(PackageFolder, "fsharp")
+    let CSHARP = Path.Resolve(PackageFolder, "csharp")
+    let JS = Path.Resolve(PackageFolder, "js")
+    let TS = Path.Resolve(PackageFolder, "ts")
+    let PY = Path.Resolve(PackageFolder, "py")
+
+
+module Projects =
+
+    let MainDir = $"src\{ProjectName}"
+    let MainCSharpDir = $"src\{ProjectNameCSharp}"
+
+    let Main = $"{ProjectName}.fsproj"
+    let MainCSharp = $"{ProjectNameCSharp}.csproj"
+    let Tests = $"{ProjectName}.Tests.fsproj"
+    let TestsCSharp = $"{ProjectNameCSharp}.Tests.csproj"
+
+
+let getEnvVar key = System.Environment.GetEnvironmentVariable(key, System.EnvironmentVariableTarget.User)
