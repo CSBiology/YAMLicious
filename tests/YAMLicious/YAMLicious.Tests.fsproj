@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -9,6 +9,7 @@
     <Compile Include="Tests.StringCleanUp.fs" />
     <Compile Include="Tests.CommentCleanUp.fs" />
     <Compile Include="Tests.YamlRead.fs" />
+    <Compile Include="Tests.YamlMatch.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
