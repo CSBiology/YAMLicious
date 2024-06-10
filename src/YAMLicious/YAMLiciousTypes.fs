@@ -2,6 +2,50 @@ module YAMLicious.YAMLiciousTypes
 
 /// This contains information about single token information, such as a key/value in key-value pair, a seq element or anything
 
+open System.Text
+open System.Collections.Generic
+
+type Config = {
+    Whitespace: int
+    Level: int
+} with
+    static member init(?whitespace) : Config = {
+        Whitespace = defaultArg whitespace 4
+        Level = 0
+    }
+    member this.WhitespaceString =
+        String.init (this.Level*this.Whitespace) (fun _ -> " ")
+
+type Preprocessor = {
+    AST: PreprocessorElement
+    StringMap: Dictionary<int, string>
+    CommentMap: Dictionary<int, string>
+} 
+
+and PreprocessorElement =
+    | Level of PreprocessorElement list
+    | Intendation of PreprocessorElement list
+    | Line of string
+
+    override this.ToString() =
+        let sb = StringBuilder()
+        let rec innerprint (next: PreprocessorElement) (level: int) =
+            let indent = String.init (level*2) (fun _ -> " ")
+            match next with
+            | Line line -> sb.AppendLine(indent + $"Line \"{line}\"") |> ignore
+            | Intendation children ->
+                sb.AppendLine(indent + "Intendation [") |> ignore
+                for child in children do
+                    innerprint child (level+1)
+                sb.AppendLine(indent + "]") |> ignore
+            | Level children ->
+                sb.AppendLine(indent + "Level [") |> ignore
+                for child in children do
+                    innerprint child (level+1)
+                sb.AppendLine(indent + "]") |> ignore
+        innerprint this 0
+        sb.ToString()
+
 
 type YAMLContent = {
     Value: string
@@ -22,7 +66,7 @@ type YAMLElement =
     ///
     /// MyKey1: MyValue1
     /// MyKey2: MyValue2
-    | Level of YAMLElement list
+    | Object of YAMLElement list
     | Comment of string
 
 [<Literal>]

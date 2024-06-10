@@ -1,7 +1,7 @@
 module YAMLicious.Reader
 
-open PatternMatcher
-open AST
+open Regex
+open Preprocessing
 open System.Text.RegularExpressions
 open RegexActivePatterns
 open YAMLiciousTypes
@@ -38,8 +38,8 @@ let private collectSequenceElements (eles: YAMLElement list) =
                 acc
     loop eles [] []
 
-let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
-    let rec loopRead (restlist: YAMLASTElement list) (acc: YAMLElement list) =
+let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
+    let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) =
         match restlist with
         // Example1: 
         // - My Value 1 <c f=1/>
@@ -54,7 +54,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             printfn "[readList] Case1"
             let objectList = 
                 if v.Value.IsSome then
-                    YAMLASTElement.Line v.Value.Value::yamlAstList
+                    PreprocessorElement.Line v.Value.Value::yamlAstList
                 else
                     yamlAstList
             let current =
@@ -66,7 +66,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             printfn "[readList] Case2"
             let current =
                 YAMLElement.SequenceElement (
-                    loopRead [YAMLASTElement.Line v.Value.Value] []
+                    loopRead [PreprocessorElement.Line v.Value.Value] []
                 )
             loopRead rest (current::acc)
         // [test1, test2, test] <c f=1/>
@@ -76,7 +76,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             let container =
                 let c = restoreCommentReplace commentDict v.Comment
                 if c.IsSome then 
-                    fun seq -> YAMLElement.Level [
+                    fun seq -> YAMLElement.Object [
                         YAMLElement.Comment c.Value
                         YAMLElement.Sequence seq
                     ]
@@ -87,7 +87,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             let current =
                 container [
                     for value in split do
-                        loopRead [YAMLASTElement.Line value] []
+                        loopRead [PreprocessorElement.Line value] []
                         |> YAMLElement.SequenceElement
                 ]
             loopRead rest (current::acc)
@@ -100,7 +100,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             let c1 = opener.Comment |> restoreCommentReplace commentDict
             let c2 = closer.Comment |> restoreCommentReplace commentDict
             let current = 
-                YAMLElement.Level [
+                YAMLElement.Object [
                     if c1.IsSome then YAMLElement.Comment c1.Value
                     YAMLElement.Sequence [
                         for i in iList do
@@ -130,7 +130,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                 YAMLElement.Mapping (
                     YAMLContent.create(v.Key),
                     //reuse default parsing into SequenceElements
-                    loopRead [YAMLASTElement.Line v.Value] []
+                    loopRead [PreprocessorElement.Line v.Value] []
                 )
             loopRead rest (current::acc)
         // <c f=1/>
@@ -154,11 +154,11 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
         | [] ->
             acc
             |> collectSequenceElements // collect sequence elements into a list
-            |> YAMLElement.Level
+            |> YAMLElement.Object
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
     match loopRead yamlList [] with
-    | YAMLElement.Level l -> YAMLElement.Level l
-    | anyElse -> YAMLElement.Level [anyElse]
+    | YAMLElement.Object _ as o -> o
+    | anyElse -> YAMLElement.Object [anyElse]
 
     
 

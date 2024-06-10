@@ -8,7 +8,7 @@
   <ItemGroup>
     <Compile Include="YAMLiciousTypes.fs" />
     <Compile Include="Persil.fs" />
-    <Compile Include="AST.fs" />
+    <Compile Include="Preprocessing.fs" />
     <Compile Include="Regex.fs" />
     <Compile Include="RegexActivePatterns.fs" />
     <Compile Include="Reader.fs" />

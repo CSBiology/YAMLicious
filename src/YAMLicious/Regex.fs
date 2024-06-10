@@ -1,10 +1,4 @@
-﻿module YAMLicious.PatternMatcher
-
-open System
-open System.Collections.Generic
-open System.Text.RegularExpressions
-open YAMLicious.Persil
-open YAMLicious.AST
+﻿module YAMLicious.Regex
 
 [<Literal>]
 let CommentPattern =

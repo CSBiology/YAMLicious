@@ -1,11 +1,12 @@
 module YAMLicious.RegexActivePatterns
 
 open System.Text.RegularExpressions
-open AST
-open PatternMatcher
+open YAMLiciousTypes
+open Preprocessing
+open Regex
 
 // Define the active pattern
-let (|Key|_|) (input: YAMLASTElement) =
+let (|Key|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let m = Regex.Match(s, KeyPattern)
@@ -19,7 +20,7 @@ let (|Key|_|) (input: YAMLASTElement) =
     | _ -> None
 
 // Define the active pattern
-let (|KeyValue|_|) (input: YAMLASTElement) =
+let (|KeyValue|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let m = Regex.Match(s, KeyValuePattern)
@@ -32,7 +33,7 @@ let (|KeyValue|_|) (input: YAMLASTElement) =
     | _ -> None
 
 // Define the active pattern
-let (|YamlValue|_|) (input: YAMLASTElement) =
+let (|YamlValue|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let m = Regex.Match(s, ValuePattern)
@@ -48,7 +49,7 @@ let (|YamlValue|_|) (input: YAMLASTElement) =
     | _ -> None
 
 // Define the active pattern
-let (|YamlComment|_|) (input: YAMLASTElement) =
+let (|YamlComment|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let m = Regex.Match(s, LineCommentPattern)
@@ -59,7 +60,7 @@ let (|YamlComment|_|) (input: YAMLASTElement) =
     | _ -> None
 
 // Define the active pattern
-let (|SequenceMinusOpener|_|) (input: YAMLASTElement) =
+let (|SequenceMinusOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
         let m = Regex.Match(s, SequenceMinusPattern) 
@@ -72,7 +73,7 @@ let (|SequenceMinusOpener|_|) (input: YAMLASTElement) =
             None
     | _ -> None
 
-let (|InlineSequence|_|) (input: YAMLASTElement) =
+let (|InlineSequence|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
         let m = Regex.Match(s, InlineSequencePattern) 
@@ -87,7 +88,7 @@ let (|InlineSequence|_|) (input: YAMLASTElement) =
             None
     | _ -> None
 
-let (|SequenceSquareOpener|_|) (input: YAMLASTElement) =
+let (|SequenceSquareOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
         let m = Regex.Match(s, SequenceOpenerPattern) 
@@ -100,7 +101,7 @@ let (|SequenceSquareOpener|_|) (input: YAMLASTElement) =
             None
     | _ -> None
 
-let (|SequenceSquareCloser|_|) (input: YAMLASTElement) =
+let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
         let m = Regex.Match(s, SequenceCloserPattern) 

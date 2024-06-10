@@ -1,58 +1,17 @@
-module YAMLicious.AST
+module YAMLicious.Preprocessing
 
 open System.Text
 open System.Collections.Generic
+open YAMLiciousTypes
 
-type Config = {
-    Whitespace: int
-    Level: int
-} with
-    static member init(?whitespace) : Config = {
-        Whitespace = defaultArg whitespace 4
-        Level = 0
-    }
-    member this.WhitespaceString =
-        String.init (this.Level*this.Whitespace) (fun _ -> " ")
-    
 module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
-
-type YAMLAST = {
-    AST: YAMLASTElement
-    StringMap: Dictionary<int, string>
-    CommentMap: Dictionary<int, string>
-} 
-
-and YAMLASTElement =
-    | Level of YAMLASTElement list
-    | Intendation of YAMLASTElement list
-    | Line of string
-
-
-    override this.ToString() =
-        let sb = StringBuilder()
-        let rec innerprint (next: YAMLASTElement) (level: int) =
-            let indent = String.init (level*2) (fun _ -> " ")
-            match next with
-            | Line line -> sb.AppendLine(indent + $"Line \"{line}\"") |> ignore
-            | Intendation children ->
-                sb.AppendLine(indent + "Intendation [") |> ignore
-                for child in children do
-                    innerprint child (level+1)
-                sb.AppendLine(indent + "]") |> ignore
-            | Level children ->
-                sb.AppendLine(indent + "Level [") |> ignore
-                for child in children do
-                    innerprint child (level+1)
-                sb.AppendLine(indent + "]") |> ignore
-        innerprint this 0
-        sb.ToString()
             
-let write(rootElement:YAMLASTElement, fconfig: (Config -> Config) option) =
+let write(rootElement:PreprocessorElement, fconfig: (Config -> Config) option) =
     let config = Config.init() |> fun config -> if fconfig.IsSome then fconfig.Value config else config
     let sb = new StringBuilder()
-    let rec loop (current: YAMLASTElement) (sb: StringBuilder) (config: Config) =
+    let rec loop (current: PreprocessorElement) (sb: StringBuilder) (config: Config) =
         match current with
         | Line line ->
             sb.AppendLine(config.WhitespaceString+line) |> ignore
@@ -68,7 +27,7 @@ let write(rootElement:YAMLASTElement, fconfig: (Config -> Config) option) =
 
 let read(yamlStr: string) =
     let content = Persil.pipeline yamlStr
-    let rec loop (lines: string list) (currentIntendation: int) (acc: YAMLASTElement list) =
+    let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
         match lines with
         | [] -> acc
         | line::rest ->
@@ -94,9 +53,6 @@ let read(yamlStr: string) =
         
 let mkLine (line:string) = Line line
 
-let mklLevel (children: #seq<YAMLASTElement>) = List.ofSeq children |> Level
+let mklLevel (children: #seq<PreprocessorElement>) = List.ofSeq children |> Level
 
-let mkIntendation (children: #seq<YAMLASTElement>) = List.ofSeq children |> Intendation
-
-type IYAMLConvertible =
-    abstract ToYAMLAst: unit -> YAMLAST list
+let mkIntendation (children: #seq<PreprocessorElement>) = List.ofSeq children |> Intendation
