@@ -7,6 +7,7 @@ let all = testList "all" [
     Tests.YamlGenericRead.Main
     Tests.YamlMatch.Main
     Tests.YamlRead.Main
+    Tests.YamlWrite.Main
 ]
 
 [<EntryPoint>]

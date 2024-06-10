@@ -5,6 +5,12 @@ module Expect =
     open Fable.Pyxpecto
     open System.Collections.Generic
 
+    /// Trims whitespace and normalizes lineendings to "\n"
+    let trimEqual (actual: string) (expected: string) message =
+        let a = actual.Trim().Replace("\r\n", "\n")
+        let e = expected.Trim().Replace("\r\n", "\n")
+        Expect.equal a e message
+
     /// This is necessary because writing multiline string in vs community for the "expected" value will use \r\n.
     let encodeEqual (actual: string) (expected: string) message =
         let a = actual

@@ -11,6 +11,7 @@
     <Compile Include="Tests.YamlGenericRead.fs" />
     <Compile Include="Tests.YamlMatch.fs" />
     <Compile Include="Tests.YamlRead.fs" />
+    <Compile Include="Tests.YamlWrite.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
