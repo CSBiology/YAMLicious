@@ -1,9 +1,13 @@
 module YAMLicious.YAMLiciousTypes
 
 /// This contains information about single token information, such as a key/value in key-value pair, a seq element or anything
-type YAMLContent(value: string, ?comment: string) =
-    member val Comment: string option = comment with get, set
-    member val Value: string = value with get, set
+
+
+type YAMLContent = {
+    Value: string
+    Comment: string option
+} with
+    static member create (value, ?comment) = { Value = value; Comment = comment }
 
 [<RequireQualifiedAccess>]
 type YAMLElement =

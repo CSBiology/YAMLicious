@@ -51,7 +51,7 @@ let (|YamlValue|_|) (input: YAMLASTElement) =
 let (|YamlComment|_|) (input: YAMLASTElement) =
     match input with
     | Line s ->
-        let m = Regex.Match(s, CommentPattern)
+        let m = Regex.Match(s, LineCommentPattern)
         if m.Success then 
             Some {| Comment = m.Groups.["comment"].Value |> int|}
         else

@@ -23,7 +23,7 @@ let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commen
 let private collectSequenceElements (eles: YAMLElement list) =
     let rec loop (eles: YAMLElement list) (latestSeqItems: YAMLElement list) (acc: YAMLElement list) =
         match eles with
-        | YAMLElement.SequenceElement i::rest -> loop rest (i::latestSeqItems) acc
+        | YAMLElement.SequenceElement i::rest -> loop rest (YAMLElement.SequenceElement i::latestSeqItems) acc
         | anyElse::rest -> 
             if latestSeqItems.Length > 0 then
                 let seq = YAMLElement.Sequence (List.rev latestSeqItems)
@@ -32,12 +32,11 @@ let private collectSequenceElements (eles: YAMLElement list) =
                 loop rest [] (anyElse::acc)
         | [] -> 
             if latestSeqItems.Length > 0 then
-                let seq = YAMLElement.Sequence (List.rev latestSeqItems)
+                let seq = YAMLElement.Sequence (latestSeqItems)
                 seq::acc
             else
                 acc
     loop eles [] []
-    |> List.rev
 
 let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
     let rec loopRead (restlist: YAMLASTElement list) (acc: YAMLElement list) =
@@ -105,7 +104,11 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                     if c1.IsSome then YAMLElement.Comment c1.Value
                     YAMLElement.Sequence [
                         for i in iList do
-                            loopRead [i] []
+                            let i' =
+                                match i with
+                                | Line s -> s.TrimEnd(',') |> Line
+                                | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
+                            loopRead [i'] []
                             |> YAMLElement.SequenceElement
                     ]
                     if c2.IsSome then YAMLElement.Comment c2.Value
@@ -116,7 +119,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             let c = restoreCommentReplace commentDict v.Comment
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent(v.Key, ?comment=c),
+                    YAMLContent.create(v.Key, ?comment=c),
                     loopRead yamlAstList []
                 )
             loopRead rest (current::acc)
@@ -125,7 +128,7 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             printfn "[readList] Case5"
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent(v.Key),
+                    YAMLContent.create(v.Key),
                     //reuse default parsing into SequenceElements
                     loopRead [YAMLASTElement.Line v.Value] []
                 )
@@ -144,17 +147,23 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
             let c = restoreCommentReplace commentDict v.Comment
             let current = 
                 YAMLElement.Value (
-                    YAMLContent(raw, ?comment=c)
+                    YAMLContent.create(raw, ?comment=c)
                 )
             loopRead rest (current::acc)
-        | [] -> 
+        | [] when acc.Length = 1 -> acc.Head
+        | [] ->
             acc
             |> collectSequenceElements // collect sequence elements into a list
             |> YAMLElement.Level
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
-    loopRead yamlList []
+    match loopRead yamlList [] with
+    | YAMLElement.Level l -> YAMLElement.Level l
+    | anyElse -> YAMLElement.Level [anyElse]
 
-let read (ast: YAMLAST) =
+    
+
+let read (yaml: string) =
+    let ast = read yaml
     match ast.AST with
     | Level lvl ->
         tokenize lvl ast.StringMap ast.CommentMap

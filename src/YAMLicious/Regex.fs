@@ -33,6 +33,9 @@ let KeyValuePattern =
     "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>.*)$"
     #endif
 
+let LineCommentPattern =
+    $"^{CommentPattern}$"
+
 let ValuePattern =
     #if FABLE_COMPILER_PYTHON
     $"^(?P<value>.*?)\s*?({CommentPattern})?$"
