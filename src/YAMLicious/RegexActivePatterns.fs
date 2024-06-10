@@ -48,6 +48,17 @@ let (|YamlValue|_|) (input: YAMLASTElement) =
     | _ -> None
 
 // Define the active pattern
+let (|YamlComment|_|) (input: YAMLASTElement) =
+    match input with
+    | Line s ->
+        let m = Regex.Match(s, CommentPattern)
+        if m.Success then 
+            Some {| Comment = m.Groups.["comment"].Value |> int|}
+        else
+            None
+    | _ -> None
+
+// Define the active pattern
 let (|SequenceMinusOpener|_|) (input: YAMLASTElement) =
     match input with
     | Line s -> 

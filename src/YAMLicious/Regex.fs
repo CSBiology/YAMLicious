@@ -31,6 +31,14 @@ let ValuePattern =
     #endif
 
 [<Literal>]
+let CommentPattern =
+    #if FABLE_COMPILER_PYTHON
+    "^\<c f=(?P<comment>\d+)\/\>$"
+    #else
+    "^\<c f=(?<comment>\d+)\/\>$"
+    #endif
+
+[<Literal>]
 let SequenceMinusPattern =
     #if FABLE_COMPILER_PYTHON
     "^-\s*(?P<value>.*)?$"

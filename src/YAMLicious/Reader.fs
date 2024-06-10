@@ -130,6 +130,13 @@ let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                     loopRead [YAMLASTElement.Line v.Value] []
                 )
             loopRead rest (current::acc)
+        // <c f=1/>
+        | YamlComment v::rest -> // createComment
+            printfn "[readList] Case5.5"
+            let c = commentDict.[v.Comment]
+            let current = 
+                YAMLElement.Comment (c)
+            loopRead rest (current::acc)
         // My Value <c f=1/>
         | YamlValue v::rest -> // createValue
             printfn "[readList] Case6"
