@@ -18,21 +18,21 @@ module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
 
-type Yaml = {
-    AST: YamlAST
+type YAML = {
+    AST: YAMLAST
     StringMap: Dictionary<int, string>
     CommentMap: Dictionary<int, string>
 } 
 
-and YamlAST =
-    | Level of YamlAST list
-    | Intendation of YamlAST list
+and YAMLAST =
+    | Level of YAMLAST list
+    | Intendation of YAMLAST list
     | Line of string
 
-    static member write(rootElement:YamlAST, ?fconfig: Config -> Config) =
+    static member write(rootElement:YAMLAST, ?fconfig: Config -> Config) =
         let config = Config.init() |> fun config -> if fconfig.IsSome then fconfig.Value config else config
         let sb = new StringBuilder()
-        let rec loop (current: YamlAST) (sb: StringBuilder) (config: Config) =
+        let rec loop (current: YAMLAST) (sb: StringBuilder) (config: Config) =
             match current with
             | Line line ->
                 sb.AppendLine(config.WhitespaceString+line) |> ignore
@@ -48,7 +48,7 @@ and YamlAST =
 
     static member read(yamlStr: string) =
         let content = Persil.pipeline yamlStr
-        let rec loop (lines: string list) (currentIntendation: int) (acc: YamlAST list) =
+        let rec loop (lines: string list) (currentIntendation: int) (acc: YAMLAST list) =
             match lines with
             | [] -> acc
             | line::rest ->
@@ -74,7 +74,7 @@ and YamlAST =
 
     override this.ToString() =
         let sb = StringBuilder()
-        let rec innerprint (next: YamlAST) (level: int) =
+        let rec innerprint (next: YAMLAST) (level: int) =
             let indent = String.init (level*2) (fun _ -> " ")
             match next with
             | Line line -> sb.AppendLine(indent + $"Line \"{line}\"") |> ignore
@@ -94,11 +94,11 @@ and YamlAST =
         
 let mkLine (line:string) = Line line
 
-let mklLevel (children: #seq<YamlAST>) = List.ofSeq children |> Level
+let mklLevel (children: #seq<YAMLAST>) = List.ofSeq children |> Level
 
-let mkIntendation (children: #seq<YamlAST>) = List.ofSeq children |> Intendation
+let mkIntendation (children: #seq<YAMLAST>) = List.ofSeq children |> Intendation
 
-let write rootElement = YamlAST.write(rootElement)
+let write rootElement = YAMLAST.write(rootElement)
 
-type IYamlConvertible =
-    abstract ToYamlAst: unit -> YamlAST list
+type IYAMLConvertible =
+    abstract ToYAMLAst: unit -> YAMLAST list

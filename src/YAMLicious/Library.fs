@@ -1,17 +1,7 @@
 ﻿namespace YAMLicious
 
-[<RequireQualifiedAccess>]
-type YAMLElement =
-    | Mapping of string * YAMLElement
-    | String of string
-    | Sequence of YAMLElement list
-    | Comment of string
-
-type YAMLAST =
-    | Line of string
-    | Level of YAMLAST list
-    | Intendation of YAMLAST list
-
+open YAMLiciousTypes
+open AST
 
 module TestCases =
 
@@ -66,7 +56,7 @@ My Key:
 """ 
 
     [<Literal>]
-    let SequenceOfSequencesOfSequences = """
+    let SequenceOfSequences2 = """
 - 
   [v1, v2, v3]
 - 
