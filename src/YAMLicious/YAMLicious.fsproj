@@ -6,9 +6,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="PatternMatcher.fs" />
+    <Compile Include="YAMLiciousTypes.fs" />
     <Compile Include="Persil.fs" />
     <Compile Include="AST.fs" />
+    <Compile Include="Regex.fs" />
+    <Compile Include="Reader.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>
 
