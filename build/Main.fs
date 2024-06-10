@@ -11,18 +11,17 @@ Available commands:
     test                            Run the main tests suite
         Subcommands:
             f#                      Run f# tests in `Core`
-            c#                      Run c# tests in `CSharp`
             js                      Run the js transpiled tests
             js native               Run the native mocha tests
             py                      Run the py transpiled tests
             py native               Run the native pytest tests
+            fable                   Run all tests in f#, js and py (Fable transpiled/not native only)
 
     bundle
         Subcommands:
             ts                      Bundle the TypeScript package
             py                      Bundle the Python package
             f#                      Bundle the F# package
-            c#                      Bundle the C# package
 
     Publish
         Subcommands:
@@ -30,8 +29,6 @@ Available commands:
             npm                     Publish the npm package
             pypi                    Publish the pypi package
             nuget                   Publish the nuget package
-
-    codegen                         Print active class to console
 
     index
         Subcommands:
