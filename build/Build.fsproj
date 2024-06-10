@@ -8,7 +8,6 @@
   <ItemGroup>
     <Compile Include="Util.fs" />
     <Compile Include="ProjectInfo.fs" />
-    <Compile Include="CodeGen.fs" />
     <Compile Include="IndexFiles\WhiteList.fs" />
     <Compile Include="IndexFiles\Util.fs" />
     <Compile Include="IndexFiles\Indexjs.fs" />
@@ -19,7 +18,6 @@
     <Compile Include="Publish\Nuget.fs" />
     <Compile Include="Publish\PyPi.fs" />
     <Compile Include="Publish\Npm.fs" />
-    <Compile Include="Test\CSharp.fs" />
     <Compile Include="Test\Python.fs" />
     <Compile Include="Test\JavaScript.fs" />
     <Compile Include="Test\FSharp.fs" />

@@ -49,7 +49,6 @@ let main argv =
     | "test" :: args ->
         match args with
         | "f#" :: args -> Test.FSharp.handle args
-        | "c#" :: args -> Test.CSharp.handle args
         | "js" :: "native" :: args -> 
             Test.JavaScript.handleNative args
         | "js" :: args -> Test.JavaScript.handle args
@@ -57,7 +56,6 @@ let main argv =
         | "py" :: args -> Test.Python.handle args
         | [] | "all" :: _ -> 
             Test.FSharp.handle []
-            Test.CSharp.handle args
             Test.JavaScript.handle []
             Test.Python.handle []
             Test.Python.handleNative args
@@ -71,15 +69,12 @@ let main argv =
             Bundle.Python.Main(ProjectInfo.Packages.PY)
         | "f#" :: _ ->
             Bundle.Net.Main(ProjectInfo.Projects.Main, ProjectInfo.Packages.FSHARP)
-        | "c#" :: _ ->
-            Bundle.Net.Main(ProjectInfo.Projects.MainCSharp, ProjectInfo.Packages.CSHARP)
         | _ -> printHelp ()
     | "publish" :: args ->
         match args with
         | "pipeline" :: _ ->
             // test
             Test.FSharp.handle []
-            Test.CSharp.handle args
             Test.JavaScript.handle []
             Test.Python.handle []
             Test.Python.handleNative args
@@ -88,7 +83,6 @@ let main argv =
             Bundle.TypeScript.Main(ProjectInfo.Packages.JS)
             Bundle.Python.Main(ProjectInfo.Packages.PY)
             Bundle.Net.Main(ProjectInfo.Projects.Main, ProjectInfo.Packages.FSHARP)
-            Bundle.Net.Main(ProjectInfo.Projects.MainCSharp, ProjectInfo.Packages.CSHARP)
             // publish
             Publish.Npm.Main()
             Publish.PyPi.Main()
@@ -104,7 +98,6 @@ let main argv =
         | _ -> printHelp ()
     | "codegen" :: _ ->
         printfn "STARTING CODEGEN..."
-        CodeGen.test() 
         printfn "ENDING CODEGEN..."
     | "index" :: args ->
         match args with

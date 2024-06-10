@@ -12,9 +12,6 @@ let Owner = "{Owner}"
 [<Literal>]
 let ProjectName = "YAMLicious"
 
-[<Literal>]
-let ProjectNameCSharp = "YAMLicious.CSharp"
-
 /// This might require adjustment. If you adjust this also update pyproject.toml!
 [<Literal>]
 let ProjectNamePython = "YAMLicious"
@@ -52,8 +49,6 @@ module TestPaths =
 
     let CoreDirectory = BaseDirectory </> $"{ProjectName}.Tests"
 
-    let CSharpDirectory = BaseDirectory  </> $"{ProjectName}.CSharp.Tests"
-
     let JSNativeDirectory = BaseDirectory </> $"{ProjectName}.JavaScript.Tests"
 
     let PyNativeDirectory = BaseDirectory </> $"{ProjectName}.Python.Tests"
@@ -71,12 +66,9 @@ module Packages =
 module Projects =
 
     let MainDir = $"src\{ProjectName}"
-    let MainCSharpDir = $"src\{ProjectNameCSharp}"
 
     let Main = $"{ProjectName}.fsproj"
-    let MainCSharp = $"{ProjectNameCSharp}.csproj"
     let Tests = $"{ProjectName}.Tests.fsproj"
-    let TestsCSharp = $"{ProjectNameCSharp}.Tests.csproj"
 
 
 let getEnvVar key = System.Environment.GetEnvironmentVariable(key, System.EnvironmentVariableTarget.User)
