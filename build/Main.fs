@@ -54,6 +54,10 @@ let main argv =
         | "js" :: args -> Test.JavaScript.handle args
         | "py" :: "native" :: args -> Test.Python.handleNative args
         | "py" :: args -> Test.Python.handle args
+        | "fable" :: args ->
+            Test.FSharp.handle args
+            Test.JavaScript.handle args
+            Test.Python.handle []
         | [] | "all" :: _ -> 
             Test.FSharp.handle []
             Test.JavaScript.handle []
