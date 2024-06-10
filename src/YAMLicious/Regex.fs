@@ -43,7 +43,7 @@ let SequenceMinusPattern =
     #if FABLE_COMPILER_PYTHON
     "^-\s*(?P<value>.*)?$"
     #else
-    "^-\s*(?<value>(.*)?$"
+    "^-\s*(?<value>.*)?$"
     #endif
 
 [<Literal>]
