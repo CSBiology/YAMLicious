@@ -7,7 +7,7 @@ open AST
 let Main = testList "YamlRead" [
     testCase "Example KeyValue" <| fun _ ->
         let yaml = "My Key: My Value"
-        let actual = YamlAST.read yaml
+        let actual = YAMLASTElement.read yaml
         let expected = Level [
             Line "My Key: My Value"
         ]
@@ -18,7 +18,7 @@ let Main = testList "YamlRead" [
 - My Value 2
 - My Value 3
 """
-        let actual = YamlAST.read yaml
+        let actual = YAMLASTElement.read yaml
         let expected = Level [
             Line "- My Value 1"
             Line "- My Value 2"
@@ -36,7 +36,7 @@ let Main = testList "YamlRead" [
   My Key5: My Value5
   My Key6: My Value6
 """
-        let actual = YamlAST.read yaml
+        let actual = YAMLASTElement.read yaml
         let expected = Level [
             Line "-"
             Intendation [
@@ -76,7 +76,7 @@ classDiagram
       +run()
     }
 """
-        let actual = YamlAST.read yaml
+        let actual = YAMLASTElement.read yaml
         let expected = Level [
             Line "classDiagram"
             Intendation [
@@ -115,8 +115,7 @@ My Key: # This is a comment
   My Value1 
   \"# This is not a comment!\"
   My Value3 # :::: \"This is also a comment\""
-        printfn "---HERE---"
-        let actual = YamlAST.read yaml
+        let actual = YAMLASTElement.read yaml
         let expected = Level [
             Line "My Key: <c f=0/>"
             Intendation [

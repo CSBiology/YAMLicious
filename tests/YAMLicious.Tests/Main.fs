@@ -1,10 +1,11 @@
 ﻿open Fable.Pyxpecto
 
 let all = testList "all" [
-    Tests.YamlRead.Main
     Tests.EncodingCleanUp.Main
     Tests.StringCleanUp.Main
     Tests.CommentCleanUp.Main
+    Tests.YamlRead.Main
+    Tests.YamlMatch.Main
 ]
 
 [<EntryPoint>]
