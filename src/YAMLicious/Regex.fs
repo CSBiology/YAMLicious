@@ -7,21 +7,39 @@ open YAMLicious.Persil
 open YAMLicious.AST
 
 [<Literal>]
-let KeyValuePattern =
+let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))?\s*?(?P<comment>\<c f=\d+\/\>)?$"
+    "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<comment>\<c f=\d+\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))?\s*?(?<comment>\<c f=\d+\/\>)?$"
+    "^(?<key>[a-zA-Z0-9\s]+):\s*(?<comment>\<c f=\d+\/\>)?$"
     #endif
 
 [<Literal>]
-let SequenceValuePattern =
+let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^-\s*(?P<value>([a-zA-Z0-9\s]+|<s f=\d+\/\>))?\s*?(?P<comment>\<c f=\d+\/\>)?$"
+    "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<value>.*)$"
     #endif
     #if !FABLE_COMPILER
-    "^-\s*(?<value>([a-zA-Z0-9\s]+|<s f=\d+\/\>))?\s*?(?<comment>\<c f=\d+\/\>)?$"
+    "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>.*)$"
+    #endif
+
+[<Literal>]
+let ValuePattern =
+    #if FABLE_COMPILER_PYTHON
+    "^(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(?P<comment>\<c f=\d+\/\>)?$"
+    #endif
+    #if !FABLE_COMPILER
+    "^(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(?<comment>\<c f=\d+\/\>)?$"
+    #endif
+
+[<Literal>]
+let SequenceMinusPattern =
+    #if FABLE_COMPILER_PYTHON
+    "^-\s*(?P<value>.*)?$"
+    #endif
+    #if !FABLE_COMPILER
+    "^-\s*(?<value>(.*)?$"
     #endif
 
 [<Literal>]
@@ -50,10 +68,6 @@ let SequenceCloserPattern =
     #if !FABLE_COMPILER
     "^\]\s*(?<comment>\<c f=\d+\/\>)?$"
     #endif
-
-[<Literal>]
-let ValuePattern = 
-    "^(?!.*:)\S.*"
 
 [<Literal>]
 let SequencePattern = 
