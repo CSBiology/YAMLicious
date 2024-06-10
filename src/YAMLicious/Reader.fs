@@ -8,21 +8,21 @@ module RegexActivePatterns =
     open System.Text.RegularExpressions
 
     // Define the active pattern
-    let (|Key|_|) (input: YAMLAST) =
+    let (|Key|_|) (input: YAMLASTElement) =
         match input with
         | Line s ->
             let m = Regex.Match(s, KeyPattern)
             if m.Success then 
-                let comment: string option = 
+                let comment: int option = 
                     let v = m.Groups.["comment"].Value
-                    if v = "" then None else Some v
+                    if v = "" then None else Some (int v)
                 Some {| Comment = comment; Key = m.Groups.["key"].Value |}
             else
                 None
         | _ -> None
 
     // Define the active pattern
-    let (|KeyValue|_|) (input: YAMLAST) =
+    let (|KeyValue|_|) (input: YAMLASTElement) =
         match input with
         | Line s ->
             let m = Regex.Match(s, KeyValuePattern)
@@ -35,14 +35,14 @@ module RegexActivePatterns =
         | _ -> None
 
     // Define the active pattern
-    let (|YamlValue|_|) (input: YAMLAST) =
+    let (|YamlValue|_|) (input: YAMLASTElement) =
         match input with
         | Line s ->
             let m = Regex.Match(s, ValuePattern)
             if m.Success then 
-                let comment: string option = 
+                let comment: int option = 
                     let v = m.Groups.["comment"].Value
-                    if v = "" then None else Some v
+                    if v = "" then None else Some (int v)
                 let v: string =
                     m.Groups.["value"].Value 
                 Some {| Comment = comment; Value = v |}
@@ -51,7 +51,7 @@ module RegexActivePatterns =
         | _ -> None
 
     // Define the active pattern
-    let (|SequenceMinusOpener|_|) (input: YAMLAST) =
+    let (|SequenceMinusOpener|_|) (input: YAMLASTElement) =
         match input with
         | Line s -> 
             let m = Regex.Match(s, SequenceMinusPattern) 
@@ -64,14 +64,14 @@ module RegexActivePatterns =
                 None
         | _ -> None
 
-    let (|InlineSequence|_|) (input: YAMLAST) =
+    let (|InlineSequence|_|) (input: YAMLASTElement) =
         match input with
         | Line s -> 
             let m = Regex.Match(s, InlineSequencePattern) 
             if m.Success then 
-                let comment: string option = 
+                let comment: int option = 
                     let v = m.Groups.["comment"].Value
-                    if v = "" then None else Some v
+                    if v = "" then None else Some (int v)
                 let v: string =
                     m.Groups.["inlineSequence"].Value 
                 Some {| Comment = comment; Value = v|}
@@ -79,27 +79,27 @@ module RegexActivePatterns =
                 None
         | _ -> None
 
-    let (|SequenceSquareOpener|_|) (input: YAMLAST) =
+    let (|SequenceSquareOpener|_|) (input: YAMLASTElement) =
         match input with
         | Line s -> 
             let m = Regex.Match(s, SequenceOpenerPattern) 
             if m.Success then 
-                let comment: string option = 
+                let comment: int option = 
                     let v = m.Groups.["comment"].Value
-                    if v = "" then None else Some v
+                    if v = "" then None else Some (int v)
                 Some {| Comment = comment|}
             else
                 None
         | _ -> None
 
-    let (|SequenceSquareCloser|_|) (input: YAMLAST) =
+    let (|SequenceSquareCloser|_|) (input: YAMLASTElement) =
         match input with
         | Line s -> 
             let m = Regex.Match(s, SequenceCloserPattern) 
             if m.Success then 
-                let comment: string option = 
+                let comment: int option = 
                     let v = m.Groups.["comment"].Value
-                    if v = "" then None else Some v
+                    if v = "" then None else Some (int v)
                 Some {| Comment = comment|}
             else
                 None
@@ -107,6 +107,18 @@ module RegexActivePatterns =
 
 open RegexActivePatterns
 open YAMLiciousTypes
+open System.Collections.Generic
+
+let private restoreStringReplace (stringDict: Dictionary<int, string>) (v: string)  =
+    let m = Regex.Match(v, StringReplacementPattern)
+    if m.Success then
+        let index = m.Groups.["index"].Value |> int
+        stringDict.[index]
+    else
+        v
+
+let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commentId: int option) =
+    commentId |> Option.map (fun id -> commentDict.[id])
 
 /// Minus opener Sequence elements are difficult to collect with our logic. So whenever we return a list of YAMLElements we
 /// should check for SequenceElements and collect them into a single Sequence
@@ -124,8 +136,8 @@ let private collectSequenceElements (eles: YAMLElement list) =
             acc
     loop eles []
 
-let private readList (yamlList: YAMLAST list) =
-    let rec loopRead (restlist: YAMLAST list) (acc: YAMLElement list) =
+let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
+    let rec loopRead (restlist: YAMLASTElement list) (acc: YAMLElement list) =
         match restlist with
         // Example1: 
         // - My Value 1
@@ -140,30 +152,29 @@ let private readList (yamlList: YAMLAST list) =
             printfn "[readList] Case1"
             let objectList = 
                 if v.Value.IsSome then
-                    YAMLAST.Line v.Value.Value::yamlAstList
+                    YAMLASTElement.Line v.Value.Value::yamlAstList
                 else
                     yamlAstList
             let current =
                 YAMLElement.SequenceElement (
-                    YAMLElement.List [
-                        loopRead objectList []
-                    ]
+                    loopRead objectList []
                 )
             loopRead rest (current::acc)
         | SequenceMinusOpener v::rest -> //create/appendSequenceElement
             printfn "[readList] Case2"
             let current =
                 YAMLElement.SequenceElement (
-                    loopRead [YAMLAST.Line v.Value.Value] []
+                    loopRead [YAMLASTElement.Line v.Value.Value] []
                 )
             loopRead rest (current::acc)
         | InlineSequence v::rest -> // create sequence
             printfn "[readList] Case3"
             // ensure inline comment is added on top of the sequence
             let container =
-                if v.Comment.IsSome then 
+                let c = restoreCommentReplace commentDict v.Comment
+                if c.IsSome then 
                     fun seq -> YAMLElement.List [
-                        YAMLElement.Comment v.Comment.Value
+                        YAMLElement.Comment c.Value
                         YAMLElement.Sequence seq
                     ]
                 else
@@ -173,15 +184,30 @@ let private readList (yamlList: YAMLAST list) =
             let current =
                 container [
                     for value in split do
-                        loopRead [YAMLAST.Line value] []
+                        loopRead [YAMLASTElement.Line value] []
                         |> YAMLElement.SequenceElement
+                ]
+            loopRead rest (current::acc)
+        | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
+            let c1 = opener.Comment |> restoreCommentReplace commentDict
+            let c2 = closer.Comment |> restoreCommentReplace commentDict
+            let current = 
+                YAMLElement.List [
+                    if c1.IsSome then YAMLElement.Comment c1.Value
+                    YAMLElement.Sequence [
+                        for i in iList do
+                            loopRead [i] []
+                            |> YAMLElement.SequenceElement
+                    ]
+                    if c2.IsSome then YAMLElement.Comment c2.Value
                 ]
             loopRead rest (current::acc)
         | Key v::Intendation yamlAstList::rest -> //createObject
             printfn "[readList] Case4"
+            let c = restoreCommentReplace commentDict v.Comment
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent(v.Key, ?comment=v.Comment),
+                    YAMLContent(v.Key, ?comment=c),
                     loopRead yamlAstList []
                 )
             loopRead rest (current::acc)
@@ -191,14 +217,16 @@ let private readList (yamlList: YAMLAST list) =
                 YAMLElement.Mapping (
                     YAMLContent(v.Key),
                     //reuse default parsing into SequenceElements
-                    loopRead [YAMLAST.Line v.Value] []
+                    loopRead [YAMLASTElement.Line v.Value] []
                 )
             loopRead rest (current::acc)
         | YamlValue v::rest -> // createValue
             printfn "[readList] Case6"
+            let raw = restoreStringReplace stringDict v.Value
+            let c = restoreCommentReplace commentDict v.Comment
             let current = 
                 YAMLElement.Value (
-                    YAMLContent(v.Value, ?comment=v.Comment)
+                    YAMLContent(raw, ?comment=c)
                 )
             loopRead rest (current::acc)
         | [] -> 
@@ -209,9 +237,9 @@ let private readList (yamlList: YAMLAST list) =
     loopRead yamlList []
 
 let read (ast: YAMLAST) =
-    match ast with
+    match ast.AST with
     | Level lvl ->
-        readList lvl
+        readList lvl ast.StringMap ast.CommentMap
     | _ -> failwith "Not a root!"
     // At this point we should propably insert comment- and string-replacements.
     |> fun x -> x

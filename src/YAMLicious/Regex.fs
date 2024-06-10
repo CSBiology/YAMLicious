@@ -9,10 +9,10 @@ open YAMLicious.AST
 [<Literal>]
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<comment>\<c f=\d+\/\>)?$"
+    "^(?P<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?P<comment>\d+)\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^(?<key>[a-zA-Z0-9\s]+):\s*(?<comment>\<c f=\d+\/\>)?$"
+    "^(?<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
 [<Literal>]
@@ -27,10 +27,10 @@ let KeyValuePattern =
 [<Literal>]
 let ValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(?P<comment>\<c f=\d+\/\>)?$"
+    "^(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(?<comment>\<c f=\d+\/\>)?$"
+    "^(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
 [<Literal>]
@@ -45,28 +45,37 @@ let SequenceMinusPattern =
 [<Literal>]
 let InlineSequencePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<inlineSequence>\[.+\])\s*?(?P<comment>\<c f=\d+\/\>)?$"
+    "^(?P<inlineSequence>\[.+\])\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^(?<inlineSequence>\[.+\])\s*?(?<comment>\<c f=\d+\/\>)?$"
+    "^(?<inlineSequence>\[.+\])\s*?(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
 [<Literal>]
 let SequenceOpenerPattern =
     #if FABLE_COMPILER_PYTHON
-    "^\[\s*(?P<comment>\<c f=\d+\/\>)?$"
+    "^\[\s*(\<c f=(?P<comment>\d+)\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^\[\s*(?<comment>\<c f=\d+\/\>)?$"
+    "^\[\s*(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
 [<Literal>]
 let SequenceCloserPattern =
     #if FABLE_COMPILER_PYTHON
-    "^\]\s*(?P<comment>\<c f=\d+\/\>)?$"
+    "^\]\s*(\<c f=(?P<comment>\d+)\/\>)?$"
     #endif
     #if !FABLE_COMPILER
-    "^\]\s*(?<comment>\<c f=\d+\/\>)?$"
+    "^\]\s*(\<c f=(?<comment>\d+)\/\>)?$"
+    #endif
+
+[<Literal>]
+let StringReplacementPattern =
+    #if FABLE_COMPILER_PYTHON
+    "\<s f=(?P<index>\d+)\/\>"
+    #endif
+    #if !FABLE_COMPILER
+    "\<s f=(?<index>\d+)\/\>"
     #endif
 
 [<Literal>]
