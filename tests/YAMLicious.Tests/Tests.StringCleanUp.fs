@@ -27,7 +27,6 @@ let Main = testList "StringCleanUp" [
 My Key: <s f=0/> # A # in string is allowed!
 """
         let expectedDict = Dictionary(Map[|0, "[{Special character place # |}"|])
-        let actualDict = stringMap
         Expect.equal expected actual "content"
         Expect.dictEqual stringMap expectedDict "map"
 

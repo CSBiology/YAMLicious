@@ -2,7 +2,8 @@
 
 open Fable.Pyxpecto
 open YAMLicious
-open AST
+open YAMLiciousTypes
+open Preprocessing
 open RegexActivePatterns
 
 let Main = testList "YamlMatch" [

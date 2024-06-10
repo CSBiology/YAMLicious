@@ -1,8 +1,8 @@
 ﻿module Tests.YamlGenericRead
 
 open Fable.Pyxpecto
-open YAMLicious
-open AST
+open YAMLicious.YAMLiciousTypes
+open YAMLicious.Preprocessing
 
 let Main = testList "YamlGenericRead" [
     testCase "Example KeyValue" <| fun _ ->
