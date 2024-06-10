@@ -41,7 +41,7 @@ let (|YamlValue|_|) (input: YAMLASTElement) =
                 let v = m.Groups.["comment"].Value
                 if v = "" then None else Some (int v)
             let v: string =
-                m.Groups.["value"].Value 
+                m.Groups.["value"].Value.Trim()
             Some {| Comment = comment; Value = v |}
         else
             None

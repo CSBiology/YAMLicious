@@ -7,11 +7,22 @@ open YAMLicious.Persil
 open YAMLicious.AST
 
 [<Literal>]
+let CommentPattern =
+    #if FABLE_COMPILER_PYTHON
+    "\<c f=(?P<comment>\d+)\/\>"
+    #endif
+    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+    "<c f=(?<comment>\d+)\/>"
+    #endif
+    #if !FABLE_COMPILER
+    "\<c f=(?<comment>\d+)\/\>"
+    #endif
+
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?P<comment>\d+)\/\>)?$"
+    $"^(?P<key>[a-zA-Z0-9\s]+):\s*({CommentPattern})?$"
     #else
-    "^(?<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?<comment>\d+)\/\>)?$"
+    $"^(?<key>[a-zA-Z0-9\s]+):\s*({CommentPattern})?$"
     #endif
 
 [<Literal>]
@@ -22,20 +33,11 @@ let KeyValuePattern =
     "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>.*)$"
     #endif
 
-[<Literal>]
 let ValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
+    $"^(?P<value>.*?)\s*?({CommentPattern})?$"
     #else
-    "^(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?<comment>\d+)\/\>)?$"
-    #endif
-
-[<Literal>]
-let CommentPattern =
-    #if FABLE_COMPILER_PYTHON
-    "^\<c f=(?P<comment>\d+)\/\>$"
-    #else
-    "^\<c f=(?<comment>\d+)\/\>$"
+    $"^(?<value>.*?)\s*?({CommentPattern})?$"
     #endif
 
 [<Literal>]
@@ -46,28 +48,25 @@ let SequenceMinusPattern =
     "^-\s*(?<value>.*)?$"
     #endif
 
-[<Literal>]
 let InlineSequencePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<inlineSequence>\[.+\])\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
+    $"^(?P<inlineSequence>\[.+\])\s*?({CommentPattern})?$"
     #else
-    "^(?<inlineSequence>\[.+\])\s*?(\<c f=(?<comment>\d+)\/\>)?$"
+    $"^(?<inlineSequence>\[.+\])\s*?({CommentPattern})?$"
     #endif
 
-[<Literal>]
 let SequenceOpenerPattern =
     #if FABLE_COMPILER_PYTHON
-    "^\[\s*(\<c f=(?P<comment>\d+)\/\>)?$"
+    $"^\[\s*({CommentPattern})?$"
     #else
-    "^\[\s*(\<c f=(?<comment>\d+)\/\>)?$"
+    $"^\[\s*({CommentPattern})?$"
     #endif
 
-[<Literal>]
 let SequenceCloserPattern =
     #if FABLE_COMPILER_PYTHON
-    "^\]\s*(\<c f=(?P<comment>\d+)\/\>)?$"
+    $"^\]\s*({CommentPattern})?$"
     #else
-    "^\]\s*(\<c f=(?<comment>\d+)\/\>)?$"
+    $"^\]\s*({CommentPattern})?$"
     #endif
 
 [<Literal>]
