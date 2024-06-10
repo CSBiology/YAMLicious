@@ -8,8 +8,9 @@
     <Compile Include="Tests.EncodingCleanUp.fs" />
     <Compile Include="Tests.StringCleanUp.fs" />
     <Compile Include="Tests.CommentCleanUp.fs" />
-    <Compile Include="Tests.YamlRead.fs" />
+    <Compile Include="Tests.YamlGenericRead.fs" />
     <Compile Include="Tests.YamlMatch.fs" />
+    <Compile Include="Tests.YamlRead.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

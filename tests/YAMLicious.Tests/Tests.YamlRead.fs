@@ -3,29 +3,117 @@
 open Fable.Pyxpecto
 open YAMLicious
 open AST
+open YAMLiciousTypes
 
 let Main = testList "YamlRead" [
-    testCase "Example KeyValue" <| fun _ ->
-        let yaml = "My Key: My Value"
-        let actual = YAMLASTElement.read yaml
-        let expected = Level [
-            Line "My Key: My Value"
+    testCase "Value" <| fun _ ->
+        let yaml = "Hello World"
+        let expected = YAMLElement.Level [YAMLElement.Value(YAMLContent.create("Hello World"))]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "KeyValue" <| fun _ ->
+        let yaml = "Say: Hello World"
+        let expected = YAMLElement.Level [
+            YAMLElement.Mapping(YAMLContent.create("Say"), YAMLElement.Value(YAMLContent.create("Hello World")))
         ]
-        Expect.equal actual.AST expected ""
-    testCase "Example list" <| fun _ ->
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "KeyValue + Comment" <| fun _ ->
+        let yaml = "Say: Hello World # 420 blaze it"
+        let expected = YAMLElement.Level [
+            YAMLElement.Mapping(YAMLContent.create("Say"), YAMLElement.Value(YAMLContent.create("Hello World", " 420 blaze it")))
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "KeyValue InlineSequence" <| fun _ ->
+        let yaml = "Say: [Hello, World]"
+        let expected = YAMLElement.Level [
+            YAMLElement.Mapping(
+                YAMLContent.create("Say"),
+                YAMLElement.Sequence[
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("Hello")));
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("World")))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "KeyValue InlineSequence + Comment" <| fun _ ->
+        let yaml = "Say: [Hello, World]# 420 blaze it"
+        let expected = YAMLElement.Level [
+            YAMLElement.Mapping(
+                YAMLContent.create("Say"),
+                YAMLElement.Level [
+                    YAMLElement.Comment(" 420 blaze it");
+                    YAMLElement.Sequence[
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("Hello")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("World")))
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Sequence" <| fun _ ->
         let yaml = """
 - My Value 1
 - My Value 2
 - My Value 3
 """
-        let actual = YAMLASTElement.read yaml
-        let expected = Level [
-            Line "- My Value 1"
-            Line "- My Value 2"
-            Line "- My Value 3"
+        let expected = YAMLElement.Level [
+                YAMLElement.Sequence[
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("My Value 1")));
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("My Value 2")));
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("My Value 3")))
+                ]
         ]
-        Expect.equal actual.AST expected ""
-    testCase "Example list shifted" <| fun _ ->
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "SequenceObjects" <| fun _ ->
+        let yaml = """
+- My Value 1
+  My Value 2
+- My Value 3
+"""
+        let expected = YAMLElement.Level [
+                YAMLElement.Sequence[
+                    YAMLElement.SequenceElement(YAMLElement.Level[
+                        YAMLElement.Value (YAMLContent.create("My Value 1"))
+                        YAMLElement.Value (YAMLContent.create("My Value 2"))
+                    ]);
+                    YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("My Value 3")))
+                ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "SequenceImplicit" <| fun _ ->
+        let yaml = """
+My Key:
+  My Value1
+  My Value2
+  My Value3
+"""
+        let expected = YAMLElement.Level [
+            YAMLElement.Mapping(
+                YAMLContent.create("My Key"),
+                YAMLElement.Level[
+                    YAMLElement.Value(YAMLContent.create("My Value1"));
+                    YAMLElement.Value(YAMLContent.create("My Value2"));
+                    YAMLElement.Value(YAMLContent.create("My Value3"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "NextLineSequenceObjects" <| fun _ ->
         let yaml = """
 -
   My Key1: My Value1
@@ -36,97 +124,92 @@ let Main = testList "YamlRead" [
   My Key5: My Value5
   My Key6: My Value6
 """
-        let actual = YAMLASTElement.read yaml
-        let expected = Level [
-            Line "-"
-            Intendation [
-                Line "My Key1: My Value1"
-                Line "My Key2: My Value2"
-                Line "My Key3: My Value3"
-            ]
-            Line "-"
-            Intendation [
-                Line "My Key4: My Value4"
-                Line "My Key5: My Value5"
-                Line "My Key6: My Value6"
+        let expected = YAMLElement.Level [
+            YAMLElement.Sequence[
+                YAMLElement.SequenceElement
+                    YAMLElement.Level[
+                        YAMLElement.Mapping(
+                            YAMLContent.create("My Key1"),
+                            YAMLElement.Value(YAMLContent.create("My Value1"))
+                        );
+                        YAMLElement.Mapping(
+                            YAMLContent.create("My Key2"),
+                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                        );
+                        YAMLElement.Mapping(
+                            YAMLContent.create("My Key3"),
+                            YAMLElement.Value(YAMLContent.create("My Value3"))
+                        )
+                    ]
+                YAMLElement.SequenceElement
+                    YAMLElement.Level[
+                            YAMLElement.Mapping(
+                                YAMLContent.create("My Key4"),
+                                YAMLElement.Value(YAMLContent.create("My Value4"))
+                            );
+                            YAMLElement.Mapping(
+                                YAMLContent.create("My Key5"),
+                                YAMLElement.Value(YAMLContent.create("My Value5"))
+                            );
+                            YAMLElement.Mapping(
+                                YAMLContent.create("My Key6"),
+                                YAMLElement.Value(YAMLContent.create("My Value6"))
+                            )
+                        ]
             ]
         ]
-        Expect.equal actual.AST expected ""
-    testCase "Example Mermaid" <| fun _ ->
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "SequenceofSequences" <| fun _ ->
         let yaml = """
-classDiagram
-    Animal <|-- Duck
-    Animal <|-- Fish
-    Animal <|-- Zebra
-    Animal : +int age
-    Animal : +String gender
-    Animal: +isMammal()
-    Animal: +mate()
-    class Duck{
-      +String beakColor
-      +swim()
-      +quack()
-    }
-    class Fish{
-      -int sizeInFeet
-      -canEat()
-    }
-    class Zebra{
-      +bool is_wild
-      +run()
-    }
+- [v1, v2, v3]
+- [v4, v5, v6]
+- [v7, v8, v9]
 """
-        let actual = YAMLASTElement.read yaml
-        let expected = Level [
-            Line "classDiagram"
-            Intendation [
-                Line "Animal <|-- Duck"
-                Line "Animal <|-- Fish"
-                Line "Animal <|-- Zebra"
-                Line "Animal : +int age"
-                Line "Animal : +String gender"
-                Line "Animal: +isMammal()"
-                Line "Animal: +mate()"
-                Line "class Duck{"
-                Intendation [
-                    Line "+String beakColor"
-                    Line "+swim()"
-                    Line "+quack()"
-                ]
-                Line "}"
-                Line "class Fish{"
-                Intendation [
-                    Line "-int sizeInFeet"
-                    Line "-canEat()"
-                ]
-                Line "}"
-                Line "class Zebra{"
-                Intendation [
-                    Line "+bool is_wild"
-                    Line "+run()"
-                ]
-                Line "}"
+        let expected = YAMLElement.Level [
+            YAMLElement.Sequence[
+                YAMLElement.SequenceElement(
+                    YAMLElement.Sequence[
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v1")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v2")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v3")))
+                    ]
+                )
+                YAMLElement.SequenceElement(
+                    YAMLElement.Sequence[
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v4")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v5")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v6")))
+                    ]
+                )
+                YAMLElement.SequenceElement(
+                    YAMLElement.Sequence[
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v7")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v8")));
+                        YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v9")))
+                    ]
+                )
             ]
         ]
-        Expect.equal actual.AST expected ""
-    testCase "Example Comment + String" <| fun _ ->
-        let yaml = "
-My Key: # This is a comment
-  My Value1 
-  \"# This is not a comment!\"
-  My Value3 # :::: \"This is also a comment\""
-        let actual = YAMLASTElement.read yaml
-        let expected = Level [
-            Line "My Key: <c f=0/>"
-            Intendation [
-                Line "My Value1"
-                Line "<s f=0/>"
-                Line "My Value3 <c f=1/>"
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "MultilineSequenceSquare" <| fun _ ->
+        let yaml = """
+[
+  v1,
+  v2,
+  v3
+]
+"""
+        let expected = YAMLElement.Level [
+            YAMLElement.Sequence[
+                YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v1")));
+                YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v2")));
+                YAMLElement.SequenceElement(YAMLElement.Value(YAMLContent.create("v3")))
             ]
         ]
-        let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
-        let expectedStringDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, "# This is not a comment!"])
-        Expect.equal actual.AST expected "ast"
-        Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
-        Expect.dictEqual actual.StringMap expectedStringDict "strings"
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
 ]
