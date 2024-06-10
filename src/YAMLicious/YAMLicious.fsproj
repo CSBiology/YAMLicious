@@ -10,6 +10,7 @@
     <Compile Include="Persil.fs" />
     <Compile Include="AST.fs" />
     <Compile Include="Regex.fs" />
+    <Compile Include="RegexActivePatterns.fs" />
     <Compile Include="Reader.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>
