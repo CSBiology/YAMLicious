@@ -50,9 +50,9 @@ let SequenceMinusPattern =
 
 let InlineSequencePattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<inlineSequence>\[.+\])\s*?({CommentPattern})?$"
+    $"^\[(?P<inlineSequence>.+)\]\s*?({CommentPattern})?$"
     #else
-    $"^(?<inlineSequence>\[.+\])\s*?({CommentPattern})?$"
+    $"^\[(?<inlineSequence>.+)\]\s*?({CommentPattern})?$"
     #endif
 
 let SequenceOpenerPattern =

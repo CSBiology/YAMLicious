@@ -25,7 +25,7 @@ let (|KeyValue|_|) (input: YAMLASTElement) =
         let m = Regex.Match(s, KeyValuePattern)
         if m.Success then 
             let v: string =
-                m.Groups.["value"].Value 
+                m.Groups.["value"].Value.Trim() 
             Some {| Value = v; Key = m.Groups.["key"].Value |}
         else
             None
@@ -65,7 +65,7 @@ let (|SequenceMinusOpener|_|) (input: YAMLASTElement) =
         let m = Regex.Match(s, SequenceMinusPattern) 
         if m.Success then 
             let v: string option =
-                let v = m.Groups.["value"].Value 
+                let v = m.Groups.["value"].Value.Trim()
                 if v = "" then None else Some v
             Some {| Value = v |}
         else
