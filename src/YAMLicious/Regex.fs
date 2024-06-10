@@ -10,8 +10,7 @@ open YAMLicious.AST
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
     "^(?P<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?P<comment>\d+)\/\>)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^(?<key>[a-zA-Z0-9\s]+):\s*(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
@@ -19,8 +18,7 @@ let KeyPattern =
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
     "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<value>.*)$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>.*)$"
     #endif
 
@@ -28,8 +26,7 @@ let KeyValuePattern =
 let ValuePattern =
     #if FABLE_COMPILER_PYTHON
     "^(?P<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^(?<value>([a-zA-Z0-9-\s]+|<s f=\d+\/\>))\s*?(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
@@ -37,8 +34,7 @@ let ValuePattern =
 let SequenceMinusPattern =
     #if FABLE_COMPILER_PYTHON
     "^-\s*(?P<value>.*)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^-\s*(?<value>(.*)?$"
     #endif
 
@@ -46,8 +42,7 @@ let SequenceMinusPattern =
 let InlineSequencePattern =
     #if FABLE_COMPILER_PYTHON
     "^(?P<inlineSequence>\[.+\])\s*?(\<c f=(?P<comment>\d+)\/\>)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^(?<inlineSequence>\[.+\])\s*?(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
@@ -55,8 +50,7 @@ let InlineSequencePattern =
 let SequenceOpenerPattern =
     #if FABLE_COMPILER_PYTHON
     "^\[\s*(\<c f=(?P<comment>\d+)\/\>)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^\[\s*(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
@@ -64,8 +58,7 @@ let SequenceOpenerPattern =
 let SequenceCloserPattern =
     #if FABLE_COMPILER_PYTHON
     "^\]\s*(\<c f=(?P<comment>\d+)\/\>)?$"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "^\]\s*(\<c f=(?<comment>\d+)\/\>)?$"
     #endif
 
@@ -73,24 +66,6 @@ let SequenceCloserPattern =
 let StringReplacementPattern =
     #if FABLE_COMPILER_PYTHON
     "\<s f=(?P<index>\d+)\/\>"
-    #endif
-    #if !FABLE_COMPILER
+    #else
     "\<s f=(?<index>\d+)\/\>"
     #endif
-
-[<Literal>]
-let SequencePattern = 
-    "^-(?![\[\]])\s.*"
-
-[<Literal>]
-let NewLineChar = '\n'
-
-let matcher str =
-    if Regex.IsMatch(str, KeyValuePattern) then
-        "KeyValue"
-    elif Regex.IsMatch(str, ValuePattern) then
-        "Value"
-    elif Regex.IsMatch(str, SequencePattern) then
-        "Sequence"
-    else
-        "Unknown"

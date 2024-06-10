@@ -123,24 +123,29 @@ let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commen
 /// Minus opener Sequence elements are difficult to collect with our logic. So whenever we return a list of YAMLElements we
 /// should check for SequenceElements and collect them into a single Sequence
 let private collectSequenceElements (eles: YAMLElement list) =
-    let rec loop (latestSeqItems: YAMLElement list) (acc: YAMLElement list) =
-        match acc with
-        | YAMLElement.SequenceElement i::rest -> loop (i::latestSeqItems) rest
+    let rec loop (eles: YAMLElement list) (latestSeqItems: YAMLElement list) (acc: YAMLElement list) =
+        match eles with
+        | YAMLElement.SequenceElement i::rest -> loop rest (i::latestSeqItems) acc
         | anyElse::rest -> 
             if latestSeqItems.Length > 0 then
                 let seq = YAMLElement.Sequence (List.rev latestSeqItems)
-                loop [] (anyElse::seq::rest)
+                loop rest [] (anyElse::seq::acc)
             else
-                loop [] (anyElse::rest)
+                loop rest [] (anyElse::acc)
         | [] -> 
-            acc
-    loop eles []
+            if latestSeqItems.Length > 0 then
+                let seq = YAMLElement.Sequence (List.rev latestSeqItems)
+                seq::acc
+            else
+                acc
+    loop eles [] []
+    |> List.rev
 
-let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
+let private tokenize (yamlList: YAMLASTElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
     let rec loopRead (restlist: YAMLASTElement list) (acc: YAMLElement list) =
         match restlist with
         // Example1: 
-        // - My Value 1
+        // - My Value 1 <c f=1/>
         //   My Value 2
         // - My Value 3
         // Example2:
@@ -167,13 +172,14 @@ let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                     loopRead [YAMLASTElement.Line v.Value.Value] []
                 )
             loopRead rest (current::acc)
+        // [test1, test2, test] <c f=1/>
         | InlineSequence v::rest -> // create sequence
             printfn "[readList] Case3"
             // ensure inline comment is added on top of the sequence
             let container =
                 let c = restoreCommentReplace commentDict v.Comment
                 if c.IsSome then 
-                    fun seq -> YAMLElement.List [
+                    fun seq -> YAMLElement.Level [
                         YAMLElement.Comment c.Value
                         YAMLElement.Sequence seq
                     ]
@@ -188,11 +194,16 @@ let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                         |> YAMLElement.SequenceElement
                 ]
             loopRead rest (current::acc)
+        // [ #c1
+        //   v1,
+        //   v2,
+        //   v3
+        // ] #c2
         | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
             let c1 = opener.Comment |> restoreCommentReplace commentDict
             let c2 = closer.Comment |> restoreCommentReplace commentDict
             let current = 
-                YAMLElement.List [
+                YAMLElement.Level [
                     if c1.IsSome then YAMLElement.Comment c1.Value
                     YAMLElement.Sequence [
                         for i in iList do
@@ -211,6 +222,7 @@ let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                     loopRead yamlAstList []
                 )
             loopRead rest (current::acc)
+        // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             printfn "[readList] Case5"
             let current = 
@@ -220,6 +232,7 @@ let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
                     loopRead [YAMLASTElement.Line v.Value] []
                 )
             loopRead rest (current::acc)
+        // My Value <c f=1/>
         | YamlValue v::rest -> // createValue
             printfn "[readList] Case6"
             let raw = restoreStringReplace stringDict v.Value
@@ -232,14 +245,12 @@ let private readList (yamlList: YAMLASTElement list) (stringDict: Dictionary<int
         | [] -> 
             acc
             |> collectSequenceElements // collect sequence elements into a list
-            |> YAMLElement.List
+            |> YAMLElement.Level
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
     loopRead yamlList []
 
 let read (ast: YAMLAST) =
     match ast.AST with
     | Level lvl ->
-        readList lvl ast.StringMap ast.CommentMap
+        tokenize lvl ast.StringMap ast.CommentMap
     | _ -> failwith "Not a root!"
-    // At this point we should propably insert comment- and string-replacements.
-    |> fun x -> x

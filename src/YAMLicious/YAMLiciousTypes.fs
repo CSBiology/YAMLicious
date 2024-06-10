@@ -13,7 +13,16 @@ type YAMLElement =
     // A true Yaml sequence
     | Sequence of YAMLElement list
     /// Same intendation list of yaml elements
-    | List of YAMLElement list
+    ///
+    /// Example1:
+    ///
+    /// MyKey1: MyValue1
+    /// MyKey2: MyValue2
+    | Level of YAMLElement list
     | Comment of string
 
-let [<Literal>] SequenceSquareDelimiter = ","
+[<Literal>]
+let SequenceSquareDelimiter = ","
+
+[<Literal>]
+let NewLineChar = '\n'

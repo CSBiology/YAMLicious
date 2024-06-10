@@ -399,3 +399,4 @@ ts/
 .venv
 /docs/.vscode
 /dist
+/tests/**/YAMLicious

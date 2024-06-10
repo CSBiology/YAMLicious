@@ -13,7 +13,7 @@ let StringMatchPattern =
     #if FABLE_COMPILER_PYTHON
     "(?P<all>(?P<iscomment>#.*?)?\"(?P<stringValue>.+)\\\")"
     #endif
-    #if FABLE_COMPILER_JAVASCRIPT
+    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
     "(?<all>(?<iscomment>#.*?)?\"(?<stringValue>.+)\")" // fable sets /gu for js regex (unicode, not required to escape ")
     #endif
     #if !FABLE_COMPILER
@@ -47,7 +47,6 @@ let encodingCleanUp (s: string) =
 let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
     let mutable n = 0
     let regex = Regex(StringMatchPattern)
-    printfn "StringCleanUp"
     let matcheval = new MatchEvaluator(fun m ->
         match m.Groups.["iscomment"].Success with
         | true ->
