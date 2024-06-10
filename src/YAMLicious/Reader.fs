@@ -160,7 +160,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     | YAMLElement.Object _ as o -> o
     | anyElse -> YAMLElement.Object [anyElse]
 
-    
 
 let read (yaml: string) =
     let ast = read yaml

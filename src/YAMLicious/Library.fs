@@ -1,7 +1,6 @@
 ﻿namespace YAMLicious
 
 open YAMLiciousTypes
-open AST
 
 module TestCases =
 
