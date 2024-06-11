@@ -8,7 +8,7 @@ module StyleVerifier =
         ele 
         |> Seq.forall (fun x ->
             match x with
-            | YAMLElement.SequenceElement (YAMLElement.Value {Value = v; Comment = None}) ->
+            | YAMLElement.Value {Value = v; Comment = None} ->
                 true
             | _ -> false
         )
@@ -23,7 +23,7 @@ module Formatting =
             seq 
             |> List.map (fun x -> 
                 match x with
-                | YAMLElement.SequenceElement (YAMLElement.Value {Value = v; Comment = None}) -> v
+                | YAMLElement.Value {Value = v; Comment = None} -> v
                 | _ -> failwith "Invalid sequence element"
             )
             |> String.concat ", "
@@ -58,23 +58,21 @@ let detokenize (ele: YAMLElement) =
         | YAMLElement.Sequence seq -> 
             PreprocessorElement.Level [
                 for ele in seq do
-                    loop ele 
+                    match ele with
+                    | YAMLElement.Value v -> // mykey: myvalue # 12313
+                        let s = Formatting.mkMinusLine (Formatting.mkContent v)
+                        PreprocessorElement.Line s
+                    | YAMLElement.Sequence seq when StyleVerifier.checkInlineSequence seq -> // - [v1, v2, v3]
+                        let s = Formatting.mkMinusLine (Formatting.mkInlineSequence seq)
+                        PreprocessorElement.Line s
+                    | anyElse ->
+                        PreprocessorElement.Level [
+                            PreprocessorElement.Line "-"
+                            PreprocessorElement.Intendation [
+                                loop anyElse
+                            ]
+                        ]
             ]
-        | YAMLElement.SequenceElement i -> 
-            match i with
-            | YAMLElement.Value v -> // mykey: myvalue # 12313
-                let s = Formatting.mkMinusLine (Formatting.mkContent v)
-                PreprocessorElement.Line s
-            | YAMLElement.Sequence seq when StyleVerifier.checkInlineSequence seq -> // - [v1, v2, v3]
-                let s = Formatting.mkMinusLine (Formatting.mkInlineSequence seq)
-                PreprocessorElement.Line s
-            | anyElse ->
-                PreprocessorElement.Level [
-                    PreprocessorElement.Line "-"
-                    PreprocessorElement.Intendation [
-                        loop anyElse
-                    ]
-                ]
         | YAMLElement.Comment (c) -> 
             PreprocessorElement.Line (Formatting.mkComment c)
     loop ele

@@ -57,7 +57,6 @@ type YAMLContent = {
 type YAMLElement =
     | Mapping of YAMLContent * YAMLElement
     | Value of YAMLContent
-    | SequenceElement of YAMLElement
     // A true Yaml sequence
     | Sequence of YAMLElement list
     /// Same intendation list of yaml elements
