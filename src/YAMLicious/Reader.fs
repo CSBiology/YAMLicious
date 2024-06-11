@@ -96,7 +96,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current =
                 container [
                     for value in split do
-                        loopRead [PreprocessorElement.Line value] []
+                        loopRead [PreprocessorElement.Line (value.Trim())] []
                 ]
             loopRead rest (current::acc)
         // [ #c1
