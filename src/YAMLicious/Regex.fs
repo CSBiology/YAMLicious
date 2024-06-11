@@ -77,3 +77,11 @@ let StringReplacementPattern =
     #if !FABLE_COMPILER
     "\<s f=(?<index>\d+)\/\>"
     #endif
+
+[<Literal>]
+let SchemaNamespacePattern =
+    #if FABLE_COMPILER_PYTHON
+    "^\$(?P<key>[a-zA-Z0-9\s:]+):$"
+    #else
+    "^\$(?<key>[a-zA-Z0-9\s:]+):$"
+    #endif

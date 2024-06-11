@@ -118,4 +118,11 @@ let Main = testList "YamlMatch" [
             Expect.equal res.Value "abc, def, hij" ""
             Expect.equal res.Comment (Some 11) ""
         | _ -> Expect.isFalse true ""
+
+    testCase "Match Namespaces" <| fun _ ->
+        let yamlElement = Line "$namespaces:"
+        match yamlElement with
+        | SchemaNamespace res ->
+            Expect.equal res.Key "namespaces" ""
+        | _ -> Expect.isFalse true ""
 ]

@@ -113,3 +113,13 @@ let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
         else
             None
     | _ -> None
+
+let (|SchemaNamespace|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s -> 
+        let m = Regex.Match(s, SchemaNamespacePattern) 
+        if m.Success then 
+            Some {| Key = m.Groups.["key"].Value|}
+        else
+            None
+    | _ -> None
