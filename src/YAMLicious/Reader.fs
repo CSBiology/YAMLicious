@@ -42,6 +42,30 @@ let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpe
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
     let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
+        | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
+            //printfn "[tokenize] Case1"
+            let objectList = 
+                PreprocessorElement.Line v.Key::yamlAstList
+            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let current =
+                YAMLElement.Sequence [
+                    loopRead objectList []
+                    for i in sequenceElements do
+                        loopRead i []
+                ]
+            loopRead rest (current::acc)
+        | SchemaNamespace v::rest0 -> //create/appendSequenceElement
+            //printfn "[tokenize] Case2"
+            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let current =
+                YAMLElement.Sequence [
+                    loopRead [PreprocessorElement.Line v.Key] []
+                    for i in sequenceElements do
+                        loopRead i []
+                ]
+            loopRead rest (current::acc)
         // Example1: 
         // - My Value 1 <c f=1/>
         //   My Value 2

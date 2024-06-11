@@ -205,4 +205,28 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
+
+    testCase "Namespaces" <| fun _ ->
+        let yaml = """
+$namespaces:
+  arc: https://github.com/nfdi4plants/ARC_ontology
+  test: https://github.com/nfdi4plants/TEST_ontology
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence[
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("namespaces"));
+                    YAMLElement.Mapping(
+                        YAMLContent.create("arc"),
+                        YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/ARC_ontology"))
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("test"),
+                        YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/TEST_ontology"))
+                    )
+                ]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
 ]
