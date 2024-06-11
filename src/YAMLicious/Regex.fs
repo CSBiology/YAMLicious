@@ -16,7 +16,7 @@ let KeyPattern =
     #if FABLE_COMPILER_PYTHON
     $"^(?P<key>[a-zA-Z0-9\s]+):\s*({CommentPattern})?$"
     #else
-    $"^(?<key>[a-zA-Z0-9\s]+):\s*({CommentPattern})?$"
+    $"^(?<key>[a-zA-Z0-9\s:]+):\s*({CommentPattern})?$"
     #endif
 
 [<Literal>]
@@ -24,7 +24,7 @@ let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
     "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<value>.*)$"
     #else
-    "^(?<key>[a-zA-Z0-9\s]+):\s*(?<value>.*)$"
+    "^(?<key>[a-zA-Z0-9\s:]+):\s*(?<value>.*)$"
     #endif
 
 let LineCommentPattern =
