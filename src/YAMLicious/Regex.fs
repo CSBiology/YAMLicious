@@ -22,9 +22,9 @@ let KeyPattern =
 [<Literal>]
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[a-zA-Z0-9\s:]+):\s*(?P<value>.*)$"
+    "^(?P<key>[a-zA-Z0-9\s:]+[^https?:]):\s*(?P<value>.*)$"
     #else
-    "^(?<key>[a-zA-Z0-9\s:]+):\s*(?<value>.*)$"
+    "^(?<key>[a-zA-Z0-9\s:]+[^https?:]):\s*(?<value>.*)$"
     #endif
 
 let LineCommentPattern =
