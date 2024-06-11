@@ -14,7 +14,7 @@ let CommentPattern =
 
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<key>[a-zA-Z0-9\s]+):\s*({CommentPattern})?$"
+    $"^(?P<key>[a-zA-Z0-9\s:]+):\s*({CommentPattern})?$"
     #else
     $"^(?<key>[a-zA-Z0-9\s:]+):\s*({CommentPattern})?$"
     #endif
@@ -22,7 +22,7 @@ let KeyPattern =
 [<Literal>]
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[a-zA-Z0-9\s]+):\s*(?P<value>.*)$"
+    "^(?P<key>[a-zA-Z0-9\s:]+):\s*(?P<value>.*)$"
     #else
     "^(?<key>[a-zA-Z0-9\s:]+):\s*(?<value>.*)$"
     #endif
@@ -70,6 +70,10 @@ let SequenceCloserPattern =
 let StringReplacementPattern =
     #if FABLE_COMPILER_PYTHON
     "\<s f=(?P<index>\d+)\/\>"
-    #else
+    #endif
+    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+    "<s f=(?<index>\d+)\/>"
+    #endif
+    #if !FABLE_COMPILER
     "\<s f=(?<index>\d+)\/\>"
     #endif
