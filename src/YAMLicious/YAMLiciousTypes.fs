@@ -73,3 +73,6 @@ let SequenceSquareDelimiter = ","
 
 [<Literal>]
 let NewLineChar = '\n'
+
+[<Literal>]
+let YAML_NULL = "null"

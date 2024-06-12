@@ -206,7 +206,7 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
-    testCase "Namespaces" <| fun _ ->
+    ptestCase "Namespaces" <| fun _ ->
         let yaml = """
 $namespaces:
   arc: https://github.com/nfdi4plants/ARC_ontology

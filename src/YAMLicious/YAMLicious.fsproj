@@ -13,7 +13,13 @@
     <Compile Include="RegexActivePatterns.fs" />
     <Compile Include="Reader.fs" />
     <Compile Include="Writer.fs" />
+    <Compile Include="Encode.fs" />
+    <Compile Include="Decode.fs" />
     <Compile Include="Library.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
   </ItemGroup>
 
 </Project>
