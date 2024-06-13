@@ -14,17 +14,17 @@ let CommentPattern =
 
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<key>.+):\s*({CommentPattern})?$"
+    $"^(?P<key>[^\{{\[]+):\s*({CommentPattern})?$"
     #else
-    $"^(?<key>.+):\s*({CommentPattern})?$"
+    $"^(?<key>[^\{{\[]+):\s*({CommentPattern})?$"
     #endif
 
 [<Literal>]
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>.+):\s*(?P<value>.*)$"
+    "^(?P<key>[^\{{\[]+):\s+(?P<value>.*)$"
     #else
-    "^(?<key>.+):\s*(?<value>(.*))$"
+    "^(?<key>[^\{{\[]+):\s+(?<value>(.*))$"
     #endif
 
 let LineCommentPattern =
@@ -40,9 +40,9 @@ let ValuePattern =
 [<Literal>]
 let SequenceMinusPattern =
     #if FABLE_COMPILER_PYTHON
-    "^-\s*(?P<value>.*)?$"
+    "^-(\s+(?P<value>.*))?$"
     #else
-    "^-\s*(?<value>.*)?$"
+    "^-(\s+(?<value>.*))?$"
     #endif
 
 let InlineSequencePattern =
@@ -50,6 +50,13 @@ let InlineSequencePattern =
     $"^\[(?P<inlineSequence>.+)\]\s*?({CommentPattern})?$"
     #else
     $"^\[(?<inlineSequence>.+)\]\s*?({CommentPattern})?$"
+    #endif
+
+let InlineJSONPattern =
+    #if FABLE_COMPILER_PYTHON
+    $"^\{{(?P<inlineSequence>.+)\}}\s*?({CommentPattern})?$"
+    #else
+    $"^\{{(?<inlineSequence>.+)\}}\s*?({CommentPattern})?$"
     #endif
 
 let SequenceOpenerPattern =
@@ -64,6 +71,20 @@ let SequenceCloserPattern =
     $"^\]\s*({CommentPattern})?$"
     #else
     $"^\]\s*({CommentPattern})?$"
+    #endif
+
+let JSONOpenerPattern =
+    #if FABLE_COMPILER_PYTHON
+    $"^(?P<key>[^\{{\[]+):\s+\{{}\s*({CommentPattern})?$"
+    #else
+    $"^(?<key>[^\{{\[]+):\s+\{{\s*({CommentPattern})?$"
+    #endif
+
+let JSONCloserPattern =
+    #if FABLE_COMPILER_PYTHON
+    $"^\}}\s*({CommentPattern})?$"
+    #else
+    $"^\}}\s*({CommentPattern})?$"
     #endif
 
 [<Literal>]

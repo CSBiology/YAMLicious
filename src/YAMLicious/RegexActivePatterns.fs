@@ -114,6 +114,47 @@ let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
+let (|InlineJSON|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s -> 
+        let m = Regex.Match(s, InlineJSONPattern) 
+        if m.Success then 
+            let comment: int option = 
+                let v = m.Groups.["comment"].Value
+                if v = "" then None else Some (int v)
+            let v: string =
+                m.Groups.["inlineSequence"].Value 
+            Some {| Comment = comment; Value = v|}
+        else
+            None
+    | _ -> None
+
+let (|JSONKeyOpener|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s -> 
+        let m = Regex.Match(s, JSONOpenerPattern) 
+        if m.Success then 
+            let comment: int option = 
+                let v = m.Groups.["comment"].Value
+                if v = "" then None else Some (int v)
+            Some {| Key = m.Groups.["key"].Value; Comment = comment|}
+        else
+            None
+    | _ -> None
+
+let (|JSONCloser|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s -> 
+        let m = Regex.Match(s, JSONCloserPattern) 
+        if m.Success then 
+            let comment: int option = 
+                let v = m.Groups.["comment"].Value
+                if v = "" then None else Some (int v)
+            Some {| Comment = comment|}
+        else
+            None
+    | _ -> None
+
 let (|SchemaNamespace|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
