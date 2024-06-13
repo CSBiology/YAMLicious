@@ -33,11 +33,16 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
             [PreprocessorElement.Line v.Value.Value]
             yield! collectSequenceElements rest
         ]
+    | YamlComment _ as v::rest ->
+        [
+            [v]
+            yield! collectSequenceElements rest
+        ]
     | [] ->
-        [ ]
+        []
     | anyElse -> failwithf "Unknown pattern for sequence elements: %A" anyElse
     
-let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ -> true | _ -> false
+let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
 
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
     let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
@@ -149,6 +154,56 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | None, None ->
                     current::acc
             loopRead rest nextAcc
+        | InlineJSON v::rest -> // create sequence
+            //printfn "[tokenize] Case3.1"
+            // ensure inline comment is added on top of the sequence
+            let c = restoreCommentReplace commentDict v.Comment
+            // split inline sequence by delimiter, then reuse default parsing into SequenceElements
+            let split = v.Value.Split([|SequenceSquareDelimiter|], System.StringSplitOptions.RemoveEmptyEntries)
+            let current =
+                [
+                    for value in split do
+                        match loopRead [PreprocessorElement.Line (value.Trim())] [] with
+                        | YAMLElement.Object o -> yield! o
+                        |_ -> failwith "Unexpected element in InlineJSON"
+                    
+                ]
+                |> List.rev
+            let nextAcc =
+                if c.IsSome then 
+                    current@(YAMLElement.Comment c.Value::acc)
+                else 
+                    current@acc
+            loopRead rest nextAcc
+        //Sammy Sosa: { #lel
+        //    hr: 63,
+        //    avg: 0.288,
+        //}
+        | JSONKeyOpener opener::Intendation iList::JSONCloser closer::rest ->
+            //printfn "[tokenize] Case3.6"
+            let c1 = opener.Comment |> restoreCommentReplace commentDict
+            let c2 = closer.Comment |> restoreCommentReplace commentDict
+            let current = 
+                YAMLElement.Mapping (
+                    YAMLContent.create(opener.Key, ?comment=c1),
+                    YAMLElement.Object [
+                        for i in iList do
+                            let i' =
+                                match i with
+                                | Line s -> s.TrimEnd(',') |> Line
+                                | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
+                            match loopRead [i'] [] with
+                            | YAMLElement.Object o -> yield! o
+                            |_ -> failwith "Unexpected element in MultilineJSON"
+                    ]
+                )
+            let nextAcc =
+                match c2 with
+                | Some c2 -> 
+                    YAMLElement.Comment c2::current::acc
+                | None ->
+                    current::acc
+            loopRead rest nextAcc
         | Key v::Intendation yamlAstList::rest -> //createObject
             //printfn "[tokenize] Case4"
             let c = restoreCommentReplace commentDict v.Comment
@@ -156,6 +211,45 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 YAMLElement.Mapping (
                     YAMLContent.create(v.Key, ?comment=c),
                     loopRead yamlAstList []
+                )
+            loopRead rest (current::acc)
+        | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
+            //printfn "[tokenize] Case4.1"
+            let c = restoreCommentReplace commentDict v.Comment
+            let objectList = 
+                if w.Value.IsSome then
+                    PreprocessorElement.Line w.Value.Value::yamlAstList
+                else
+                    yamlAstList
+            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let seq =
+                YAMLElement.Sequence [
+                    loopRead objectList []
+                    for i in sequenceElements do
+                        loopRead i []
+                ]
+            let current = 
+                YAMLElement.Mapping (
+                    YAMLContent.create(v.Key, ?comment=c),
+                    YAMLElement.Object [seq]
+                )
+            loopRead rest (current::acc)
+        | Key v::SequenceMinusOpener w::rest0 -> //createObject
+            //printfn "[tokenize] Case4.2"
+            let c = restoreCommentReplace commentDict v.Comment
+            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let seq =
+                YAMLElement.Sequence [
+                    loopRead [PreprocessorElement.Line w.Value.Value] []
+                    for i in sequenceElements do
+                        loopRead i []
+                ]
+            let current = 
+                YAMLElement.Mapping (
+                    YAMLContent.create(v.Key, ?comment=c),
+                    YAMLElement.Object [seq]
                 )
             loopRead rest (current::acc)
         // My Key: [My Value, Test2]
