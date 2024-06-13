@@ -26,6 +26,8 @@ and PreprocessorElement =
     | Level of PreprocessorElement list
     | Intendation of PreprocessorElement list
     | Line of string
+    /// This does not write anything
+    | Nil 
 
     override this.ToString() =
         let sb = StringBuilder()
@@ -43,6 +45,8 @@ and PreprocessorElement =
                 for child in children do
                     innerprint child (level+1)
                 sb.AppendLine(indent + "]") |> ignore
+            | Nil ->
+                ()
         innerprint this 0
         sb.ToString()
 
@@ -67,6 +71,8 @@ type YAMLElement =
     /// MyKey2: MyValue2
     | Object of YAMLElement list
     | Comment of string
+    // This does not write anything
+    | Nil
 
 [<Literal>]
 let SequenceSquareDelimiter = ","

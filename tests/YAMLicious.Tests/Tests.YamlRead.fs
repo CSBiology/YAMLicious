@@ -16,7 +16,11 @@ let Main = testList "YamlRead" [
     testCase "KeyValue" <| fun _ ->
         let yaml = "Say: Hello World"
         let expected = YAMLElement.Object [
-            YAMLElement.Mapping(YAMLContent.create("Say"), YAMLElement.Value(YAMLContent.create("Hello World")))
+            YAMLElement.Mapping(YAMLContent.create("Say"), 
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("Hello World"))
+                ]
+            )
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
@@ -24,7 +28,12 @@ let Main = testList "YamlRead" [
     testCase "KeyValue + Comment" <| fun _ ->
         let yaml = "Say: Hello World # 420 blaze it"
         let expected = YAMLElement.Object [
-            YAMLElement.Mapping(YAMLContent.create("Say"), YAMLElement.Value(YAMLContent.create("Hello World", " 420 blaze it")))
+            YAMLElement.Mapping(
+                YAMLContent.create("Say"), 
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("Hello World", " 420 blaze it"))
+                ]
+            )
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
@@ -34,9 +43,15 @@ let Main = testList "YamlRead" [
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("Say"),
-                YAMLElement.Sequence[
-                    YAMLElement.Value(YAMLContent.create("Hello"));
-                    YAMLElement.Value(YAMLContent.create("World"))
+                YAMLElement.Object [
+                    YAMLElement.Sequence[
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("Hello"));
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("World"))
+                        ]
+                    ]
                 ]
             )
         ]
@@ -51,8 +66,12 @@ let Main = testList "YamlRead" [
                 YAMLElement.Object [
                     YAMLElement.Comment(" 420 blaze it");
                     YAMLElement.Sequence[
-                        YAMLElement.Value(YAMLContent.create("Hello"));
-                        YAMLElement.Value(YAMLContent.create("World"))
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("Hello"));
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("World"))
+                        ]
                     ]
                 ]
             )
@@ -68,9 +87,15 @@ let Main = testList "YamlRead" [
 """
         let expected = YAMLElement.Object [
             YAMLElement.Sequence[
-                YAMLElement.Value(YAMLContent.create("My Value 1"));
-                YAMLElement.Value(YAMLContent.create("My Value 2"));
-                YAMLElement.Value(YAMLContent.create("My Value 3"))
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("My Value 1"));
+                ]
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("My Value 2"));
+                ]
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("My Value 3"))
+                ]
             ]
         ]
         let actual = Reader.read yaml
@@ -88,7 +113,9 @@ let Main = testList "YamlRead" [
                     YAMLElement.Value (YAMLContent.create("My Value 1"))
                     YAMLElement.Value (YAMLContent.create("My Value 2"))
                 ];
-                YAMLElement.Value(YAMLContent.create("My Value 3"))
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("My Value 3"))
+                ]
             ]
         ]
         let actual = Reader.read yaml
@@ -130,29 +157,41 @@ My Key:
                 YAMLElement.Object[
                     YAMLElement.Mapping(
                         YAMLContent.create("My Key1"),
-                        YAMLElement.Value(YAMLContent.create("My Value1"))
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value1"))
+                        ]
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("My Key2"),
-                        YAMLElement.Value(YAMLContent.create("My Value2"))
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                        ]
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("My Key3"),
-                        YAMLElement.Value(YAMLContent.create("My Value3"))
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value3"))
+                        ]
                     )
                 ]
                 YAMLElement.Object[
                         YAMLElement.Mapping(
                             YAMLContent.create("My Key4"),
-                            YAMLElement.Value(YAMLContent.create("My Value4"))
+                            YAMLElement.Object [
+                                YAMLElement.Value(YAMLContent.create("My Value4"))
+                            ]
                         );
                         YAMLElement.Mapping(
                             YAMLContent.create("My Key5"),
-                            YAMLElement.Value(YAMLContent.create("My Value5"))
+                            YAMLElement.Object [
+                                YAMLElement.Value(YAMLContent.create("My Value5"))
+                            ]
                         );
                         YAMLElement.Mapping(
                             YAMLContent.create("My Key6"),
-                            YAMLElement.Value(YAMLContent.create("My Value6"))
+                            YAMLElement.Object [
+                                YAMLElement.Value(YAMLContent.create("My Value6"))
+                            ]
                         )
                     ]
             ]
@@ -168,20 +207,44 @@ My Key:
 """
         let expected = YAMLElement.Object [
             YAMLElement.Sequence[
-                YAMLElement.Sequence[
-                    YAMLElement.Value(YAMLContent.create("v1"));
-                    YAMLElement.Value(YAMLContent.create("v2"));
-                    YAMLElement.Value(YAMLContent.create("v3"))
-                ]
-                YAMLElement.Sequence[
-                    YAMLElement.Value(YAMLContent.create("v4"));
-                    YAMLElement.Value(YAMLContent.create("v5"));
-                    YAMLElement.Value(YAMLContent.create("v6"))
-                ]
-                YAMLElement.Sequence[
-                    YAMLElement.Value(YAMLContent.create("v7"));
-                    YAMLElement.Value(YAMLContent.create("v8"));
-                    YAMLElement.Value(YAMLContent.create("v9"))
+                YAMLElement.Object[
+                    YAMLElement.Sequence[
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v1"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v2"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v3"))
+                        ]
+                    ]
+                ];
+                YAMLElement.Object[
+                    YAMLElement.Sequence[
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v4"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v5"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v6"))
+                        ]
+                    ]
+                ];
+                YAMLElement.Object[
+                    YAMLElement.Sequence[
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v7"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v8"))
+                        ];
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("v9"))
+                        ]
+                    ]
                 ]
             ]
         ]
@@ -198,9 +261,15 @@ My Key:
 """
         let expected = YAMLElement.Object [
             YAMLElement.Sequence[
-                YAMLElement.Value(YAMLContent.create("v1"));
-                YAMLElement.Value(YAMLContent.create("v2"));
-                YAMLElement.Value(YAMLContent.create("v3"))
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("v1"));
+                ]
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("v2"));
+                ]
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("v3"))
+                ]
             ]
         ]
         let actual = Reader.read yaml

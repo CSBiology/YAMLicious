@@ -8,6 +8,7 @@ let all = testList "all" [
     Tests.YamlMatch.Main
     Tests.YamlRead.Main
     Tests.YamlWrite.Main
+    Tests.EncoderDecoder.Main
 ]
 
 [<EntryPoint>]

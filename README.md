@@ -1,6 +1,98 @@
 # YAMLicious
 
-This is a template for a multi-language [Fable](https://fable.io/docs/) library. 
+YAMLicious is a small YAML reader/writer inspired by [Thoth.Json](https://github.com/thoth-org/Thoth.Json) syntax!
+
+## Code examples
+
+### F# Model
+
+```fsharp
+type Package = {
+    Name: string
+    Version: string option
+}
+
+type ArcValidation = {
+    ArcSpecificationVersion: string
+    Packages: Package list
+}   
+```
+
+### YAML
+
+```yaml
+arc_specification: 2.0.0-draft
+validation_packages:
+  - name: package1
+    version: 1.0.0
+  - name: package2
+    version: 2.0.0
+  - name: package3
+```
+
+### Decode (from YAML)
+
+```fsharp
+// from yaml
+let Example1 = 
+    "arc_specification: 2.0.0-draft
+validation_packages:
+    - name: package1
+    version: 1.0.0
+    - name: package2
+    version: 2.0.0
+    - name: package3"
+
+let packageEncoder : (YAMLicious.YAMLElement -> Package) = 
+    Decode.object (fun get ->
+        {
+            Name = get.Required.Field "name" Decode.string
+            Version = get.Optional.Field "version" Decode.string
+        }
+    )
+
+let arcValidationDecoder : (YAMLicious.YAMLElement -> ArcValidation) =
+    Decode.object (fun get ->
+        {
+            ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
+            Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
+        }
+    )
+
+let actual : ArcValidation = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
+
+```
+
+### Encode (to YAML)
+
+```fsharp
+// to yaml
+let Example2 = {
+    ArcSpecificationVersion = "2.0.0-draft"
+    Packages = [
+        { Name = "package1"; Version = Some "1.0.0" }
+        { Name = "package2"; Version = Some "2.0.0" }
+        { Name = "package3"; Version = None }
+    ]
+}
+
+let packageEncoder (pack: Package) = 
+    [
+        "name", Encode.string pack.Name
+        Encode.tryInclude "version" Encode.string pack.Version 
+    ]
+    |> Encode.choose
+    |> Encode.object
+
+let arcValidationEncoder (arc: ArcValidation) = 
+    Encode.object [
+        "arc_specification", Encode.string arc.ArcSpecificationVersion
+        "validation_packages", Encode.list packageEncoder arc.Packages
+    ]
+
+let actual : string = Encode.write 2 (arcValidationEncoder Example2)
+```
+
 
 ---
 ## Local Development

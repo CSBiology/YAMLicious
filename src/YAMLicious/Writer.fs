@@ -33,6 +33,8 @@ module Formatting =
 let detokenize (ele: YAMLElement) =
     let rec loop (ele: YAMLElement) =
         match ele with
+        | YAMLElement.Nil ->
+            PreprocessorElement.Nil
         | YAMLElement.Mapping (key, v) -> 
             match v with
             | YAMLElement.Value v -> // mykey: myvalue # 12313

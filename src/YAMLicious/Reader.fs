@@ -106,23 +106,20 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | InlineSequence v::rest -> // create sequence
             //printfn "[tokenize] Case3"
             // ensure inline comment is added on top of the sequence
-            let container =
-                let c = restoreCommentReplace commentDict v.Comment
-                if c.IsSome then 
-                    fun seq -> YAMLElement.Object [
-                        YAMLElement.Comment c.Value
-                        YAMLElement.Sequence seq
-                    ]
-                else
-                    fun seq -> YAMLElement.Sequence seq
+            let c = restoreCommentReplace commentDict v.Comment
             // split inline sequence by delimiter, then reuse default parsing into SequenceElements
             let split = v.Value.Split([|SequenceSquareDelimiter|], System.StringSplitOptions.RemoveEmptyEntries)
             let current =
-                container [
+                YAMLElement.Sequence [
                     for value in split do
                         loopRead [PreprocessorElement.Line (value.Trim())] []
                 ]
-            loopRead rest (current::acc)
+            let nextAcc =
+                if c.IsSome then 
+                    current::YAMLElement.Comment c.Value::acc
+                else 
+                    current::acc
+            loopRead rest nextAcc
         // [ #c1
         //   v1,
         //   v2,
@@ -133,19 +130,25 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let c1 = opener.Comment |> restoreCommentReplace commentDict
             let c2 = closer.Comment |> restoreCommentReplace commentDict
             let current = 
-                YAMLElement.Object [
-                    if c1.IsSome then YAMLElement.Comment c1.Value
-                    YAMLElement.Sequence [
-                        for i in iList do
-                            let i' =
-                                match i with
-                                | Line s -> s.TrimEnd(',') |> Line
-                                | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
-                            loopRead [i'] []
-                    ]
-                    if c2.IsSome then YAMLElement.Comment c2.Value
+                YAMLElement.Sequence [
+                    for i in iList do
+                        let i' =
+                            match i with
+                            | Line s -> s.TrimEnd(',') |> Line
+                            | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
+                        loopRead [i'] []
                 ]
-            loopRead rest (current::acc)
+            let nextAcc =
+                match c1, c2 with
+                | Some c1, Some c2 -> 
+                    YAMLElement.Comment c2::current::YAMLElement.Comment c1::acc
+                | Some c1, None ->
+                    current::YAMLElement.Comment c1::acc
+                | None, Some c2 ->
+                    YAMLElement.Comment c2::current::acc
+                | None, None ->
+                    current::acc
+            loopRead rest nextAcc
         | Key v::Intendation yamlAstList::rest -> //createObject
             //printfn "[tokenize] Case4"
             let c = restoreCommentReplace commentDict v.Comment
@@ -182,18 +185,13 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     YAMLContent.create(raw, ?comment=c)
                 )
             loopRead rest (current::acc)
-        | [] when acc.Length = 1 -> 
-            //printfn "[tokenize] Exit Single"
-            acc.Head
         | [] ->
             //printfn "[tokenize] Exit Multiple: Object"
             acc
             |> List.rev
             |> YAMLElement.Object
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
-    match loopRead yamlList [] with
-    | YAMLElement.Object _ as o -> o
-    | anyElse -> YAMLElement.Object [anyElse]
+    loopRead yamlList []
 
 let read (yaml: string) =
     let ast = read yaml

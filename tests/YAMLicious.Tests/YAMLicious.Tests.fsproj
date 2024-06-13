@@ -12,6 +12,7 @@
     <Compile Include="Tests.YamlMatch.fs" />
     <Compile Include="Tests.YamlRead.fs" />
     <Compile Include="Tests.YamlWrite.fs" />
+    <Compile Include="Tests.EncoderDecoder.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

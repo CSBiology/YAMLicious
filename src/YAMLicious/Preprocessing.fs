@@ -22,6 +22,7 @@ let write(rootElement:PreprocessorElement, fconfig: (Config -> Config) option) =
         | Level children ->
             for child in children do
                 loop child sb config
+        | Nil -> ()
     loop rootElement sb config
     sb.ToString()
 
