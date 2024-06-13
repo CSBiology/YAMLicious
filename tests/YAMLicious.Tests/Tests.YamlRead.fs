@@ -141,6 +141,92 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "SequenceSameIndentAsMapping" <| fun _ ->
+        let yaml = """
+My Key:
+- My Value1
+- My Value2
+- My Value3
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("My Key"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence[
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value1"))
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value3"))
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "SequenceSameIndentAsMappingAndComment" <| fun _ ->
+        let yaml = """
+My Key:
+- My Value1
+- My Value2
+#ich hab das gerade gesehen und dachte mir "ah fuck"
+- My Value3
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("My Key"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence[
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value1"))
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                        ]
+                        YAMLElement.Object[
+                            YAMLElement.Comment("ich hab das gerade gesehen und dachte mir \"ah fuck\"")
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value3"))
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "SequenceSameIndentAsMapping2" <| fun _ ->
+        let yaml = """
+My Key:
+- My Value1
+  My Value2
+- My Value3
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("My Key"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence[
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value1"));
+                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("My Value3"))
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
     testCase "NextLineSequenceObjects" <| fun _ ->
         let yaml = """
 -
@@ -275,7 +361,7 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
-    ptestCase "Namespaces" <| fun _ ->
+    testCase "Namespaces" <| fun _ ->
         let yaml = """
 $namespaces:
   arc: https://github.com/nfdi4plants/ARC_ontology
@@ -287,14 +373,70 @@ $namespaces:
                     YAMLElement.Value(YAMLContent.create("namespaces"));
                     YAMLElement.Mapping(
                         YAMLContent.create("arc"),
-                        YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/ARC_ontology"))
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/ARC_ontology"))
+                        ]
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("test"),
-                        YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/TEST_ontology"))
+                        YAMLElement.Object[
+                            YAMLElement.Value(YAMLContent.create("https://github.com/nfdi4plants/TEST_ontology"))
+                        ]
                     )
                 ]
             ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+    testCase "JSONMappingsInline" <| fun _ ->
+        let yaml = """
+Mark McGwire: {hr: 65, avg: 0.278}
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("Mark McGwire"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("hr"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("65"))
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("avg"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("0.278"))
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+    testCase "JSONMappingsMultiline" <| fun _ ->
+        let yaml = """
+Sammy Sosa: {
+    hr: 63,
+    avg: 0.288,
+}"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("Sammy Sosa"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("hr"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("63"))
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("avg"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("0.288"))
+                        ]
+                    )
+                ]
+            )
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""

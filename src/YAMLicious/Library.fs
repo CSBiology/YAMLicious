@@ -35,6 +35,14 @@ My Key:
   My Value2
   My Value3
 """
+
+    [<Literal>]
+    let SequenceSameIndentAsMapping = """
+My Key:
+- My Value1
+- My Value2
+- My Value3
+"""
     [<Literal>]
     let SequenceMappings = """
 -
@@ -120,3 +128,11 @@ My Key: "[{Special character place # |}" # A # in string is allowed!
     let StringReplaceWithCommentHashs = """
 My Key: "[{Special character place # |}" ### A # in string is allowed!
 """
+
+    [<Literal>]
+    let JsonMappings ="""
+Mark McGwire: {hr: 65, avg: 0.278}
+Sammy Sosa: {
+    hr: 63,
+    avg: 0.288,
+}"""
