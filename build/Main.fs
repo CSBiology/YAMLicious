@@ -59,8 +59,8 @@ let main argv =
             Test.FSharp.handle []
             Test.JavaScript.handle []
             Test.Python.handle []
-            Test.Python.handleNative args
-            Test.JavaScript.handleNative args
+            //Test.Python.handleNative args
+            //Test.JavaScript.handleNative args
         | _ -> printHelp ()
     | "bundle" :: args ->
         match args with
