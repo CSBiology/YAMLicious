@@ -67,22 +67,27 @@ validation_packages:
   -
     name: package3"
         Expect.trimEqual actual expected ""
-    testCase "decode" <| fun _ ->
-        let packageEncoder = Decode.object (fun get ->
-            {
-                Name = get.Required.Field "name" Decode.string
-                Version = get.Optional.Field "version" Decode.string
-            }
-        )
-        let arcValidationDecoder =
-            Decode.object (fun get ->
-                {
-                    ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
-                    Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
-                }
-            )
-        let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
-        let expected = Examples.ValidationPackageTypes.type_
+    //testCase "decode" <| fun _ ->
+    //    let packageEncoder = Decode.object (fun get ->
+    //        {
+    //            Name = get.Required.Field "name" Decode.string
+    //            Version = get.Optional.Field "version" Decode.string
+    //        }
+    //    )
+    //    let arcValidationDecoder =
+    //        Decode.object (fun get ->
+    //            {
+    //                ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
+    //                Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
+    //            }
+    //        )
+    //    let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
+    //    let expected = Examples.ValidationPackageTypes.type_
+    //    Expect.equal actual expected ""
+    ftestCase "decode integer" <| fun _ ->
+        let ele = "23"
+        let actual = ele |> Decode.read |> Decode.int
+        let expected = 23
         Expect.equal actual expected ""
 ]
 

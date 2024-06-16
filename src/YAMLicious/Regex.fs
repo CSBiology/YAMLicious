@@ -75,7 +75,7 @@ let SequenceCloserPattern =
 
 let JSONOpenerPattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<key>[^\{{\[]+):\s+\{{}\s*({CommentPattern})?$"
+    $"^(?P<key>[^\{{\[]+):\s+\{{}}\s*({CommentPattern})?$"
     #else
     $"^(?<key>[^\{{\[]+):\s+\{{\s*({CommentPattern})?$"
     #endif
