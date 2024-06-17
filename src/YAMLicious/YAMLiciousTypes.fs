@@ -1,7 +1,5 @@
 module YAMLicious.YAMLiciousTypes
 
-/// This contains information about single token information, such as a key/value in key-value pair, a seq element or anything
-
 open System.Text
 open System.Collections.Generic
 

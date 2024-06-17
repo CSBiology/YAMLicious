@@ -39,6 +39,166 @@ validation_packages:
 open Fable.Pyxpecto
 open YAMLicious
 
+let tests_decode = testList "min decode" [
+    testCase "integer" <| fun _ ->
+        let ele = "23"
+        let actual = ele |> Decode.read |> Decode.int
+        let expected = 23
+        Expect.equal actual expected ""
+    testCase "float" <| fun  _ ->
+        let ele = "123.45678"
+        let actual = ele |> Decode.read |> Decode.float
+        let expected = 123.45678
+        Expect.floatClose Accuracy.medium actual expected ""
+    testCase "char" <| fun _ ->
+        let ele = "c"
+        let actual = ele |> Decode.read |> Decode.char
+        let expected = 'c'
+        Expect.equal actual expected ""
+    testCase "bool" <| fun _ ->
+        let ele = "true"
+        let actual = ele |> Decode.read |> Decode.bool
+        let expected = true
+        Expect.equal actual expected ""
+    testCase "map" <| fun _ ->
+        let ele = """my key 1: 1
+my key 2: 2
+my key 3: 3"""
+        let actual = ele |> Decode.read |> Decode.map (id) (Decode.int)
+        let expected = Map ["my key 1", 1; "my key 2", 2; "my key 3", 3]
+        Expect.equal actual expected ""
+    testCase "dict" <| fun _ ->
+        let ele = """my key 1: 1
+my key 2: 2
+my key 3: 3"""
+        let actual = ele |> Decode.read |> Decode.dict (id) (Decode.int)
+        let expected = Map ["my key 1", 1; "my key 2", 2; "my key 3", 3] |> System.Collections.Generic.Dictionary
+        Expect.dictEqual actual expected ""
+    ptestCase "datetime" <| fun _ ->
+        let ele = """2018-10-01T11:12:55.00Z"""
+        let actual = ele |> Decode.read |> Decode.datetime
+        let expected = System.DateTime(2018, 10, 1, 13, 12, 55)
+        Expect.equal actual expected ""
+    ptestCase "datetimeOffset" <| fun _ ->
+        let ele = """2008-01-05 6:00:00"""
+        let actual = ele |> Decode.read |> Decode.datetimeOffset
+        let expected = System.DateTimeOffset(2008, 1, 5, 6, 0, 0, System.TimeSpan(1,0,0))
+        Expect.equal actual expected ""
+    testCase "some option" <| fun _ ->
+        let ele = """42"""
+        let actual = ele |> Decode.read |> Decode.option Decode.int
+        let expected = Some 42
+        Expect.equal actual expected ""
+    testCase "none option" <| fun _ ->
+        let ele = """null"""
+        let actual = ele |> Decode.read |> Decode.option Decode.int
+        let expected = None
+        Expect.equal actual expected ""
+    testCase "tuple 2" <| fun _ ->
+        let ele = "[1, Hello World]"
+        let actual = ele |> Decode.read |> Decode.tuple2 Decode.int Decode.string
+        let expected = (1, "Hello World")
+        Expect.equal actual expected ""
+    testCase "tuple 8" <| fun _ ->
+        let ele = "[1, Hello World, 3, Bye Bye, 5, true, false, 8]"
+        let actual = 
+            ele 
+            |> Decode.read 
+            |> Decode.tuple8 
+                Decode.int 
+                Decode.string 
+                Decode.int 
+                Decode.string 
+                Decode.int 
+                Decode.bool 
+                Decode.bool 
+                Decode.int
+        let expected = (1, "Hello World", 3, "Bye Bye", 5, true, false, 8)
+        Expect.equal actual expected ""
+    testCase "list" <| fun _ ->
+        let ele = """- 1
+- 2
+- 3"""
+        let actual = ele |> Decode.read |> Decode.list Decode.int
+        let expected = [1; 2; 3]
+        Expect.equal actual expected ""
+    testCase "array" <| fun _ ->
+        let ele = """- 1
+- 2
+- 3"""
+        let actual = ele |> Decode.read |> Decode.array Decode.int
+        let expected = [|1; 2; 3|]
+        Expect.equal actual expected ""
+    testCase "seq" <| fun _ ->
+        let ele = """- 1
+- 2
+- 3"""
+        let actual = ele |> Decode.read |> Decode.seq Decode.int
+        let expected = seq {1; 2; 3}
+        Expect.seqEqual actual expected ""
+    testCase "resizearray" <| fun _ ->
+        let ele = """- 1
+- 2
+- 3"""
+        let actual = ele |> Decode.read |> Decode.resizearray Decode.int
+        let expected = ResizeArray([1; 2; 3])
+        Expect.seqEqual actual expected ""
+    testCase "object required" <| fun _ ->
+        let ele = """myValue1: [1,2,3,4]
+Hello World: 42
+ByeBye World: oh no"""
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            {|
+                Field1 = get.Required.Field "myValue1" (Decode.list Decode.int)
+                Field2 = get.Required.Field "Hello World" Decode.int
+                Field3 = get.Required.Field "ByeBye World" Decode.string
+            |}
+        )
+        let expected = {|
+            Field1 = [1;2;3;4]
+            Field2 = 42
+            Field3 = "oh no"
+        |}
+        Expect.equal actual expected ""
+    testCase "object optional" <| fun _ ->
+        let ele = """myValue1: [1,2,3,4]
+Hello World: 42"""
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            {|
+                Field1 = get.Optional.Field "myValue1" (Decode.list Decode.int)
+                Field2 = get.Optional.Field "Hello World" Decode.int
+                Field3 = get.Optional.Field "ByeBye World" Decode.string
+            |}
+        )
+        let expected: {|Field1: int list option; Field2: int option; Field3: string option|} = {|
+            Field1 = Some [1;2;3;4]
+            Field2 = Some 42
+            Field3 = None
+        |}
+        Expect.equal actual.Field1 expected.Field1 "field1"
+        Expect.equal actual.Field2 expected.Field2 "field2"
+        Expect.equal actual.Field3 expected.Field3 "field3"
+    testCase "values string" <| fun _ ->
+        let ele = """MyKey: 
+    test1
+    test2
+    test3"""
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            get.Required.Field "MyKey" (Decode.values Decode.string)
+        )
+        let expected = ["test1"; "test2"; "test3"]
+        Expect.equal actual expected ""
+    testCase "values bool" <| fun _ ->
+        let ele = """MyKey: 
+    true
+    true
+    false"""
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            get.Required.Field "MyKey" (Decode.values Decode.bool)
+        )
+        let expected = [true; true; false]
+        Expect.equal actual expected ""
+]
 
 let tests_validationPackages = testList "ValidationPackages" [
     testCase "encode" <| fun _ ->
@@ -67,30 +227,26 @@ validation_packages:
   -
     name: package3"
         Expect.trimEqual actual expected ""
-    //testCase "decode" <| fun _ ->
-    //    let packageEncoder = Decode.object (fun get ->
-    //        {
-    //            Name = get.Required.Field "name" Decode.string
-    //            Version = get.Optional.Field "version" Decode.string
-    //        }
-    //    )
-    //    let arcValidationDecoder =
-    //        Decode.object (fun get ->
-    //            {
-    //                ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
-    //                Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
-    //            }
-    //        )
-    //    let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
-    //    let expected = Examples.ValidationPackageTypes.type_
-    //    Expect.equal actual expected ""
-    ftestCase "decode integer" <| fun _ ->
-        let ele = "23"
-        let actual = ele |> Decode.read |> Decode.int
-        let expected = 23
-        Expect.equal actual expected ""
+    testCase "decode" <| fun _ ->
+        let packageEncoder = Decode.object (fun get ->
+            {
+                Name = get.Required.Field "name" Decode.string
+                Version = get.Optional.Field "version" Decode.string
+            }
+        )
+        let arcValidationDecoder =
+            Decode.object (fun get ->
+                {
+                    ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
+                    Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
+                }
+            )
+        let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
+        let expected = Examples.ValidationPackageTypes.type_
+        Expect.equal actual expected ""       
 ]
 
 let Main = testList "EncoderDecoder" [
+    tests_decode
     tests_validationPackages
 ]
