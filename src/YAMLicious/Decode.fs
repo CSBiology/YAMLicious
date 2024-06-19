@@ -36,23 +36,23 @@ module Helper =
     let inline raiseInvalidArg (name: string) (message: string) wrongV = 
         invalidArg name (sprintf "%s: %A" message wrongV)
 
-    let isInt (value: string) =
-        #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-        JsInterop.isInt value
-        #else
-        match System.Int32.TryParse value with
-        | true, _ -> true
-        | false, _ -> false
-        #endif
+    //let isInt (value: string) =
+    //    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+    //    JsInterop.isInt value
+    //    #else
+    //    match System.Int32.TryParse value with
+    //    | true, _ -> true
+    //    | false, _ -> false
+    //    #endif
 
-    let isFloat (value: string) =
-        #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-        JsInterop.isInt value
-        #else
-        match System.Double.TryParse value with
-        | true, _ -> true
-        | false, _ -> false
-        #endif
+    //let isFloat (value: string) =
+    //    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+    //    JsInterop.isInt value
+    //    #else
+    //    match System.Double.TryParse value with
+    //    | true, _ -> true
+    //    | false, _ -> false
+    //    #endif
 
     let isString (value: string) =
         #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
@@ -71,17 +71,22 @@ open Helper
 let int (value: YAMLElement) : int =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match isInt v.Value with
-        | true -> int v.Value
-        | false -> raiseInvalidArg "value" "Expected an int" v.Value
+        match System.Int32.TryParse v.Value with
+        | true, v -> v
+        | false, _ -> raiseInvalidArg "value" "Expected an int" v.Value
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let float (value: YAMLElement) : float =
+    let Culture = System.Globalization.CultureInfo.InvariantCulture
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match isFloat v.Value with
-        | true -> float v.Value
-        | false -> raiseInvalidArg "value" "Expected an int" v.Value
+        #if FABLE_COMPILER
+        match System.Double.TryParse(v.Value) with // numberstyle and culture return not implemented warning
+        #else
+        match System.Double.TryParse(v.Value, System.Globalization.NumberStyles.Float, Culture) with
+        #endif
+        | true, v -> float v
+        | false, _ -> raiseInvalidArg "value" "Expected an int" v.Value
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let char (value: YAMLElement) : char =
