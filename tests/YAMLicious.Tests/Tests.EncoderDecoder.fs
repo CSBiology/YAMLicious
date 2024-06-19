@@ -12,6 +12,11 @@ module ValidationPackageTypes =
         Packages: Package list
     }   
     
+    type ArcValidationExtensionData = {
+        ArcSpecificationVersion: string
+        Packages: Package list
+        ExtensionData: System.Collections.Generic.Dictionary<string, YAMLicious.YAMLiciousTypes.YAMLElement>
+    }
 
 open ValidationPackageTypes
 
@@ -26,6 +31,17 @@ validation_packages:
   - name: package2
     version: 2.0.0
   - name: package3"
+        let stringOverflow = "arc_specification: 2.0.0-draft
+validation_packages:
+  - name: package1
+    version: 1.0.0
+  - name: package2
+    version: 2.0.0
+  - name: package3
+author: TestAuthor
+author_emails:
+  - test1@email.com
+  - test2@email.com"
 
         let type_ = {
             ArcSpecificationVersion = "2.0.0-draft"
@@ -34,6 +50,18 @@ validation_packages:
                 { Name = "package2"; Version = Some "2.0.0" }
                 { Name = "package3"; Version = None }
             ]
+        }
+        let typeOverflow_ = {
+            ArcSpecificationVersion = "2.0.0-draft"
+            Packages = [
+                { Name = "package1"; Version = Some "1.0.0" }
+                { Name = "package2"; Version = Some "2.0.0" }
+                { Name = "package3"; Version = None }
+            ]
+            ExtensionData = 
+                let dict = System.Collections.Generic.Dictionary<string, YAMLicious.YAMLiciousTypes.YAMLElement>()
+                dict.Add("author", YAMLicious.YAMLiciousTypes.YAMLElement.Value (YAMLicious.YAMLiciousTypes.YAMLContent.create("TestAuthor")))
+                dict
         }
 
 open Fable.Pyxpecto
