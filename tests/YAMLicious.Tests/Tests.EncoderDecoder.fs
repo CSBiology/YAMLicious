@@ -60,7 +60,29 @@ author_emails:
             ]
             ExtensionData = 
                 let dict = System.Collections.Generic.Dictionary<string, YAMLicious.YAMLiciousTypes.YAMLElement>()
-                dict.Add("author", YAMLicious.YAMLiciousTypes.YAMLElement.Value (YAMLicious.YAMLiciousTypes.YAMLContent.create("TestAuthor")))
+                dict.Add("author", 
+                    YAMLicious.YAMLiciousTypes.YAMLElement.Object [
+                        YAMLicious.YAMLiciousTypes.YAMLElement.Value (
+                            YAMLicious.YAMLiciousTypes.YAMLContent.create("TestAuthor")
+                        )
+                    ]
+                )
+                dict.Add("author_emails", 
+                    YAMLicious.YAMLiciousTypes.YAMLElement.Object [
+                        YAMLicious.YAMLiciousTypes.YAMLElement.Sequence [
+                            YAMLicious.YAMLiciousTypes.YAMLElement.Object [
+                                YAMLicious.YAMLiciousTypes.YAMLElement.Value (
+                                    YAMLicious.YAMLiciousTypes.YAMLContent.create("test1@email.com")
+                                )
+                            ]
+                            YAMLicious.YAMLiciousTypes.YAMLElement.Object [
+                                YAMLicious.YAMLiciousTypes.YAMLElement.Value (
+                                    YAMLicious.YAMLiciousTypes.YAMLContent.create("test2@email.com")
+                                )
+                            ]
+                        ]
+                    ]
+                )
                 dict
         }
 
@@ -272,6 +294,27 @@ validation_packages:
         let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
         let expected = Examples.ValidationPackageTypes.type_
         Expect.equal actual expected ""       
+    testCase "overflow" <| fun _ ->
+        let packageEncoder = Decode.object (fun get ->
+            {
+                Name = get.Required.Field "name" Decode.string
+                Version = get.Optional.Field "version" Decode.string
+            }
+        )
+        let arcValidationDecoder =
+            Decode.object (fun get ->
+                {
+                    ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
+                    Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
+                    ExtensionData = get.Overflow.FieldList ["author";"author_emails"]
+                }
+            )
+        let actual = Examples.ValidationPackageTypes.stringOverflow |> Decode.read |> arcValidationDecoder
+        let expected = Examples.ValidationPackageTypes.typeOverflow_
+        Expect.equal actual.ArcSpecificationVersion expected.ArcSpecificationVersion ""
+        Expect.equal actual.Packages expected.Packages ""
+        Expect.equal (actual.ExtensionData.Item "author") (expected.ExtensionData.Item "author") ""   
+        Expect.equal (actual.ExtensionData.Item "author_emails") (expected.ExtensionData.Item "author_emails") ""   
 ]
 
 let Main = testList "EncoderDecoder" [
