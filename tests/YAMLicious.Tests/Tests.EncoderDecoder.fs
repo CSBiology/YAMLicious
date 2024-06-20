@@ -294,7 +294,7 @@ validation_packages:
         let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
         let expected = Examples.ValidationPackageTypes.type_
         Expect.equal actual expected ""       
-    testCase "overflow" <| fun _ ->
+    testCase "decode overflow" <| fun _ ->
         let packageEncoder = Decode.object (fun get ->
             {
                 Name = get.Required.Field "name" Decode.string
@@ -313,8 +313,48 @@ validation_packages:
         let expected = Examples.ValidationPackageTypes.typeOverflow_
         Expect.equal actual.ArcSpecificationVersion expected.ArcSpecificationVersion ""
         Expect.equal actual.Packages expected.Packages ""
-        Expect.equal (actual.ExtensionData.Item "author") (expected.ExtensionData.Item "author") ""   
-        Expect.equal (actual.ExtensionData.Item "author_emails") (expected.ExtensionData.Item "author_emails") ""   
+        Expect.dictEqual actual.ExtensionData expected.ExtensionData ""
+    testCase "encode overflow" <| fun _ ->
+        
+        let packageEncoder (pack: Package) = 
+            [
+                "name", Encode.string pack.Name
+                Encode.tryInclude "version" Encode.string pack.Version 
+            ]
+            |> Encode.choose
+            |> Encode.object
+        let arcValidationEncoder (arc: ArcValidationExtensionData) = 
+            let extensionData =
+                arc.ExtensionData.Keys
+                |>Seq.map (fun key ->
+                        key, arc.ExtensionData.[key]
+                )
+                |>List.ofSeq
+            let typedData =
+                [
+                    "arc_specification", Encode.string arc.ArcSpecificationVersion
+                    "validation_packages", Encode.list packageEncoder arc.Packages
+                ]
+            Encode.object (typedData@extensionData)
+        let actual = Encode.write 2 (arcValidationEncoder Examples.ValidationPackageTypes.typeOverflow_)
+        let expected = "arc_specification: 2.0.0-draft
+validation_packages:
+  -
+    name: package1
+    version: 1.0.0
+  -
+    name: package2
+    version: 2.0.0
+  -
+    name: package3
+author:
+  TestAuthor
+author_emails:
+  -
+    test1@email.com
+  -
+    test2@email.com"
+        Expect.trimEqual actual expected ""
 ]
 
 let Main = testList "EncoderDecoder" [
