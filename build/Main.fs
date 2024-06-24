@@ -94,8 +94,11 @@ let main argv =
         | "pypi" :: _ -> 
             Publish.PyPi.Main()
         | "nuget" :: _ -> 
+            Test.FSharp.handle []
+            // bundle
+            Bundle.Net.Main(System.IO.Path.Combine(ProjectInfo.Projects.MainDir,ProjectInfo.Projects.Main), ProjectInfo.Packages.FSHARP)
             Publish.Nuget.Main(ProjectInfo.Packages.FSHARP)
-            Publish.Nuget.Main(ProjectInfo.Packages.CSHARP)
+            //Publish.Nuget.Main(ProjectInfo.Packages.CSHARP)
         | _ -> printHelp ()
     | "codegen" :: _ ->
         printfn "STARTING CODEGEN..."
