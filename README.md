@@ -1,4 +1,8 @@
-# YAMLicious
+# YAMLicious 
+
+![NuGet Version](https://img.shields.io/nuget/v/YAMLicious?style=for-the-badge) ![NuGet Downloads](https://img.shields.io/nuget/dt/YAMLicious?style=for-the-badge)
+
+
 
 YAMLicious is a small YAML reader/writer inspired by [Thoth.Json](https://github.com/thoth-org/Thoth.Json) syntax!
 
