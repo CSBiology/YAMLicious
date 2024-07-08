@@ -96,7 +96,7 @@ let main argv =
         | "nuget" :: _ -> 
             Test.FSharp.handle []
             // bundle
-            Bundle.Net.Main(System.IO.Path.Combine(ProjectInfo.Projects.MainDir,ProjectInfo.Projects.Main), ProjectInfo.Packages.FSHARP)
+            Bundle.Net.Main(ProjectInfo.Projects.Main, ProjectInfo.Packages.FSHARP)
             Publish.Nuget.Main(ProjectInfo.Packages.FSHARP)
             //Publish.Nuget.Main(ProjectInfo.Packages.CSHARP)
         | _ -> printHelp ()

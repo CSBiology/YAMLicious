@@ -7,7 +7,7 @@ open Utils.Path.Operators
 
 let root = Path.Resolve()
 
-let Owner = "{Owner}"
+let Owner = "CSBiology"
 
 [<Literal>]
 let ProjectName = "YAMLicious"
@@ -21,7 +21,7 @@ let ProjectNamePython = "YAMLicious"
 let ProjectNameJavaScript = "YAMLicious"
 
 [<Literal>]
-let Version = "0.0.1-alpha"
+let Version = "0.0.1"
 
 [<Literal>]
 let PyprojectTOML = "pyproject.toml"
@@ -65,10 +65,10 @@ module Packages =
 
 module Projects =
 
-    let MainDir = $"src\{ProjectName}"
+    let MainDir = $"src" </> ProjectName
 
-    let Main = $"{ProjectName}.fsproj"
-    let Tests = $"{ProjectName}.Tests.fsproj"
+    let Main = MainDir </> $"{ProjectName}.fsproj"
+    let Tests = TestPaths.CoreDirectory </>  $"{ProjectName}.Tests.fsproj"
 
 
 let getEnvVar key = System.Environment.GetEnvironmentVariable(key, System.EnvironmentVariableTarget.User)

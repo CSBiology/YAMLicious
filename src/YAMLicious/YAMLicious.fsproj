@@ -9,10 +9,12 @@
     <PackageProjectUrl>https://github.com/CSBiology/YAMLicious</PackageProjectUrl>
     <RepositoryUrl>https://github.com/CSBiology/YAMLicious</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="*.fsproj; **\*.fs; **\*.fsi" PackagePath="fable\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\"/>
   </ItemGroup>
 
   <ItemGroup>

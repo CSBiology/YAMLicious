@@ -12,7 +12,7 @@ let handle (args: string list) =
         CmdLine.empty
         |> CmdLine.appendIf isWatch "watch"
         |> CmdLine.appendRaw "run"
-        |> CmdLine.appendPrefix "--project" (ProjectInfo.TestPaths.CoreDirectory </> ProjectInfo.Projects.Tests)
+        |> CmdLine.appendPrefix "--project" (ProjectInfo.Projects.Tests)
         |> CmdLine.appendRaw "--silent"
         |> CmdLine.toString
 
