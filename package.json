@@ -2,7 +2,7 @@
   "name": "YAMLicious",
   "description": "placeholer",
   "keywords": [],
-  "version": "0.1.0",
+  "version": "0.0.3",
   "main": "dist/js/index.js",
   "types": "dist/js/index.d.ts",
   "type": "module",

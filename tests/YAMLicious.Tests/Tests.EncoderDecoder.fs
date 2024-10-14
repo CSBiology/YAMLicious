@@ -294,6 +294,26 @@ validation_packages:
         let actual = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
         let expected = Examples.ValidationPackageTypes.type_
         Expect.equal actual expected ""       
+    testCase "decode multiple into dict" <| fun _ ->
+        let packageEncoder = Decode.object (fun get ->
+            {
+                Name = get.Required.Field "name" Decode.string
+                Version = get.Optional.Field "version" Decode.string
+            }
+        )
+        let arcValidationDecoder =
+            Decode.object (fun get ->
+                {
+                    ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
+                    Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
+                    ExtensionData = get.MultipleOptional.FieldList ["author";"author_emails"]
+                }
+            )
+        let actual = Examples.ValidationPackageTypes.stringOverflow |> Decode.read |> arcValidationDecoder
+        let expected = Examples.ValidationPackageTypes.typeOverflow_
+        Expect.equal actual.ArcSpecificationVersion expected.ArcSpecificationVersion ""
+        Expect.equal actual.Packages expected.Packages ""
+        Expect.dictEqual actual.ExtensionData expected.ExtensionData ""
     testCase "decode overflow" <| fun _ ->
         let packageEncoder = Decode.object (fun get ->
             {
@@ -306,7 +326,7 @@ validation_packages:
                 {
                     ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
                     Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
-                    ExtensionData = get.Overflow.FieldList ["author";"author_emails"]
+                    ExtensionData = get.Overflow.FieldList ["arc_specification";"validation_packages"]
                 }
             )
         let actual = Examples.ValidationPackageTypes.stringOverflow |> Decode.read |> arcValidationDecoder

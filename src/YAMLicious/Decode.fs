@@ -286,6 +286,9 @@ module ObjectHelper =
         //abstract At: List<string> -> Decoder<'a> -> 'a option
         //abstract Raw: Decoder<'a> -> 'a option
 
+    type IMultipleOptionalGetter =
+        abstract FieldList: string list -> Dictionary<string, YAMLElement>
+
     type IOverflowGetter =
         abstract FieldList: string list -> Dictionary<string, YAMLElement>
 
@@ -293,9 +296,10 @@ module ObjectHelper =
 open ObjectHelper
 
 type IGetters =
-    abstract Required: IRequiredGetter
-    abstract Optional: IOptionalGetter
-    abstract Overflow: IOverflowGetter
+    abstract Required:         IRequiredGetter
+    abstract Optional:         IOptionalGetter
+    abstract MultipleOptional: IMultipleOptionalGetter
+    abstract Overflow:         IOverflowGetter
 
 type Getter(ele: YAMLElement) =
     let required = 
@@ -341,8 +345,8 @@ type Getter(ele: YAMLElement) =
                     )
                 | anyElse -> Helper.raiseInvalidArg "value" "Expected an object" anyElse
         }
-    let overflow =
-        { new IOverflowGetter with 
+    let multipleOptional =
+        { new IMultipleOptionalGetter with 
             member this.FieldList (fieldNames: string list) = 
                 match ele with
                 | YAMLElement.Object v ->
@@ -361,9 +365,30 @@ type Getter(ele: YAMLElement) =
                     dict
                 | anyElse -> Helper.raiseInvalidArg "value" "Expected an object" anyElse
         }
+    let overflow =
+        { new IOverflowGetter with 
+            member this.FieldList (fieldNames: string list) = 
+                match ele with
+                | YAMLElement.Object v ->
+                    let overflow =
+                        v 
+                        |> List.filter (function 
+                            | YAMLElement.Mapping (k, _) -> fieldNames |> List.exists (fun x -> x = k.Value) |> not
+                            | _ -> false
+                        )
+                        |> List.map (function 
+                            | YAMLElement.Mapping (k, v) -> (k.Value, v)
+                            | _ -> Helper.raiseInvalidArg "value" "Expected a mapping" ele
+                        )
+                    let dict = new Dictionary<string, YAMLElement>()
+                    overflow |> List.iter (fun (k, v) -> dict.Add(k, v))
+                    dict
+                | anyElse -> Helper.raiseInvalidArg "value" "Expected an object" anyElse
+        }
     interface IGetters with
         member __.Required = required
         member __.Optional = optional
+        member __.MultipleOptional     = multipleOptional
         member __.Overflow = overflow
 
 let object (getter: IGetters -> 'a) (value: YAMLElement) : 'a =
