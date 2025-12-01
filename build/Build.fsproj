@@ -26,7 +26,6 @@
 
   <ItemGroup>
     <PackageReference Include="BlackFox.CommandLine" Version="1.0.0" />
-    <PackageReference Include="Fable.Core" Version="4.5.0" />
     <PackageReference Include="SimpleExec" Version="12.0.0" />
   </ItemGroup>
 
