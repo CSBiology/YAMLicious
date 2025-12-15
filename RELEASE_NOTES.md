@@ -1,3 +1,7 @@
+### 0.0.4 (Released 2025-12-15)
+* Fix handling of multiline block literals with embedded comments/strings to prevent crashes
+* Add tests for block scalar parsing and placeholder restoration
+
 ### 0.0.3 (Released 2024-10-14)
     * Add decoder for multiple optional fields with dictionaries
 
