@@ -186,13 +186,24 @@ my key 3: 3"""
         let actual = ele |> Decode.read |> Decode.seq Decode.int
         let expected = seq {1; 2; 3}
         Expect.seqEqual actual expected ""
-    testCase "resizearray" <| fun _ ->
+    ftestCase "resizearray" <| fun _ ->
         let ele = """- 1
 - 2
 - 3"""
         let actual = ele |> Decode.read |> Decode.resizearray Decode.int
         let expected = ResizeArray([1; 2; 3])
-        Expect.seqEqual actual expected ""
+
+        printfn "Test Seq.item"
+
+        let firstItem = Seq.item 0 expected
+        printfn "Starting expect!"
+        Expect.equal 1 firstItem "Testing first item!"
+        printfn "Finished expect!"
+
+        printfn $"firstItem: {firstItem}"
+        let actualSeq = actual.ToArray()
+        let expectedSeq = expected.ToArray()
+        Expect.seqEqual actual expected "Seq should be equal"
     testCase "object required" <| fun _ ->
         let ele = """myValue1: [1,2,3,4]
 Hello World: 42
