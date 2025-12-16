@@ -120,6 +120,7 @@ This needs to be done on a fresh download once. Paths for python venv executable
 
 1. `dotnet tool restore`, Restore .NET tools (fable)
 2. `npm i`, install js dependencies
+4. `uv python install`, install python itself if needed
 3. `uv pip install`, install python dependencies
 
 ### Testing
