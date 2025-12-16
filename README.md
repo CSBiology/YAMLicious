@@ -109,7 +109,7 @@ Because this library targets multiple programming languages we need to support a
     - verify with `node --version` (Tested with v20.10.0)
     - verify with `npm --version` (Tested with v9.2.0)
 - [.NET SDK](https://dotnet.microsoft.com/en-us/download)
-    - verify with `dotnet --version` (Tested with 8.0.205)
+    - verify with `dotnet --version` (Tested with 10.0.100)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
     - verify with `uv --version` (Tested with 0.9.13)
 
