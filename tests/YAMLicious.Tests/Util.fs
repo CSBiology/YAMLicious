@@ -29,19 +29,13 @@ module Expect =
             Expect.equal v1 v2 message
     
     let seqEqual (actual: #seq<'a>) (expected: #seq<'a>) message =
-        printfn "0"
+
         let l1 = Seq.length actual
-        printfn "1"
+
         Expect.equal l1 (Seq.length expected) message
-        printfn "2"
 
-        printfn $"first item: {Seq.item 0 expected}"
-
-        printfn "3"
         for i in 0 .. l1-1 do
-            printfn "4"
             let v1 = Seq.item i actual
-            printfn "5"
             let v2 = Seq.item i expected
-            printfn "6"
+
             Expect.equal v1 v2 $"Item at index {i} is not equal."
