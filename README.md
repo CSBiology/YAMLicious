@@ -2,9 +2,10 @@
 
 ![NuGet Version](https://img.shields.io/nuget/v/YAMLicious?style=for-the-badge) ![NuGet Downloads](https://img.shields.io/nuget/dt/YAMLicious?style=for-the-badge)
 
-
-
 YAMLicious is a small YAML reader/writer inspired by [Thoth.Json](https://github.com/thoth-org/Thoth.Json) syntax!
+
+> [!IMPORTANT]
+> If you want to use YAMLicious in Python, please install [`fable-library`](https://pypi.org/project/fable-library/#history) via python dependency manager of your choice. YAMLicious depends on fable-library for core functionality.
 
 ## Code examples
 
