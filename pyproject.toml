@@ -1,20 +1,10 @@
-[tool.poetry]
-name = "YAMLicious"
-version = "0.0.3"
-description = ""
-authors = []
-maintainers = []
+[project]
+name = "yamlicious"
+version = "0.1.0"
+description = "Add your description here"
 readme = "README.md"
-repository = "https://github.com/{Owner}/YAMLicious"
-keywords = []
-
-[tool.poetry.dependencies]
-python = "^3.14"
-fable-library = {version = ">=5.0.0a21", allow-prereleases = true}
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.1.1"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires-python = ">=3.14"
+dependencies = [
+    "fable-library>=5.0.0a21",
+    "pytest>=9.0.2",
+]

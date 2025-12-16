@@ -37,6 +37,5 @@ let Main(pyDir: string) =
     let publishDir = pyDir </> projectName
     clean(pyDir)
     Command.Run("dotnet", transpileFSharp publishDir)
-    Index.PY.generate publishDir "__init__.py"
     copyMetadata pyDir
     Command.Run("python", peotryBundle, workingDirectory=pyDir)

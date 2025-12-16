@@ -186,7 +186,7 @@ my key 3: 3"""
         let actual = ele |> Decode.read |> Decode.seq Decode.int
         let expected = seq {1; 2; 3}
         Expect.seqEqual actual expected ""
-    ftestCase "resizearray" <| fun _ ->
+    testCase "resizearray" <| fun _ ->
         let ele = """- 1
 - 2
 - 3"""

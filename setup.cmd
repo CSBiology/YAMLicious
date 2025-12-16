@@ -1,5 +1,5 @@
 @echo off
-TITLE Siren Setup
+TITLE YAMLicious Setup
 
 ECHO Restore .NET tools
 CALL dotnet tool restore
