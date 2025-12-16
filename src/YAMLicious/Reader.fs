@@ -45,6 +45,33 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
 let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
 
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) =
+    // restore string and comment placeholders inside block scalar content
+    let restoreInlinePlaceholders (line: string) =
+        let withStrings =
+            Regex.Replace(
+                line,
+                StringReplacementPattern,
+                (fun (m: Match) ->
+                    let idx = m.Groups.["index"].Value |> int
+                    stringDict.[idx]
+                )
+            )
+        Regex.Replace(
+            withStrings,
+            CommentPattern,
+            (fun (m: Match) ->
+                let idx = m.Groups.["comment"].Value |> int
+                "#" + commentDict.[idx]
+            )
+        )
+
+    let rec flattenBlockScalar (eles: PreprocessorElement list) : string list =
+        eles
+        |> List.collect (function
+            | Line s -> [restoreInlinePlaceholders s]
+            | Intendation children -> flattenBlockScalar children
+            | _ -> [])
+
     let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
         | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
@@ -250,6 +277,18 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 YAMLElement.Mapping (
                     YAMLContent.create(v.Key, ?comment=c),
                     YAMLElement.Object [seq]
+                )
+            loopRead rest (current::acc)
+        // doc: |\n  <block>
+        | KeyValue v::Intendation block::rest when v.Value = "|" || v.Value = ">" ->
+            //printfn "[tokenize] Case4.9 Block scalar"
+            let lines = flattenBlockScalar block
+            // '|' keeps new lines, '>' folds them. Here we keep simple behavior: preserve new lines for both.
+            let blockValue = System.String.Join((string NewLineChar), lines)
+            let current =
+                YAMLElement.Mapping (
+                    YAMLContent.create(v.Key),
+                    YAMLElement.Value (YAMLContent.create(blockValue))
                 )
             loopRead rest (current::acc)
         // My Key: [My Value, Test2]
