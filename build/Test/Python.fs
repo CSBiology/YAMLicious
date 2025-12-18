@@ -7,42 +7,7 @@ open Utils.Path.Operators
 let private outDir = ProjectInfo.TestPaths.CoreDirectory </> "py"
 let private entryPoint = outDir </> "main.py"
 
-let python = "python"
-
-let handleNative (args: string list) =
-    let isFast = args |> List.contains "--fast"
-
-    let pytestCommand =
-        CmdLine.empty
-        |> CmdLine.appendRaw "-m pytest"
-        |> CmdLine.appendRaw ProjectInfo.TestPaths.PyNativeDirectory
-        |> CmdLine.toString
-
-    if isFast then
-        Command.Run(
-          python,
-          pytestCommand
-        )
-    else
-        let dirPath = ProjectInfo.TestPaths.PyNativeDirectory </> ProjectInfo.ProjectName
-        let fableTranspile =
-            CmdLine.empty
-            |> CmdLine.appendRaw "fable"
-            |> CmdLine.appendRaw (ProjectInfo.Projects.MainDir </> ProjectInfo.Projects.Main)
-            |> CmdLine.appendPrefix "--outDir" dirPath
-            |> CmdLine.appendPrefix "--lang" "python"
-            |> CmdLine.appendRaw "--noCache"
-            |> CmdLine.toString
-        Command.Run(
-            "dotnet",
-            fableTranspile
-        )
-        Index.PY.generate dirPath "index.py"
-        Command.Run(
-          python,
-          pytestCommand
-        )
-
+let python = "uv run python"
 
 let handle (args: string list) =
     let isWatch = args |> List.contains "--watch"

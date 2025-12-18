@@ -35,5 +35,4 @@ let private transpileTypeScript(jsPath) =
 let Main(jsDir: string) = 
     clean(jsDir)
     Command.Run("dotnet", transpileFSharp)
-    Index.JS.generate ProjectInfo.Packages.TS true
     Command.Run("npx", transpileTypeScript jsDir)

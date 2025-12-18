@@ -8,29 +8,6 @@ open Utils.Path.Operators
 let private outDir = "js"
 let private entryPoint = outDir </> "main.js"
 
-let handleNative (args: string list) =
-    let isFast = args |> List.contains "--fast"
-
-    let mochaComand =
-        CmdLine.empty
-        |> CmdLine.appendRaw "mocha"
-        // |> CmdLine.appendIf isWatch "--watch"
-        |> CmdLine.appendRaw ProjectInfo.TestPaths.JSNativeDirectory
-        |> CmdLine.toString
-
-    if isFast then
-        Command.Run(
-            "npx",
-            mochaComand
-        )
-    else
-        let dirPath = ProjectInfo.TestPaths.JSNativeDirectory </> ProjectInfo.ProjectName
-        Bundle.TypeScript.Main(dirPath)
-        Command.Run(
-            "npx",
-            mochaComand
-        )
-
 let handle (args: string list) =
     let isWatch = args |> List.contains "--watch"
 

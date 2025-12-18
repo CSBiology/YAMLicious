@@ -14,7 +14,7 @@
 
   <ItemGroup>
     <Content Include="*.fsproj; **\*.fs; **\*.fsi" PackagePath="fable\" />
-    <None Include="..\..\README.md" Pack="true" PackagePath="\"/>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
@@ -33,7 +33,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Fable.Core" Version="4.3.0" />
+    <PackageReference Include="Fable.Core" Version="5.0.0-beta.4" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <PythonDependencies>
+      <Package Name="fable-library" Version="&gt;= 5.0.0a21 &lt; 6.0.0" ResolutionStrategy="Max" />
+    </PythonDependencies>
+  </PropertyGroup>
 
 </Project>

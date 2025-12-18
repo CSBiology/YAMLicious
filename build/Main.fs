@@ -29,11 +29,6 @@ Available commands:
             npm                     Publish the npm package
             pypi                    Publish the pypi package
             nuget                   Publish the nuget package
-
-    index
-        Subcommands:
-            js                      Generate the js index file
-            py                      Generate the py index file
 """
 
     printfn $"%s{helpText}"
@@ -46,10 +41,7 @@ let main argv =
     | "test" :: args ->
         match args with
         | "f#" :: args -> Test.FSharp.handle args
-        | "js" :: "native" :: args -> 
-            Test.JavaScript.handleNative args
         | "js" :: args -> Test.JavaScript.handle args
-        | "py" :: "native" :: args -> Test.Python.handleNative args
         | "py" :: args -> Test.Python.handle args
         | "fable" :: args ->
             Test.FSharp.handle args
@@ -78,8 +70,6 @@ let main argv =
             Test.FSharp.handle []
             Test.JavaScript.handle []
             Test.Python.handle []
-            Test.Python.handleNative args
-            Test.JavaScript.handleNative args
             // bundle
             Bundle.TypeScript.Main(ProjectInfo.Packages.JS)
             Bundle.Python.Main(ProjectInfo.Packages.PY)
@@ -99,16 +89,6 @@ let main argv =
             Bundle.Net.Main(ProjectInfo.Projects.Main, ProjectInfo.Packages.FSHARP)
             Publish.Nuget.Main(ProjectInfo.Packages.FSHARP)
             //Publish.Nuget.Main(ProjectInfo.Packages.CSHARP)
-        | _ -> printHelp ()
-    | "codegen" :: _ ->
-        printfn "STARTING CODEGEN..."
-        printfn "ENDING CODEGEN..."
-    | "index" :: args ->
-        match args with
-        | "js" :: _ -> 
-            Index.JS.generate (ProjectInfo.TestPaths.JSNativeDirectory + ProjectInfo.ProjectName) false
-        | "py" :: _ -> 
-            Index.PY.generate (ProjectInfo.TestPaths.PyNativeDirectory + ProjectInfo.ProjectName) "index.py"
         | _ -> printHelp ()
     | _ -> printHelp ()
 

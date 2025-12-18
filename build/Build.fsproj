@@ -8,10 +8,6 @@
   <ItemGroup>
     <Compile Include="Util.fs" />
     <Compile Include="ProjectInfo.fs" />
-    <Compile Include="IndexFiles\WhiteList.fs" />
-    <Compile Include="IndexFiles\Util.fs" />
-    <Compile Include="IndexFiles\Indexjs.fs" />
-    <Compile Include="IndexFiles\Indexpy.fs" />
     <Compile Include="Bundle\Net.fs" />
     <Compile Include="Bundle\TypeScript.fs" />
     <Compile Include="Bundle\Python.fs" />

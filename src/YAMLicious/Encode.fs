@@ -17,8 +17,11 @@ module Helper =
 
 let int (value: int) = (YAMLContent.create(string value)) |> YAMLElement.Value
 
-let float (value: float) = (YAMLContent.create(value.ToString("O", CultureInfo.InvariantCulture))) |> YAMLElement.Value
-
+#if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString())) |> YAMLElement.Value
+#else 
+let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString("O", CultureInfo.InvariantCulture))) |> YAMLElement.Value
+#endif
 let char (value: char) = YAMLContent.create(string value) |> YAMLElement.Value
 
 let bool (value: bool) = YAMLContent.create(string value) |> YAMLElement.Value
