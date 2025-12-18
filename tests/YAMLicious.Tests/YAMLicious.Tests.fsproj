@@ -16,7 +16,6 @@
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Fable.Core" Version="5.0.0-beta.4" />
     <PackageReference Include="Fable.Pyxpecto" Version="2.0.0" />
   </ItemGroup>
   <ItemGroup>

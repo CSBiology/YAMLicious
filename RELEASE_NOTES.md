@@ -1,3 +1,9 @@
+### 1.0.0-alpha.1 (Released 2025-12-18)
+* Update to fable 5 and update the depending packages
+    * This requires the installation of .NET 10 SDK
+* Add fable-libary as python dependency
+* Fix parsing of float for fable 5 in JavaScript/TypeScript (e.g. CultureInfo)
+
 ### 0.0.4 (Released 2025-12-15)
 * Fix handling of multiline block literals with embedded comments/strings to prevent crashes
 * Add tests for block scalar parsing and placeholder restoration
