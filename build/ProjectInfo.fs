@@ -21,7 +21,7 @@ let ProjectNamePython = "YAMLicious"
 let ProjectNameJavaScript = "YAMLicious"
 
 [<Literal>]
-let Version = "1.0.0-alpha.1"
+let Version = "1.0.0-alpha.2"
 
 [<Literal>]
 let PyprojectTOML = "pyproject.toml"

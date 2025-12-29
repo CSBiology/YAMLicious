@@ -1,3 +1,6 @@
+### 1.0.0-alpha.2 (Released 2025-12-29)
+* Merge 0.0.4 and 1.0.0-alpha.1
+
 ### 1.0.0-alpha.1 (Released 2025-12-18)
 * Update to fable 5 and update the depending packages
     * This requires the installation of .NET 10 SDK
