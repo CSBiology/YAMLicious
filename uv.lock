@@ -1,0 +1,109 @@
+version = 1
+revision = 3
+requires-python = ">=3.14"
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "fable-library"
+version = "5.0.0a21"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/fc/7509b9fa5c2fb47861ffd1bd866969bc8c5b8a576d739d617db6a741dc7f/fable_library-5.0.0a21.tar.gz", hash = "sha256:00574343fcf4da48509e5028b7b7083d12c8714924cd22ad7affbbbf49f7e0c4", size = 201498, upload-time = "2025-12-15T16:57:15.629Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/dd/f1e70daef771d24298cb89b0b61bd6d880dc4e259c4f58eb99eec92205a4/fable_library-5.0.0a21-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:accc2f6316c8930139aa670a0ac23f87b2bcafb87c8b541ad6384b4c028836c1", size = 1663860, upload-time = "2025-12-15T16:56:26.947Z" },
+    { url = "https://files.pythonhosted.org/packages/41/e4/2d318dd6f36c03e40a1d14a61c7583fa96682a515ae56a2d2bff5a27f30a/fable_library-5.0.0a21-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:f3ee5298a93143ce4ade9ecbf81abf46aac620378ae8233a14d832a956aca82e", size = 1590274, upload-time = "2025-12-15T16:56:21.54Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/5c/c2d53d8e864d1113ee48ad50e5260fbc0643d1d3e0ed41306479892d2f07/fable_library-5.0.0a21-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:215b9db35b91a424de668e5654f0293418e2158137b969bf472f5a7d4d67d71f", size = 1678348, upload-time = "2025-12-15T16:55:21.599Z" },
+    { url = "https://files.pythonhosted.org/packages/37/ee/227759372e728c0aaf121a421ead522ba26d3a01141d9f50245d7a674135/fable_library-5.0.0a21-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:7c3e4efa2167363af0d6e4e9466ea239b249bd51646c03eca5c9ed5e49915994", size = 1643919, upload-time = "2025-12-15T16:55:33.635Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/78/3910761940fa34cd8bf13a1fda7ca1509949661b0d06968f1bf53307fb81/fable_library-5.0.0a21-cp314-cp314-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:d92f886c089ce2326e46af7b28b1df9b117b19316ae02c9b5f963971d0f6091b", size = 1865150, upload-time = "2025-12-15T16:55:45.138Z" },
+    { url = "https://files.pythonhosted.org/packages/12/6b/f1753f2d8ee8ce8b81208e4eb0699cb4f4a61984a1bf5b7a46dc89c63cf5/fable_library-5.0.0a21-cp314-cp314-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:836c8006897fa244461a94f04c4767d785a69f1b326399ce1fa479180c452fa3", size = 1786522, upload-time = "2025-12-15T16:55:56.611Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/a3/7d9939c82f216f0b6a2ebfee8a7b4df918c4d2b0fb95608501c1a8e994e5/fable_library-5.0.0a21-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3b951bbe9397546d65bf9b1360c912d083105405ceaa2e885189bdf19ee75f0b", size = 1701704, upload-time = "2025-12-15T16:56:14.862Z" },
+    { url = "https://files.pythonhosted.org/packages/99/77/521ee201047fe4b98b29f944eb691a731943b417790951d95124fc91bf0e/fable_library-5.0.0a21-cp314-cp314-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:e45e95f60c9bca40af58384c0617065bde8e65708e77f7193c87d77e4596d883", size = 1796899, upload-time = "2025-12-15T16:56:06.143Z" },
+    { url = "https://files.pythonhosted.org/packages/52/8d/a77654fcbaedc31449d1ac7d5fed6a510a05958b17c4de7f111add0bb2f8/fable_library-5.0.0a21-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:fe04a27c1423df748c3b25025412b88e181f9fc2bc5237608baf7ad63e7833ba", size = 1859116, upload-time = "2025-12-15T16:56:36.099Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/fa/65b515c333a1d2f788deadda45d96c85879784f6d583b6358a7a8f478bb5/fable_library-5.0.0a21-cp314-cp314-musllinux_1_2_armv7l.whl", hash = "sha256:124b6545eaf5a11a227b6119d4cb9af84b7d0438c5ce08237eca843496577359", size = 1912104, upload-time = "2025-12-15T16:56:48.081Z" },
+    { url = "https://files.pythonhosted.org/packages/46/bc/5e5b81d335e237c0bd5acd222c7735ce96dc018576df3962be2a2b7f034c/fable_library-5.0.0a21-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:011218cbbee08aa48dd2f756e764f3225ea9b3b33a0c1b6ff6c1c7195f05f174", size = 1947890, upload-time = "2025-12-15T16:56:59.494Z" },
+    { url = "https://files.pythonhosted.org/packages/66/6e/c9cb74aa05ab002b7a4ea08cc779806f751e11cc1a051e91725850fb4354/fable_library-5.0.0a21-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:ef6db0292ff1908a28f439f0daf980b32731b83506f35a68ed2a83aa0fc33b34", size = 1960308, upload-time = "2025-12-15T16:57:11.115Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/65/e30cd470316c7e3761d9e71de8b6cefe9b8b92cf176a7e2cc9aae3831554/fable_library-5.0.0a21-cp314-cp314-win32.whl", hash = "sha256:e2ed7dfd4d1a7bcb6725910e98a41603210bd7cb882ac8765c996a1e596b641c", size = 1296054, upload-time = "2025-12-15T16:57:24.756Z" },
+    { url = "https://files.pythonhosted.org/packages/38/22/9a2f671451fc8543071b82f61ca17e587257aead8ac4f09a079904eabd53/fable_library-5.0.0a21-cp314-cp314-win_amd64.whl", hash = "sha256:699a3e52a07c0a1499eee5d263f1378f217eea660f98446e1691c536b600e40c", size = 1430173, upload-time = "2025-12-15T16:57:23.448Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/09/ce3523dec497043b0e9a0441d5c6ff6e63f04bacccb13cd1dab6d77fb75f/fable_library-5.0.0a21-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:63040652d4f85962959aa9a19be84c8252ebbff5346f5da6c467a5205e6938a6", size = 1686402, upload-time = "2025-12-15T16:55:23.381Z" },
+    { url = "https://files.pythonhosted.org/packages/61/a1/0e867a6626660746c626524cd1d9d36bf88877f42472f424b4dabded8e0f/fable_library-5.0.0a21-cp314-cp314t-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:5577775317cb2b65c75fdc78d85bdbf3ffc233bbbb87010bb5e2ccb4c3ed20eb", size = 1663136, upload-time = "2025-12-15T16:55:35.126Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/3f/e8bc08090c0bc880f36511c7f0f22ef2114f2e17fe789df5d9c39eb27b78/fable_library-5.0.0a21-cp314-cp314t-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:26bfd067f4047e08de1a8611aef3db8a3faf60e8c5d3cfbe39c98ab84ce842f4", size = 1878910, upload-time = "2025-12-15T16:55:46.369Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/aa/5122ce7e4d37d6b21ff281701cf2eca9bba5b9c3858c13d11854102355f7/fable_library-5.0.0a21-cp314-cp314t-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:fc9ed260c6d55d4030f51794e4488535cd262bb43e758b6cdd2c6b0247ce5cff", size = 1804657, upload-time = "2025-12-15T16:55:57.912Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/cf/0d19a7f1480eb1f92b348eae0391484529d3ee1aa4d0d437536bcdf3ff9c/fable_library-5.0.0a21-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:7ce7de39cb95cc206fd08329a3201a9901580df702ab74389033f42a6cf7a87b", size = 1866832, upload-time = "2025-12-15T16:56:37.735Z" },
+    { url = "https://files.pythonhosted.org/packages/45/d8/e157856b165bfe92a82f667ca3023c82b99325cbe9ee400eed07f2cb0d69/fable_library-5.0.0a21-cp314-cp314t-musllinux_1_2_armv7l.whl", hash = "sha256:7f3d7471b9968f6d96a861b8e303f6ef2f3d026fc43fc6e3fea405e4621f5c82", size = 1935055, upload-time = "2025-12-15T16:56:49.427Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/41/079e5961ec12cb4b6eb65fb81fd115b94c7b4ef4ff01c558070c76e08982/fable_library-5.0.0a21-cp314-cp314t-musllinux_1_2_i686.whl", hash = "sha256:f926ba42a34c30eb2ab049bea4c7a16c1b37258a7be0b4c9dd7eb9674d19784c", size = 1964439, upload-time = "2025-12-15T16:57:00.791Z" },
+    { url = "https://files.pythonhosted.org/packages/97/a3/e7e892a9ee688e808c4940dd912f108620e3fb791777345df6c63fd06de0/fable_library-5.0.0a21-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:72b34f003778d7952c896aa20eae5bdd575e983d71633c6a44e35753d002c4d2", size = 1976265, upload-time = "2025-12-15T16:57:12.646Z" },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "packaging"
+version = "25.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "pygments"
+version = "2.19.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
+]
+
+[[package]]
+name = "pytest"
+version = "9.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901, upload-time = "2025-12-06T21:30:51.014Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801, upload-time = "2025-12-06T21:30:49.154Z" },
+]
+
+[[package]]
+name = "yamlicious"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "fable-library" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fable-library", specifier = ">=5.0.0a21" },
+    { name = "pytest", specifier = ">=9.0.2" },
+]
