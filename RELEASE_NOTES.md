@@ -1,3 +1,8 @@
+### 1.0.0-alpha.3 (Released 2026-01-26)
+* Add support for nested flow-style YAML syntax (JSON-like with braces and brackets)
+* Implement FlowStyleParser module with recursive parser for deeply nested structures
+* Enhance InlineJSON, JSONKeyOpener, and InlineSequence handlers to support complex nested objects and arrays
+
 ### 1.0.0-alpha.2 (Released 2025-12-29)
 * Merge 0.0.4 and 1.0.0-alpha.1
 
