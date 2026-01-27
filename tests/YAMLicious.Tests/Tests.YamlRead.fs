@@ -490,7 +490,7 @@ Sammy Sosa: {
         Expect.equal actual expected ""
 
     testCase "NestedFlowStyleComplex" <| fun _ ->
-        let yaml = """requirements: {
+        let yamlFlowstyle = """requirements: {
   DockerRequirement: {
     dockerImageId: "devcontainer",
     dockerFile: { $include: "FSharpArcCapsule/Dockerfile" }
@@ -498,37 +498,217 @@ Sammy Sosa: {
   SubworkflowFeatureRequirement: {},
   NetworkAccess: { networkAccess: true }
 }"""
-        // Just verify it parses without errors - detailed structure matching is complex due to nested objects
+        let yaml = """requirements:
+  DockerRequirement:
+    dockerImageId: "devcontainer"
+    dockerFile:
+      $include: "FSharpArcCapsule/Dockerfile"
+  SubworkflowFeatureRequirement: {}
+  NetworkAccess:
+    networkAccess: true
+"""
+        let actualFlowstyle = Reader.read yamlFlowstyle
         let actual = Reader.read yaml
-        match actual with
-        | YAMLElement.Object _ -> ()  // Successfully parsed
-        | _ -> failwith "Expected Object"
-        Expect.isTrue true ""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("requirements"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("DockerRequirement"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("dockerImageId"),
+                                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                );
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("dockerFile"),
+                                    YAMLElement.Object [
+                                        YAMLElement.Object [
+                                            YAMLElement.Mapping(
+                                                YAMLContent.create("$include"),
+                                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                            )
+                                        ]
+                                    ]
+                                )
+                            ]
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("SubworkflowFeatureRequirement"),
+                        YAMLElement.Object [ YAMLElement.Object [] ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("NetworkAccess"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("networkAccess"),
+                                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ]
+                                )
+                            ]
+                        ]
+                    )
+                ]
+            )
+        ]
+        Expect.equal actualFlowstyle expected ""
+        Expect.equal actual expected ""
 
     testCase "NestedFlowStyleCompact" <| fun _ ->
-        let yaml = """requirements: {
+        let yamlFlowstyle = """requirements: {
   DockerRequirement: { dockerImageId: "devcontainer", dockerFile: { $include: "FSharpArcCapsule/Dockerfile" } },
   SubworkflowFeatureRequirement: {},
   NetworkAccess: { networkAccess: true }
 }"""
-        // Just verify it parses without errors
+        let yaml = """requirements:
+  DockerRequirement:
+    dockerImageId: "devcontainer"
+    dockerFile:
+      $include: "FSharpArcCapsule/Dockerfile"
+  SubworkflowFeatureRequirement: {}
+  NetworkAccess:
+    networkAccess: true
+"""
+        let actualFlowstyle = Reader.read yamlFlowstyle
         let actual = Reader.read yaml
-        match actual with
-        | YAMLElement.Object _ -> ()  // Successfully parsed
-        | _ -> failwith "Expected Object"
-        Expect.isTrue true ""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("requirements"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("DockerRequirement"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("dockerImageId"),
+                                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                );
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("dockerFile"),
+                                    YAMLElement.Object [
+                                        YAMLElement.Object [
+                                            YAMLElement.Mapping(
+                                                YAMLContent.create("$include"),
+                                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                            )
+                                        ]
+                                    ]
+                                )
+                            ]
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("SubworkflowFeatureRequirement"),
+                        YAMLElement.Object [ YAMLElement.Object [] ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("NetworkAccess"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("networkAccess"),
+                                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ]
+                                )
+                            ]
+                        ]
+                    )
+                ]
+            )
+        ]
+        Expect.equal actualFlowstyle expected ""
+        Expect.equal actual expected ""
 
     testCase "NestedFlowStyleInlineArrays" <| fun _ ->
-        let yaml = """requirements: {
+        let yamlFlowstyle = """requirements: {
   InitialWorkDirRequirement: { listing: [{entryname:"arc",entry:"$(inputs.arcDirectory)", writable: true},{ entry: "$(inputs.outputDirectory)", writable: true }] },
   EnvVarRequirement: { envDef: [{ envName: "DOTNET_NOLOGO", envValue: "true" },{ envName: "TEST", envValue: "false" }] },
   SubworkflowFeatureRequirement: {}
 }"""
-        // Just verify it parses without errors
+        let yaml = """requirements:
+  InitialWorkDirRequirement:
+    listing:
+      - entryname: "arc"
+        entry: "$(inputs.arcDirectory)"
+        writable: true
+      - entry: "$(inputs.outputDirectory)"
+        writable: true
+  EnvVarRequirement:
+    envDef:
+      - envName: "DOTNET_NOLOGO"
+        envValue: "true"
+      - envName: "TEST"
+        envValue: "false"
+  SubworkflowFeatureRequirement: {}
+"""
+        let actualFlowstyle = Reader.read yamlFlowstyle
         let actual = Reader.read yaml
-        match actual with
-        | YAMLElement.Object _ -> ()  // Successfully parsed
-        | _ -> failwith "Expected Object"
-        Expect.isTrue true ""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("requirements"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("InitialWorkDirRequirement"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("listing"),
+                                    YAMLElement.Object [
+                                        YAMLElement.Sequence [
+                                            YAMLElement.Object [
+                                                YAMLElement.Object [
+                                                    YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc")) ]);
+                                                    YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)")) ]);
+                                                    YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                                ]
+                                            ];
+                                            YAMLElement.Object [
+                                                YAMLElement.Object [
+                                                    YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)")) ]);
+                                                    YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                                ]
+                                            ]
+                                        ]
+                                    ]
+                                )
+                            ]
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("EnvVarRequirement"),
+                        YAMLElement.Object [
+                            YAMLElement.Object [
+                                YAMLElement.Mapping(
+                                    YAMLContent.create("envDef"),
+                                    YAMLElement.Object [
+                                        YAMLElement.Sequence [
+                                            YAMLElement.Object [
+                                                YAMLElement.Object [
+                                                    YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("DOTNET_NOLOGO")) ]);
+                                                    YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                                ]
+                                            ];
+                                            YAMLElement.Object [
+                                                YAMLElement.Object [
+                                                    YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("TEST")) ]);
+                                                    YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("false")) ])
+                                                ]
+                                            ]
+                                        ]
+                                    ]
+                                )
+                            ]
+                        ]
+                    );
+                    YAMLElement.Mapping(
+                        YAMLContent.create("SubworkflowFeatureRequirement"),
+                        YAMLElement.Object [ YAMLElement.Object [] ]
+                    )
+                ]
+            )
+        ]
+        Expect.equal actualFlowstyle expected ""
+        Expect.equal actual expected ""
 ]
 
