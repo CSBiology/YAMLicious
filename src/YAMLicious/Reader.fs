@@ -80,7 +80,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
         | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            //printfn "[tokenize] Case1"
             let objectList = 
                 PreprocessorElement.Line v.Key::yamlAstList
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
@@ -93,7 +92,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             loopRead rest (current::acc)
         | SchemaNamespace v::rest0 -> //create/appendSequenceElement
-            //printfn "[tokenize] Case2"
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
             let current =
@@ -113,7 +111,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         //   My Key2: My Value2
         //   My Key3: My Value3
         | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            //printfn "[tokenize] Case1"
             let objectList = 
                 if v.Value.IsSome then
                     PreprocessorElement.Line v.Value.Value::yamlAstList
@@ -129,7 +126,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             loopRead rest (current::acc)
         | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
-            //printfn "[tokenize] Case2"
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
             let current =
@@ -140,10 +136,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             loopRead rest (current::acc)
         // [test1, test2, test] <c f=1/>
-        // NOTE: This case should rarely fire since FlowToBlock transforms most [...]  patterns.
-        // It remains as a fallback for simple comma-delimited sequences that weren't transformed.
+        // NOTE: This handler processes flow-style arrays within block-style context (e.g., "- [v1, v2, v3]").
+        // FlowToBlock.transformElements only processes top-level flow patterns, not those embedded in Line elements.
+        // This handler splits simple comma-delimited sequences; nested structures are transformed by FlowToBlock.
         | InlineSequence v::rest -> // create sequence
-            //printfn "[tokenize] Case3"
             // ensure inline comment is added on top of the sequence
             let c = restoreCommentReplace commentDict v.Comment
             
@@ -167,7 +163,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         //   v3
         // ] #c2
         | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
-            //printfn "[tokenize] Case3.5"
             let c1 = opener.Comment |> restoreCommentReplace commentDict
             let c2 = closer.Comment |> restoreCommentReplace commentDict
             let current = 
@@ -193,7 +188,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         // These patterns should no longer be reached after FlowToBlock transformation
         // Keeping them for backward compatibility with simple cases
         | InlineJSON v::rest when v.Value.Trim() = "" -> // create empty object
-            //printfn "[tokenize] Case3.1 - empty object"
             let c = restoreCommentReplace commentDict v.Comment
             let current = []
             let nextAcc =
@@ -209,7 +203,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | InlineJSON v::_ when v.Value.Trim() <> "" ->
             failwithf "Untransformed non-empty flow-style object detected: {%s}. This is a bug in FlowToBlock transformation." v.Value
         | Key v::Intendation yamlAstList::rest -> //createObject
-            //printfn "[tokenize] Case4"
             let c = restoreCommentReplace commentDict v.Comment
             let current = 
                 YAMLElement.Mapping (
@@ -218,7 +211,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 )
             loopRead rest (current::acc)
         | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            //printfn "[tokenize] Case4.1"
             let c = restoreCommentReplace commentDict v.Comment
             let objectList = 
                 if w.Value.IsSome then
@@ -240,7 +232,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 )
             loopRead rest (current::acc)
         | Key v::SequenceMinusOpener w::rest0 -> //createObject
-            //printfn "[tokenize] Case4.2"
             let c = restoreCommentReplace commentDict v.Comment
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
@@ -258,7 +249,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead rest (current::acc)
         // doc: |\n  <block>
         | KeyValue v::Intendation block::rest when v.Value = "|" || v.Value = ">" ->
-            //printfn "[tokenize] Case4.9 Block scalar"
             let lines = flattenBlockScalar block
             // '|' keeps new lines, '>' folds them. Here we keep simple behavior: preserve new lines for both.
             let blockValue = System.String.Join((string NewLineChar), lines)
@@ -270,7 +260,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead rest (current::acc)
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
-            //printfn "[tokenize] Case5"
             let current = 
                 YAMLElement.Mapping (
                     YAMLContent.create(v.Key),
@@ -280,14 +269,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead rest (current::acc)
         // <c f=1/>
         | YamlComment v::rest -> // createComment
-            //printfn "[tokenize] Case5.5"
             let c = commentDict.[v.Comment]
             let current = 
                 YAMLElement.Comment (c)
             loopRead rest (current::acc)
         // My Value <c f=1/>
         | YamlValue v::rest -> // createValue
-            //printfn "[tokenize] Case6"
             let raw = restoreStringReplace stringDict v.Value
             let c = restoreCommentReplace commentDict v.Comment
             let current = 
@@ -296,7 +283,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 )
             loopRead rest (current::acc)
         | [] ->
-            //printfn "[tokenize] Exit Multiple: Object"
             acc
             |> List.rev
             |> YAMLElement.Object

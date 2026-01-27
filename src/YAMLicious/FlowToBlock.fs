@@ -54,26 +54,24 @@ let tokenize (input: string) : Token list =
             tokenizeChars remaining (Token.String strValue::acc)
         | chars ->
             // Parse unquoted string until delimiter
+            let consumePlaceholder (cs: char list) (acc: char list) =
+                let rec loop (cs: char list) (acc: char list) =
+                    match cs with
+                    | '/'::'>'::rest -> (List.rev ('>'::'/'::acc), rest)
+                    | c::rest -> loop rest (c::acc)
+                    | [] -> (List.rev acc, [])
+                loop cs acc
+
             let rec parseUnquoted (cs: char list) (acc: char list) =
                 match cs with
                 | [] -> (List.rev acc, [])
                 | '<'::'s'::' '::'f'::'='::rest ->
-                    // This looks like a string placeholder - consume it whole
-                    let rec consumePlaceholder (cs: char list) (acc: char list) =
-                        match cs with
-                        | '/'::'>'::rest -> (List.rev ('>'::'/'::acc), rest)
-                        | c::rest -> consumePlaceholder rest (c::acc)
-                        | [] -> (List.rev acc, [])
+                    // String placeholder - consume it whole
                     let (placeholder, remaining) = consumePlaceholder rest ['=';'f';' ';'s';'<']
                     let (restStr, final) = parseUnquoted remaining []
                     (placeholder @ restStr, final)
                 | '<'::'c'::' '::'f'::'='::rest ->
-                    // This looks like a comment placeholder - consume it whole
-                    let rec consumePlaceholder (cs: char list) (acc: char list) =
-                        match cs with
-                        | '/'::'>'::rest -> (List.rev ('>'::'/'::acc), rest)
-                        | c::rest -> consumePlaceholder rest (c::acc)
-                        | [] -> (List.rev acc, [])
+                    // Comment placeholder - consume it whole
                     let (placeholder, remaining) = consumePlaceholder rest ['=';'f';' ';'c';'<']
                     let (restStr, final) = parseUnquoted remaining []
                     (placeholder @ restStr, final)

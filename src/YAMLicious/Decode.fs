@@ -307,19 +307,15 @@ type Getter(ele: YAMLElement) =
             member _.Field fieldName dec =  
                 match ele with
                 | YAMLElement.Object v ->
-                    //printfn "[GETTER] IsObject"
                     v 
                     |> List.tryFind (function 
                         | YAMLElement.Mapping (k, _) -> 
-                            //printfn "[GETTER] IsMapping"
                             let equals = k.Value = fieldName
-                            //printfn "[GETTER] Equals: %A" equals
                             equals
                         | _ -> false
                     )
                     |> Option.map (function 
                         | YAMLElement.Mapping (_, v) -> 
-                            //printfn "[GETTER] Mapping: %A" v
                             dec v
                         | _ -> Helper.raiseInvalidArg "value" "Expected a mapping" ele
                     )
