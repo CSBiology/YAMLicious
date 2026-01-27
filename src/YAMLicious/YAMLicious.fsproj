@@ -25,6 +25,7 @@
     <Compile Include="Preprocessing.fs" />
     <Compile Include="Regex.fs" />
     <Compile Include="RegexActivePatterns.fs" />
+    <Compile Include="FlowToBlock.fs" />
     <Compile Include="Reader.fs" />
     <Compile Include="Writer.fs" />
     <Compile Include="Encode.fs" />
