@@ -533,7 +533,7 @@ Sammy Sosa: {
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("SubworkflowFeatureRequirement"),
-                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("{}")) ]
+                        YAMLElement.Object []
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("NetworkAccess"),
@@ -591,7 +591,7 @@ Sammy Sosa: {
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("SubworkflowFeatureRequirement"),
-                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("{}")) ]
+                        YAMLElement.Object []
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("NetworkAccess"),
@@ -639,24 +639,22 @@ Sammy Sosa: {
                     YAMLElement.Mapping(
                         YAMLContent.create("InitialWorkDirRequirement"),
                         YAMLElement.Object [
-                            YAMLElement.Object [
-                                YAMLElement.Mapping(
-                                    YAMLContent.create("listing"),
-                                    YAMLElement.Object [
-                                        YAMLElement.Sequence [
-                                            YAMLElement.Object [
-                                                YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc")) ]);
-                                                YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)")) ]);
-                                                YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
-                                            ];
-                                            YAMLElement.Object [
-                                                YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)")) ]);
-                                                YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
-                                            ]
+                            YAMLElement.Mapping(
+                                YAMLContent.create("listing"),
+                                YAMLElement.Object [
+                                    YAMLElement.Sequence [
+                                        YAMLElement.Object [
+                                            YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                        ];
+                                        YAMLElement.Object [
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
                                         ]
                                     ]
-                                )
-                            ]
+                                ]
+                            )
                         ]
                     );
                     YAMLElement.Mapping(
@@ -681,7 +679,7 @@ Sammy Sosa: {
                     );
                     YAMLElement.Mapping(
                         YAMLContent.create("SubworkflowFeatureRequirement"),
-                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("{}")) ]
+                        YAMLElement.Object []
                     )
                 ]
             )
