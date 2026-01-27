@@ -7,6 +7,10 @@ open YAMLiciousTypes
 module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
+
+let isDocumentStart (line: string) = line.TrimStart() = "---"
+
+let isDocumentEnd (line: string) = line.TrimStart().StartsWith("...")
             
 let write(rootElement:PreprocessorElement, fconfig: (Config -> Config) option) =
     let config = Config.init() |> fun config -> if fconfig.IsSome then fconfig.Value config else config
