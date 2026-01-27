@@ -26,9 +26,8 @@ let private copyMetadata(pyPath) =
     File.Copy(ProjectInfo.PyprojectTOML, pyPath </> ProjectInfo.PyprojectTOML)
     File.Copy(ProjectInfo.README, pyPath </> "README.md")
 
-let private peotryBundle =
+let private uvBundle =
     CmdLine.empty
-    |> CmdLine.appendPrefix "-m" "poetry"
     |> CmdLine.appendRaw "build"
     |> CmdLine.toString
 
@@ -38,4 +37,4 @@ let Main(pyDir: string) =
     clean(pyDir)
     Command.Run("dotnet", transpileFSharp publishDir)
     copyMetadata pyDir
-    Command.Run("python", peotryBundle, workingDirectory=pyDir)
+    Command.Run("uv", uvBundle, workingDirectory=pyDir)
