@@ -21,6 +21,19 @@ let StringMatchPattern =
     #endif
 
 [<Literal>]
+let SingleQuotedStringPattern = 
+    // Single-quoted strings: '' represents an escaped single quote
+    #if FABLE_COMPILER_PYTHON
+    "(?P<all>(?P<iscomment>#.*?)?'(?P<stringValue>(?:[^']|'')*)')"
+    #endif
+    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+    "(?<all>(?<iscomment>#.*?)?'(?<stringValue>(?:[^']|'')*)')" 
+    #endif
+    #if !FABLE_COMPILER
+    "(?<all>(?<iscomment>#.*?)?'(?<stringValue>(?:[^']|'')*)')" 
+    #endif
+
+[<Literal>]
 let CommentMatchPattern = 
     #if FABLE_COMPILER_PYTHON
     "#(?P<comment>.*)"
@@ -60,6 +73,23 @@ let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
     )
     regex.Replace(s, matcheval)
 
+let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
+    let mutable n = 0
+    let regex = Regex(SingleQuotedStringPattern)
+    let matcheval = new MatchEvaluator(fun m ->
+        match m.Groups.["iscomment"].Success with
+        | true ->
+            m.Groups.["all"].Value
+        | false ->
+            // Handle '' escape sequence (represents single quote)
+            let v = m.Groups.["stringValue"].Value.Replace("''", "'")
+            let currentN = n
+            n <- n + 1
+            dict.Add(currentN, v)
+            sprintf "<s f=%i/>" currentN
+    )
+    regex.Replace(s, matcheval)
+
 let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
     let mutable n = 0
     let regex = Regex(CommentMatchPattern)
@@ -80,7 +110,8 @@ let pipeline (yamlString: string) =
     let commentMap = new Dictionary<int, string>()
     let lines =
         encodingCleanUp yamlString
-        |> stringCleanUp stringMap
+        |> singleQuotedStringCleanUp stringMap  // Handle single-quoted strings first
+        |> stringCleanUp stringMap              // Then handle double-quoted strings
         |> commentCleanUp commentMap
         |> cut
     {|StringMap = stringMap; CommentMap = commentMap; Lines = lines|}

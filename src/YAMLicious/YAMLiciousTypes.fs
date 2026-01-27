@@ -69,6 +69,8 @@ type YAMLElement =
     /// MyKey2: MyValue2
     | Object of YAMLElement list
     | Comment of string
+    | DocumentStart
+    | DocumentEnd
     // This does not write anything
     | Nil
 

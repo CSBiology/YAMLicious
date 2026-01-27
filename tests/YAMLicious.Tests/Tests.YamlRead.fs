@@ -79,6 +79,123 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Single-quoted string" <| fun _ ->
+        let yaml = "single: 'hello world'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("single"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("hello world"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Single-quoted with escaped quote" <| fun _ ->
+        let yaml = "single: 'here''s to quotes'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("single"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("here's to quotes"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Single-quoted preserves backslashes" <| fun _ ->
+        let yaml = "tie-fighter: '|\\-*-/|'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("tie-fighter"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("|\\-*-/|"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: newline" <| fun _ ->
+        let yaml = "key: \"line1\\nline2\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("line1\nline2"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: tab" <| fun _ ->
+        let yaml = "key: \"before\\tafter\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("before\tafter"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: backslash" <| fun _ ->
+        let yaml = "key: \"path\\\\to\\\\file\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("path\\to\\file"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: hex unicode" <| fun _ ->
+        let yaml = "key: \"\\x41\\x42\\x43\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("ABC"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: unicode 16-bit" <| fun _ ->
+        let yaml = "key: \"\\u263A\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("☺"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: null character" <| fun _ ->
+        let yaml = "key: \"before\\0after\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("before\u0000after"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
     testCase "Sequence" <| fun _ ->
         let yaml = """
 - My Value 1
@@ -686,5 +803,52 @@ Sammy Sosa: {
         ]
         Expect.equal actualFlowstyle expected "Flowstyle"
         Expect.equal actual expected "Blockstyle"
+
+    testCase "Multi-document: Two documents separated by ---" <| fun _ ->
+        let yaml = """---
+document1: value1
+---
+document2: value2"""
+        let actual = Reader.readDocuments yaml
+        Expect.equal (List.length actual) 2 "Should parse two documents"
+        
+        // Check first document
+        let doc1 = actual.[0]
+        match doc1 with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "First document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "document1" "First document key should be document1"
+            | _ -> failwith "Expected mapping in first document"
+        | _ -> failwith "Expected object in first document"
+        
+        // Check second document
+        let doc2 = actual.[1]
+        match doc2 with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "Second document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "document2" "Second document key should be document2"
+            | _ -> failwith "Expected mapping in second document"
+        | _ -> failwith "Expected object in second document"
+
+    testCase "Multi-document: Document with end marker" <| fun _ ->
+        let yaml = """---
+key: value
+..."""
+        let actual = Reader.readDocuments yaml
+        Expect.equal (List.length actual) 1 "Should parse one document"
+        
+        let doc = actual.[0]
+        match doc with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "Document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "key" "Document key should be key"
+            | _ -> failwith "Expected mapping in document"
+        | _ -> failwith "Expected object in document"
 ]
 
