@@ -8,12 +8,16 @@ open System.IO
 let private publish =
     CmdLine.empty
     |> CmdLine.appendRaw "publish"
+    |> CmdLine.appendRaw "--tag"
+    |> CmdLine.appendRaw "alpha"
     |> CmdLine.toString
 
 let private publishDryRun =
     CmdLine.empty
     |> CmdLine.appendRaw "publish"
     |> CmdLine.appendRaw "--dry-run"
+    |> CmdLine.appendRaw "--tag"
+    |> CmdLine.appendRaw "alpha"
     |> CmdLine.toString
 
 open System.Text.RegularExpressions
