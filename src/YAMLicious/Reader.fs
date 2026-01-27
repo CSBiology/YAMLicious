@@ -3,6 +3,7 @@ module YAMLicious.Reader
 open Regex
 open Preprocessing
 open FlowToBlock
+open Escapes
 open System.Text.RegularExpressions
 open RegexActivePatterns
 open YAMLiciousTypes
@@ -12,7 +13,9 @@ let private restoreStringReplace (stringDict: Dictionary<int, string>) (v: strin
     let m = Regex.Match(v, StringReplacementPattern)
     if m.Success then
         let index = m.Groups.["index"].Value |> int
-        stringDict.[index]
+        let rawString = stringDict.[index]
+        // Apply escape sequence processing to double-quoted strings
+        unescapeDoubleQuoted rawString
     else
         v
 
@@ -295,3 +298,41 @@ let read (yaml: string) =
     | Level lvl ->
         tokenize lvl ast.StringMap ast.CommentMap
     | _ -> failwith "Not a root!"
+
+let readDocuments (yaml: string) : YAMLElement list =
+    // Split the input YAML by document start markers (---)
+    let lines = yaml.Split([|"\r\n"; "\n"|], System.StringSplitOptions.None) |> Array.toList
+    
+    // Reconstruct documents by grouping lines
+    let rec splitDocuments (lines: string list) (currentDoc: string list) (docs: string list list) =
+        match lines with
+        | [] ->
+            if List.isEmpty currentDoc then
+                List.rev docs
+            else
+                List.rev (List.rev currentDoc :: docs)
+        | line::rest when isDocumentStart line ->
+            // Start a new document (skip the --- line)
+            if List.isEmpty currentDoc then
+                splitDocuments rest [] docs
+            else
+                splitDocuments rest [] (List.rev currentDoc :: docs)
+        | line::rest when line.TrimStart().StartsWith("...") ->
+            // End current document (don't include the ... marker) - using DocumentEnd pattern logic
+            if List.isEmpty currentDoc then
+                splitDocuments rest [] docs
+            else
+                splitDocuments rest [] (List.rev currentDoc :: docs)
+        | line::rest ->
+            splitDocuments rest (line::currentDoc) docs
+    
+    // Split documents by markers
+    let documentTexts = splitDocuments lines [] []
+    
+    // Parse each document
+    documentTexts
+    |> List.filter (fun doc -> not (List.isEmpty doc))
+    |> List.map (fun docLines ->
+        let docText = String.concat "\n" docLines
+        read docText
+    )
