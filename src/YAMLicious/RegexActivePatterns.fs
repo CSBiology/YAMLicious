@@ -176,3 +176,8 @@ let (|SchemaNamespace|_|) (input: PreprocessorElement) =
         else
             None
     | _ -> None
+
+let (|DocumentEnd|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s when s.TrimStart().StartsWith("...") -> Some ()
+    | _ -> None
