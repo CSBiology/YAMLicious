@@ -77,6 +77,10 @@ let detokenize (ele: YAMLElement) =
             ]
         | YAMLElement.Comment (c) -> 
             PreprocessorElement.Line (Formatting.mkComment c)
+        | YAMLElement.DocumentStart ->
+            PreprocessorElement.Line "---"
+        | YAMLElement.DocumentEnd ->
+            PreprocessorElement.Line "..."
     loop ele
 
 let write (ele: YAMLElement) (fconfig: (Config -> Config) option) =
