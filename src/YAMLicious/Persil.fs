@@ -11,13 +11,13 @@ open System.Text.RegularExpressions
 let StringMatchPattern = 
     // (?<iscomment>#.*?)? checks if inside comment. if group is found do not parse as string
     #if FABLE_COMPILER_PYTHON
-    "(?P<all>(?P<iscomment>#.*?)?\"(?P<stringValue>.+)\\\")"
+    "(?P<all>(?P<iscomment>#.*?)?\"(?P<stringValue>.+?)\\\")"
     #endif
     #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-    "(?<all>(?<iscomment>#.*?)?\"(?<stringValue>.+)\")" // fable sets /gu for js regex (unicode, not required to escape ")
+    "(?<all>(?<iscomment>#.*?)?\"(?<stringValue>.+?)\")" // fable sets /gu for js regex (unicode, not required to escape ")
     #endif
     #if !FABLE_COMPILER
-    "(?<all>(?<iscomment>#.*?)?\\\"(?<stringValue>.+)\\\")" // \\\" --> escaped \"
+    "(?<all>(?<iscomment>#.*?)?\\\"(?<stringValue>.+?)\\\")" // \\\" --> escaped \"
     #endif
 
 [<Literal>]

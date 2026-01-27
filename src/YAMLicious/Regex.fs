@@ -45,19 +45,25 @@ let SequenceMinusPattern =
     "^-(\s+(?<value>.*))?$"
     #endif
 
-let InlineSequencePattern =
+let FlowStyleArrayPattern =
     #if FABLE_COMPILER_PYTHON
     $"^\[(?P<inlineSequence>.+)\]\s*?({CommentPattern})?$"
     #else
     $"^\[(?<inlineSequence>.+)\]\s*?({CommentPattern})?$"
     #endif
 
-let InlineJSONPattern =
+// Backward compatibility alias
+let InlineSequencePattern = FlowStyleArrayPattern
+
+let FlowStyleObjectPattern =
     #if FABLE_COMPILER_PYTHON
     $"^\{{(?P<inlineSequence>.*)\}}\s*?({CommentPattern})?$"
     #else
     $"^\{{(?<inlineSequence>.*)\}}\s*?({CommentPattern})?$"
     #endif
+
+// Backward compatibility alias
+let InlineJSONPattern = FlowStyleObjectPattern
 
 let SequenceOpenerPattern =
     #if FABLE_COMPILER_PYTHON
@@ -73,19 +79,25 @@ let SequenceCloserPattern =
     $"^\]\s*({CommentPattern})?$"
     #endif
 
-let JSONOpenerPattern =
+let FlowStyleObjectOpenerPattern =
     #if FABLE_COMPILER_PYTHON
     $"^(?P<key>[^\{{\[]+):\s+\{{\s*({CommentPattern})?$"
     #else
     $"^(?<key>[^\{{\[]+):\s+\{{\s*({CommentPattern})?$"
     #endif
 
-let JSONCloserPattern =
+// Backward compatibility alias
+let JSONOpenerPattern = FlowStyleObjectOpenerPattern
+
+let FlowStyleObjectCloserPattern =
     #if FABLE_COMPILER_PYTHON
     $"^\}}\s*({CommentPattern})?$"
     #else
     $"^\}}\s*({CommentPattern})?$"
     #endif
+
+// Backward compatibility alias
+let JSONCloserPattern = FlowStyleObjectCloserPattern
 
 [<Literal>]
 let StringReplacementPattern =

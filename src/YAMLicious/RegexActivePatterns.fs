@@ -73,10 +73,10 @@ let (|SequenceMinusOpener|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
-let (|InlineSequence|_|) (input: PreprocessorElement) =
+let (|FlowStyleArray|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, InlineSequencePattern) 
+        let m = Regex.Match(s, FlowStyleArrayPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -87,6 +87,9 @@ let (|InlineSequence|_|) (input: PreprocessorElement) =
         else
             None
     | _ -> None
+
+// Backward compatibility alias
+let (|InlineSequence|_|) = (|FlowStyleArray|_|)
 
 let (|SequenceSquareOpener|_|) (input: PreprocessorElement) =
     match input with
@@ -114,10 +117,10 @@ let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
-let (|InlineJSON|_|) (input: PreprocessorElement) =
+let (|FlowStyleObject|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, InlineJSONPattern) 
+        let m = Regex.Match(s, FlowStyleObjectPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -129,10 +132,13 @@ let (|InlineJSON|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
-let (|JSONKeyOpener|_|) (input: PreprocessorElement) =
+// Backward compatibility alias
+let (|InlineJSON|_|) = (|FlowStyleObject|_|)
+
+let (|FlowStyleObjectOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, JSONOpenerPattern) 
+        let m = Regex.Match(s, FlowStyleObjectOpenerPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -142,10 +148,13 @@ let (|JSONKeyOpener|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
-let (|JSONCloser|_|) (input: PreprocessorElement) =
+// Backward compatibility alias
+let (|JSONKeyOpener|_|) = (|FlowStyleObjectOpener|_|)
+
+let (|FlowStyleObjectCloser|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, JSONCloserPattern) 
+        let m = Regex.Match(s, FlowStyleObjectCloserPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -154,6 +163,9 @@ let (|JSONCloser|_|) (input: PreprocessorElement) =
         else
             None
     | _ -> None
+
+// Backward compatibility alias
+let (|JSONCloser|_|) = (|FlowStyleObjectCloser|_|)
 
 let (|SchemaNamespace|_|) (input: PreprocessorElement) =
     match input with
