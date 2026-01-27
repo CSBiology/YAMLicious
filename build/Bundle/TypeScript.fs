@@ -15,10 +15,9 @@ let private transpileFSharp =
     CmdLine.empty
     |> CmdLine.appendRaw "fable"
     // |> CmdLine.appendIf isWatch "--watch"
-    |> CmdLine.appendRaw (ProjectInfo.Projects.MainDir </> ProjectInfo.Projects.Main)
-    |> CmdLine.appendPrefix "-o" ProjectInfo.Packages.TS
+    |> CmdLine.appendRaw (ProjectInfo.Projects.Main)
+    |> CmdLine.appendPrefix "-o" ProjectInfo.Packages.JS
     |> CmdLine.appendRaw "--noCache"
-    |> CmdLine.appendPrefix "--lang" "ts"
     |> CmdLine.appendPrefix "--fableLib" "fable-library"
     |> CmdLine.appendRaw "--noReflection"
     |> CmdLine.toString
@@ -27,12 +26,12 @@ let private transpileTypeScript(jsPath) =
     CmdLine.empty
     |> CmdLine.appendRaw "tsc"
     |> CmdLine.appendPrefix "--outDir" jsPath
-    |> CmdLine.appendRaw "--declaration"
-    |> CmdLine.appendPrefix "--noEmit" "false"
+    |> CmdLine.appendRaw "--skipLibCheck"
+    |> CmdLine.appendRaw "--noEmit"
+    |> CmdLine.appendRaw "false"
     |> CmdLine.toString
 
 
 let Main(jsDir: string) = 
     clean(jsDir)
     Command.Run("dotnet", transpileFSharp)
-    Command.Run("npx", transpileTypeScript jsDir)
