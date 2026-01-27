@@ -73,7 +73,13 @@ module FlowStyleParser =
             | Token.EOF::_ -> (acc, tokens)
             | Token.String key::Token.Colon::rest ->
                 let (value, remaining) = parseValue rest
-                let mapping = YAMLElement.Mapping(YAMLContent.create(key), YAMLElement.Object [value])
+                // Only wrap Values, not Objects (which are already wrapped)
+                // But DO wrap Sequences - block-style wraps them
+                let wrappedValue =
+                    match value with
+                    | YAMLElement.Object _ -> value  // Object - already wrapped, don't double-wrap
+                    | _ -> YAMLElement.Object [value]  // Value or Sequence - needs wrapping
+                let mapping = YAMLElement.Mapping(YAMLContent.create(key), wrappedValue)
                 // Use cons and reverse at the end for efficiency
                 parseKeyValues remaining (mapping::acc)
             | _ -> failwith $"Unexpected token in parseObject: {tokens}"
@@ -89,8 +95,12 @@ module FlowStyleParser =
             | Token.EOF::_ -> (acc, tokens)
             | _ ->
                 let (value, remaining) = parseValue tokens
-                // Use cons and reverse at the end for efficiency
-                parseElements remaining ((YAMLElement.Object [value])::acc)
+                // Don't double-wrap Objects - array elements can already be Objects
+                let wrappedValue =
+                    match value with
+                    | YAMLElement.Object _ -> value  // Already an Object
+                    | _ -> YAMLElement.Object [value]  // Value or Sequence - wrap it
+                parseElements remaining (wrappedValue::acc)
 
         let (elements, remaining) = parseElements tokens []
         (YAMLElement.Sequence (List.rev elements), remaining)
@@ -301,24 +311,31 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             //printfn "[tokenize] Case3.1"
             // ensure inline comment is added on top of the object
             let c = restoreCommentReplace commentDict v.Comment
-            // Restore string placeholders before parsing
-            let restored = restoreFlowStyleStrings ("{" + v.Value + "}")
-            // Use flow-style parser for nested structures
-            let parsed = FlowStyleParser.parseFlowStyle restored
-            let current =
-                match parsed with
-                | YAMLElement.Object o -> List.rev o  // Reverse because acc will be reversed later
-                | _ -> failwith "Expected Object from InlineJSON parsing"
-            let nextAcc =
-                if c.IsSome then 
-                    current@(YAMLElement.Comment c.Value::acc)
-                else 
-                    current@acc
-            loopRead rest nextAcc
-        //Sammy Sosa: { #lel
-        //    hr: 63,
-        //    avg: 0.288,
-        //}
+            // Handle empty objects
+            if v.Value.Trim() = "" then
+                // Empty object - return empty Object list
+                let current = []
+                let nextAcc =
+                    if c.IsSome then 
+                        current@(YAMLElement.Comment c.Value::acc)
+                    else 
+                        current@acc
+                loopRead rest nextAcc
+            else
+                // Restore string placeholders before parsing
+                let restored = restoreFlowStyleStrings ("{" + v.Value + "}")
+                // Use flow-style parser for nested structures
+                let parsed = FlowStyleParser.parseFlowStyle restored
+                let current =
+                    match parsed with
+                    | YAMLElement.Object o -> List.rev o  // Unwrap to get mappings - reverse because acc will be reversed later
+                    | _ -> failwith "Expected Object from InlineJSON parsing"
+                let nextAcc =
+                    if c.IsSome then 
+                        current@(YAMLElement.Comment c.Value::acc)
+                    else 
+                        current@acc
+                loopRead rest nextAcc
         | JSONKeyOpener opener::Intendation iList::JSONCloser closer::rest ->
             //printfn "[tokenize] Case3.6"
             let c1 = opener.Comment |> restoreCommentReplace commentDict
@@ -343,7 +360,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current = 
                 YAMLElement.Mapping (
                     YAMLContent.create(opener.Key, ?comment=c1),
-                    parsed  // Use parsed directly without extra wrapping
+                    parsed  // Use FlowStyleParser result directly (it now wraps nested objects correctly)
                 )
             let nextAcc =
                 match c2 with
