@@ -14,6 +14,8 @@ let all =
           Tests.EncoderDecoder.Main
           Tests.Directives.Main
           Tests.ReaderDocuments.Main
+          Tests.Escapes.Main
+          Tests.BlockScalars.Main
           Tests.AdvancedFeatures.Main ]
 
 [<EntryPoint>]
