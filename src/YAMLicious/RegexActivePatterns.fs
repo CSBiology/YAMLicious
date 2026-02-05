@@ -199,3 +199,17 @@ let (|VerbatimTag|_|) (input: string) =
     let m = Regex.Match(input, VerbatimTagPattern)
     if m.Success then Some m.Groups.["tag"].Value
     else None
+
+let (|ExplicitKey|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s when s.TrimStart().StartsWith("?") -> 
+        let value = s.TrimStart().Substring(1).Trim()
+        Some (if value = "" then None else Some value)
+    | _ -> None
+
+let (|ExplicitValue|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s when s.TrimStart().StartsWith(":") ->
+        let v = s.TrimStart().Substring(1).Trim()
+        Some v
+    | _ -> None

@@ -37,8 +37,14 @@ let KeyPattern =
     #if FABLE_COMPILER_PYTHON
     $"^(?P<key>[^\{{\[]+):\s*({CommentPattern})?$"
     #else
-    $"^(?<key>[^\{{\[]+):\s*({CommentPattern})?$"
+    $"^(?<key>[^\\{{\\[]+):\s*({CommentPattern})?$"
     #endif
+
+let ExplicitKeyPattern = "^\\?\\s*$"
+
+let ExplicitKeyWithValuePattern = "^\\?\\s+(.+)$"
+
+let ExplicitValuePattern = "^:\\s*(.*)$"
 
 [<Literal>]
 let KeyValuePattern =

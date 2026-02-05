@@ -16,26 +16,7 @@ let Main = testList "Directives" [
         let pre = Preprocessing.read yaml
         Expect.isTrue (Map.containsKey "!m!" pre.TagHandles) "Tag handle !m! should exist"
         Expect.equal (Map.find "!m!" pre.TagHandles) "!mytag:" "Tag handle value should match"
-
-    testCase "Anchor and Alias" <| fun _ ->
-        let yaml = "foo: &a1 bar\nbaz: *a1"
-        let expected = YAMLElement.Object [
-            YAMLElement.Mapping(YAMLContent.create("foo"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar", anchor="a1"))])
-            YAMLElement.Mapping(YAMLContent.create("baz"), YAMLElement.Object [YAMLElement.Alias("a1")])
-        ]
-        let actual = Reader.read yaml
-        Expect.equal actual expected "Anchor and Alias should be correctly parsed"
-
-    testCase "Verbatim Tag" <| fun _ ->
-        let yaml = "foo: !<tag:yaml.org,2002:str> bar"
-        let expected = YAMLElement.Object [
-            YAMLElement.Mapping(
-                YAMLContent.create("foo"),
-                YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("bar", tag="tag:yaml.org,2002:str"))
-                ]
-            )
-        ]
-        let actual = Reader.read yaml
-        Expect.equal actual expected "Verbatim tag should be correctly parsed"
+    testCase "2.1.2 Invalid duplicate YAML directive" <| fun _ ->
+        let yaml = "%YAML 1.2\n%YAML 1.1\n---\nfoo: bar"
+        Expect.throws (fun _ -> Preprocessing.read yaml |> ignore) "Should throw on duplicate YAML directive"
 ]

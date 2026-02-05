@@ -130,12 +130,23 @@ let pipeline (yamlString: string) =
     let directiveLines = lines |> Array.takeWhile (fun l -> l.TrimStart().StartsWith("%"))
     let contentLines = lines.[directiveLines.Length..]
     let mutable yamlVersion = None
-    let mutable tagHandles = Map.empty
+    let mutable tagHandles = 
+        Map.empty 
+        |> Map.add "!" "!" 
+        |> Map.add "!!" "tag:yaml.org,2002:"
     for line in directiveLines do
         match parseYAMLDirective line with
-        | Some v -> yamlVersion <- Some v
+        | Some v -> 
+            if yamlVersion.IsSome then failwith "Duplicate YAML directive"
+            yamlVersion <- Some v
         | None ->
             match parseTagDirective line with
             | Some (h, t) -> tagHandles <- Map.add h t tagHandles
             | None -> ()
-    {|StringMap = stringMap; CommentMap = commentMap; Lines = contentLines; YAMLVersion = yamlVersion; TagHandles = tagHandles|}
+            
+    let finalContentLines =
+        if contentLines.Length > 0 && contentLines.[0].Trim() = "---" then
+            contentLines.[1..]
+        else
+            contentLines
+    {|StringMap = stringMap; CommentMap = commentMap; Lines = finalContentLines; YAMLVersion = yamlVersion; TagHandles = tagHandles|}

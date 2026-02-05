@@ -12,7 +12,8 @@ let all =
           Tests.YamlRead.Main
           Tests.YamlWrite.Main
           Tests.EncoderDecoder.Main
-          Tests.Directives.Main ]
+          Tests.Directives.Main
+          Tests.AdvancedFeatures.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all
