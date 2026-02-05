@@ -12,6 +12,27 @@ let CommentPattern =
     "\<c f=(?<comment>\d+)\/\>"
     #endif
 
+let AnchorPattern =
+    #if FABLE_COMPILER_PYTHON
+    "&(?P<anchor>[^\\s\\[\\]{},:]+)"
+    #else
+    "&(?<anchor>[^\\s\\[\\]{},:]+)"
+    #endif
+
+let AliasPattern =
+    #if FABLE_COMPILER_PYTHON
+    "^\\*(?P<alias>[^\\s\\[\\]{},:]+)$"
+    #else
+    "^\\*(?<alias>[^\\s\\[\\]{},:]+)$"
+    #endif
+
+let VerbatimTagPattern =
+    #if FABLE_COMPILER_PYTHON
+    "^!<(?P<tag>[^>]+)>"
+    #else
+    "^!<(?<tag>[^>]+)>"
+    #endif
+
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
     $"^(?P<key>[^\{{\[]+):\s*({CommentPattern})?$"

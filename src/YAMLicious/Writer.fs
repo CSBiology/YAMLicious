@@ -17,7 +17,10 @@ module Formatting =
 
     let mkComment (comment: string) = "#" +  comment
     let mkKey (key: string) = key + ":"
-    let mkContent (content: YAMLContent) = content.Value + (content.Comment |> Option.map (fun s -> " " + (mkComment s)) |> Option.defaultValue "")
+    let mkContent (content: YAMLContent) = 
+        let tag = content.Tag |> Option.map (fun s -> if s.StartsWith("<") then "!" + s + " " else "!" + s + " ") |> Option.defaultValue ""
+        let anchor = content.Anchor |> Option.map (fun s -> "&" + s + " ") |> Option.defaultValue ""
+        tag + anchor + content.Value + (content.Comment |> Option.map (fun s -> " " + (mkComment s)) |> Option.defaultValue "")
     let mkInlineSequence (seq: YAMLElement list) = 
         let content = 
             seq 
@@ -81,6 +84,8 @@ let detokenize (ele: YAMLElement) =
             PreprocessorElement.Line "---"
         | YAMLElement.DocumentEnd ->
             PreprocessorElement.Line "..."
+        | YAMLElement.Alias a ->
+            PreprocessorElement.Line ("*" + a)
     loop ele
 
 let write (ele: YAMLElement) (fconfig: (Config -> Config) option) =

@@ -80,8 +80,27 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | Intendation children -> flattenBlockScalar children
             | _ -> [])
 
+    let extractProperties (v: string) =
+        let mutable current = v.Trim()
+        let mutable tag = None
+        let mutable anchor = None
+        
+        let mTag = Regex.Match(current, VerbatimTagPattern)
+        if mTag.Success then
+            tag <- Some mTag.Groups.["tag"].Value
+            current <- current.Substring(mTag.Length).Trim()
+        
+        let mAnchor = Regex.Match(current, AnchorPattern)
+        if mAnchor.Success then
+            anchor <- Some mAnchor.Groups.["anchor"].Value
+            current <- current.Substring(mAnchor.Length).Trim()
+
+        {| Value = current; Tag = tag; Anchor = anchor |}
+
     let rec loopRead (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
+        | AliasNode alias::rest ->
+            loopRead rest (YAMLElement.Alias alias::acc)
         | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let objectList = 
                 PreprocessorElement.Line v.Key::yamlAstList
@@ -280,9 +299,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | YamlValue v::rest -> // createValue
             let raw = restoreStringReplace stringDict v.Value
             let c = restoreCommentReplace commentDict v.Comment
+            let props = extractProperties raw
             let current = 
                 YAMLElement.Value (
-                    YAMLContent.create(raw, ?comment=c)
+                    YAMLContent.create(props.Value, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag)
                 )
             loopRead rest (current::acc)
         | [] ->

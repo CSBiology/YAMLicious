@@ -181,3 +181,21 @@ let (|DocumentEnd|_|) (input: PreprocessorElement) =
     match input with
     | Line s when s.TrimStart().StartsWith("...") -> Some ()
     | _ -> None
+
+let (|WithAnchor|_|) (input: string) =
+    let m = Regex.Match(input, AnchorPattern)
+    if m.Success then Some m.Groups.["anchor"].Value
+    else None
+
+let (|AliasNode|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s ->
+        let m = Regex.Match(s.Trim(), AliasPattern)
+        if m.Success then Some m.Groups.["alias"].Value
+        else None
+    | _ -> None
+
+let (|VerbatimTag|_|) (input: string) =
+    let m = Regex.Match(input, VerbatimTagPattern)
+    if m.Success then Some m.Groups.["tag"].Value
+    else None

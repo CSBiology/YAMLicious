@@ -105,6 +105,19 @@ let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
 let cut(yamlString: string) =
     yamlString.Split([|NewLineChar|], StringSplitOptions.RemoveEmptyEntries)
 
+let parseYAMLDirective (line: string) : YAMLiciousTypes.YAMLDirective option =
+    let m = Regex.Match(line.Trim(), "^%YAML\s+(\d+)\.(\d+)")
+    if m.Success then
+        Some { Major = int m.Groups.[1].Value; Minor = int m.Groups.[2].Value }
+    else None
+
+let parseTagDirective (line: string) : (string * string) option =
+    // Handle %TAG !handle! prefix
+    let m = Regex.Match(line.Trim(), "^%TAG\s+(\S+)\s+(\S+)")
+    if m.Success then
+        Some (m.Groups.[1].Value, m.Groups.[2].Value)
+    else None
+
 let pipeline (yamlString: string) =
     let stringMap = new Dictionary<int, string>()
     let commentMap = new Dictionary<int, string>()
@@ -114,4 +127,15 @@ let pipeline (yamlString: string) =
         |> stringCleanUp stringMap              // Then handle double-quoted strings
         |> commentCleanUp commentMap
         |> cut
-    {|StringMap = stringMap; CommentMap = commentMap; Lines = lines|}
+    let directiveLines = lines |> Array.takeWhile (fun l -> l.TrimStart().StartsWith("%"))
+    let contentLines = lines.[directiveLines.Length..]
+    let mutable yamlVersion = None
+    let mutable tagHandles = Map.empty
+    for line in directiveLines do
+        match parseYAMLDirective line with
+        | Some v -> yamlVersion <- Some v
+        | None ->
+            match parseTagDirective line with
+            | Some (h, t) -> tagHandles <- Map.add h t tagHandles
+            | None -> ()
+    {|StringMap = stringMap; CommentMap = commentMap; Lines = contentLines; YAMLVersion = yamlVersion; TagHandles = tagHandles|}
