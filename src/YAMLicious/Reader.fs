@@ -436,8 +436,16 @@ let readDocuments (yaml: string) : YAMLElement list =
                 List.rev (List.rev currentDoc :: docs)
         | line::rest when isDocumentStart line ->
             // Start a new document (skip the --- line)
-            if List.isEmpty currentDoc then
-                splitDocuments rest [] docs
+            // But if the current document contains ONLY directives, then this --- strictly belongs to it (as separator)
+            // and we should continue accumulating.
+            let isOnlyDirectives (lines: string list) =
+                lines |> List.forall (fun l -> l.TrimStart().StartsWith("%") || l.Trim() = "")
+
+            if List.isEmpty currentDoc || (isOnlyDirectives currentDoc) then
+                // Merge this --- marker into the document? No, usually we skip it, but Preprocessing might need it?
+                // Actually Preprocessing doesn't care about ---.
+                // But we must NOT push currentDoc to docs yet.
+                splitDocuments rest currentDoc docs
             else
                 splitDocuments rest [] (List.rev currentDoc :: docs)
         | line::rest when line.TrimStart().StartsWith("...") ->

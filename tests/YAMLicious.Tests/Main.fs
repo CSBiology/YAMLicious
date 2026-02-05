@@ -13,6 +13,7 @@ let all =
           Tests.YamlWrite.Main
           Tests.EncoderDecoder.Main
           Tests.Directives.Main
+          Tests.ReaderDocuments.Main
           Tests.AdvancedFeatures.Main ]
 
 [<EntryPoint>]
