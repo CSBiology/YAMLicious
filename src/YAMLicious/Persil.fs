@@ -73,6 +73,22 @@ let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
     )
     regex.Replace(s, matcheval)
 
+let foldSingleQuoted (s: string) =
+    let lines = s.Split([|NewLineChar|])
+    let sb = new System.Text.StringBuilder()
+    for i in 0 .. lines.Length - 1 do
+        let mutable line = lines.[i]
+        if i > 0 then line <- line.TrimStart()
+        if i < lines.Length - 1 then line <- line.TrimEnd()
+
+        if line.Length = 0 then
+            sb.Append(NewLineChar) |> ignore
+        else
+            if sb.Length > 0 && sb.[sb.Length - 1] <> NewLineChar then
+                    sb.Append(" ") |> ignore
+            sb.Append(line) |> ignore
+    sb.ToString().Replace("''", "'")
+
 let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
     let mutable n = 0
     let regex = Regex(SingleQuotedStringPattern)
@@ -81,8 +97,8 @@ let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
         | true ->
             m.Groups.["all"].Value
         | false ->
-            // Handle '' escape sequence (represents single quote)
-            let v = m.Groups.["stringValue"].Value.Replace("''", "'")
+            // Handle '' escape sequence (represents single quote) and folding
+            let v = foldSingleQuoted m.Groups.["stringValue"].Value
             let currentN = n
             n <- n + 1
             dict.Add(currentN, v)

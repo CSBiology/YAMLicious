@@ -400,12 +400,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead handles rest (current::acc)
         // My Value <c f=1/>
         | YamlValue v::rest -> // createValue
-            let raw = restoreStringReplace stringDict v.Value
             let c = restoreCommentReplace commentDict v.Comment
-            let props = extractProperties handles raw
+            let props = extractProperties handles v.Value
+            let finalValue = restoreStringReplace stringDict props.Value
             let current = 
                 YAMLElement.Value (
-                    YAMLContent.create(props.Value, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag)
+                    YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag)
                 )
             loopRead handles rest (current::acc)
         | [] ->

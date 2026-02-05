@@ -8,7 +8,10 @@ let Main = testList "Advanced Features" [
     // --- Section 1: Multi-Document Stream Support ---
 
     testCase "2.2.1 Primary tag handle" <| fun _ ->
-        let yaml = "%TAG ! tag:example.com,2000:app/\n---\n!foo \"bar\""
+        let yaml = """%TAG ! tag:example.com,2000:app/
+---
+!foo "bar"
+"""
         let actual = Reader.read yaml
         let expected = YAMLElement.Object [
             YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo"))
@@ -16,7 +19,10 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Primary tag handle ! should resolve"
 
     testCase "2.2.2 Named tag handle" <| fun _ ->
-        let yaml = "%TAG !e! tag:example.com,2000:app/\n---\n!e!foo \"bar\""
+        let yaml = """%TAG !e! tag:example.com,2000:app/
+---
+!e!foo "bar"
+"""
         let actual = Reader.read yaml
         let expected = YAMLElement.Object [
             YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo"))
@@ -26,7 +32,8 @@ let Main = testList "Advanced Features" [
 
     // --- Section 3: Anchors and Aliases ---
     testCase "3.1.1 Simple anchor and alias" <| fun _ ->
-        let yaml = "First occurrence: &anchor Value\nSecond occurrence: *anchor"
+        let yaml = """First occurrence: &anchor Value
+Second occurrence: *anchor"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("First occurrence"),
@@ -41,7 +48,10 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Anchor and Alias should be correctly parsed"
 
     testCase "3.2.1 Alias reuse after anchor override" <| fun _ ->
-        let yaml = "First occurrence: &anchor Foo\nSecond occurrence: *anchor\nOverride anchor: &anchor Bar\nReuse anchor: *anchor"
+        let yaml = """First occurrence: &anchor Foo
+Second occurrence: *anchor
+Override anchor: &anchor Bar
+Reuse anchor: *anchor"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(YAMLContent.create("First occurrence"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("Foo", anchor="anchor"))])
             YAMLElement.Mapping(YAMLContent.create("Second occurrence"), YAMLElement.Object [YAMLElement.Alias("anchor")])
@@ -52,7 +62,12 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Alias nodes should be preserved"
 
     testCase "3.2.2 Anchor in sequence" <| fun _ ->
-        let yaml = "hr:\n  - Mark McGwire\n  - &SS Sammy Sosa\nrbi:\n  - *SS\n  - Ken Griffey"
+        let yaml = """hr:
+  - Mark McGwire
+  - &SS Sammy Sosa
+rbi:
+  - *SS
+  - Ken Griffey"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(YAMLContent.create("hr"), YAMLElement.Object [
                 YAMLElement.Sequence [
@@ -72,7 +87,8 @@ let Main = testList "Advanced Features" [
 
     // --- Section 4: Tags ---
     testCase "4.1.1 Verbatim tags complex" <| fun _ ->
-        let yaml = "!<tag:yaml.org,2002:str> foo :\n  !<!bar> baz"
+        let yaml = """!<tag:yaml.org,2002:str> foo :
+  !<!bar> baz"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("foo", tag="tag:yaml.org,2002:str"),
@@ -98,7 +114,9 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Secondary tag handle !! should resolve"
 
     testCase "4.3.1 Non-specific tag forces string" <| fun _ ->
-        let yaml = "- \"12\"\n- 12\n- ! 12"
+        let yaml = """- "12"
+- 12
+- ! 12"""
         let actual = Reader.read yaml
         match actual with
         | YAMLElement.Object [YAMLElement.Sequence [v1; v2; v3]] ->
@@ -110,7 +128,8 @@ let Main = testList "Advanced Features" [
 
     // --- Section 5: Complex Mapping Keys ---
     testCase "5.1.1 Explicit block mapping key" <| fun _ ->
-        let yaml = "? explicit key\n: explicit value"
+        let yaml = """? explicit key
+: explicit value"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("explicit key"),
@@ -121,7 +140,8 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Explicit key indicator '?' should be handled"
 
     testCase "5.1.4 Explicit key with tag and anchor" <| fun _ ->
-        let yaml = "? &a1 !<tag:foo> key\n: value"
+        let yaml = """? &a1 !<tag:foo> key
+: value"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("key", anchor="a1", tag="tag:foo"),
@@ -132,7 +152,9 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Explicit keys should support anchors and tags"
 
     testCase "5.1.2 Sequence as mapping key" <| fun _ ->
-        let yaml = "? - Detroit Tigers\n  - Chicago cubs\n: - 2001-07-23"
+        let yaml = """? - Detroit Tigers
+  - Chicago cubs
+: - 2001-07-23"""
         let actual = Reader.read yaml
         let expectedKey = "- Detroit Tigers\n- Chicago cubs"
         // Since we flatten complex keys to string for now:
@@ -145,7 +167,10 @@ let Main = testList "Advanced Features" [
         Expect.equal actual expected "Complex key (sequence) should be flattened string"
 
     testCase "5.1.3 Nested mapping as key" <| fun _ ->
-        let yaml = "? [ New York Yankees,\n    Atlanta Braves ]\n: [ 2001-07-02, 2001-08-12,\n    2001-08-14 ]"
+        let yaml = """? [ New York Yankees,
+    Atlanta Braves ]
+: [ 2001-07-02, 2001-08-12,
+    2001-08-14 ]"""
         let actual = Reader.read yaml
         let expectedKey = "[ New York Yankees,\nAtlanta Braves ]"
         let expected = YAMLElement.Object [
@@ -161,4 +186,48 @@ let Main = testList "Advanced Features" [
             )
         ]
         Expect.equal actual expected "Nested mapping key should be flattened string"
+
+    // --- Section 6: Single-Quoted Scalars ---
+
+    testCase "6.1.1 Single-quoted with escaped quote" <| fun _ ->
+        let yaml = """single: 'here''s to "quotes"'"""
+        let actual = Reader.read yaml
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                 YAMLContent.create("single"),
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("here's to \"quotes\""))]
+            )
+        ]
+        Expect.equal actual expected "Should handle escaped single quotes"
+
+    testCase "6.1.2 Single-quoted preserves backslashes" <| fun _ ->
+        let yaml = """tie-fighter: '|\-*-/|'"""
+        let actual = Reader.read yaml
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                 YAMLContent.create("tie-fighter"),
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("|\\-*-/|"))]
+            )
+        ]
+        Expect.equal actual expected "Should preserve backslashes literal"
+
+    testCase "6.1.3 Multi-line single-quoted" <| fun _ ->
+        let yaml = """single: ' 1st non-empty
+
+ 2nd non-empty 
+ 3rd non-empty '"""
+        let actual = Reader.read yaml
+        // Note: Newlines in scalar flow are replaced by spaces unless double 'newline'
+        // But in single quoted strings, newlines are usually converted to spaces.
+        // Let's verify standard behavior:
+        // single quoted multiline replaces newline with space
+        // empty line becomes newline
+        let expectedValue = " 1st non-empty\n2nd non-empty 3rd non-empty "
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                 YAMLContent.create("single"),
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create(expectedValue))]
+            )
+        ]
+        Expect.equal actual expected "Should handle multi-line single quoted strings"
 ]
