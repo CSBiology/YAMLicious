@@ -77,6 +77,12 @@ module Formatting =
         else
             v
 
+    let mkKeyContent (options: WriterOptions) (content: YAMLContent) =
+        mkNodePrefix content + scalarToInlineText options content
+
+    let mkMappingKey (options: WriterOptions) (key: YAMLContent) =
+        mkKey (mkKeyContent options key)
+
     let shouldEmitBlockScalar (options: WriterOptions) (content: YAMLContent) =
         let hasMultiline = content.Value.Contains("\n")
         match options.PreserveScalarStyle, content.Style with
@@ -124,12 +130,12 @@ module Formatting =
     let private splitPreservingEmpty (s: string) =
         s.Split([| '\n' |], System.StringSplitOptions.None) |> Array.toList
 
-    let mkBlockScalarMapping (options: WriterOptions) (key: string) (content: YAMLContent) =
+    let mkBlockScalarMapping (options: WriterOptions) (key: YAMLContent) (content: YAMLContent) =
         let style, chomp, indent = resolveBlockStyle options content
         let header = mkBlockHeader style chomp indent
         let bodyText = bodyTextForChomping chomp content.Value
         let lines = splitPreservingEmpty bodyText
-        let headerLine = mkKey key + " " + mkNodePrefix content + header |> appendComment content
+        let headerLine = mkMappingKey options key + " " + mkNodePrefix content + header |> appendComment content
         PreprocessorElement.Level [
             PreprocessorElement.Line headerLine
             PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
@@ -154,16 +160,16 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
         | YAMLElement.Mapping (key, v) ->
             match v with
             | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
-                Formatting.mkBlockScalarMapping options key.Value value
+                Formatting.mkBlockScalarMapping options key value
             | YAMLElement.Value value ->
-                let s = Formatting.mkKey key.Value + " " + Formatting.mkInlineContent options value
+                let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineContent options value
                 PreprocessorElement.Line s
             | YAMLElement.Sequence seq when StyleVerifier.checkInlineSequence seq ->
-                let s = Formatting.mkKey key.Value + " " + Formatting.mkInlineSequence options seq
+                let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineSequence options seq
                 PreprocessorElement.Line s
             | anyElse ->
                 PreprocessorElement.Level [
-                    PreprocessorElement.Line (Formatting.mkKey (Formatting.mkInlineContent options key))
+                    PreprocessorElement.Line (Formatting.mkMappingKey options key)
                     PreprocessorElement.Intendation [
                         loop anyElse
                     ]

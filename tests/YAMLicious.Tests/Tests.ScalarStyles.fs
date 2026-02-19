@@ -111,6 +111,21 @@ let Main =
             let ast2 = Reader.read written
             Expect.equal ast2 ast1 $"Round-trip mismatch for {label}"
 
+    testCase "Explicit indentation indicator round-trip preserves semantic value" <| fun _ ->
+        let yaml = """doc: |2
+  explicit
+"""
+        let ast1 = Reader.read yaml
+        let value1 = expectSingleMappingValue ast1
+        Expect.equal value1.Value "explicit\n" "Initial explicit-indent parse should produce expected value"
+        Expect.equal value1.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 2))) "Style should preserve explicit indent metadata"
+
+        let written = Writer.write ast1 None
+        let ast2 = Reader.read written
+        let value2 = expectSingleMappingValue ast2
+        Expect.equal value2.Value value1.Value "Explicit-indent round-trip should not add leading spaces"
+        Expect.equal ast2 ast1 "Explicit-indent round-trip should keep metadata and value"
+
     testCase "Expression block scalar keeps quote delimiters and stays block style on write" <| fun _ ->
         let yaml = """expression: >
   ${ return (function() {
@@ -144,6 +159,25 @@ let Main =
         Expect.equal (written.Contains("!<tag:yaml.org,2002:str>")) true "Writer should emit resolved tag as verbatim form"
         let reparsed = Reader.read written
         Expect.equal reparsed parsed "Resolved tags should survive read-write-read without mutation"
+
+    testCase "Writer preserves key tag and anchor metadata in mapping emission" <| fun _ ->
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("k", tag="tag:foo", anchor="a1"),
+                    YAMLElement.Value(YAMLContent.create("v"))
+                )
+            ]
+        let written = Writer.write ast None
+        Expect.equal (written.Contains("!<tag:foo> &a1 k:")) true "Mapping key metadata should be emitted in scalar-value mapping branch"
+        let reparsed = Reader.read written
+        match reparsed with
+        | YAMLElement.Object [YAMLElement.Mapping(key, YAMLElement.Object [YAMLElement.Value value])] ->
+            Expect.equal key.Tag (Some "tag:foo") "Reparsed key should preserve tag metadata"
+            Expect.equal key.Anchor (Some "a1") "Reparsed key should preserve anchor metadata"
+            Expect.equal value.Value "v" "Reparsed value should be preserved"
+        | _ ->
+            failwithf "Unexpected reparsed AST shape: %A" reparsed
 
     testCase "Non-specific tag round-trip remains '!'" <| fun _ ->
         let yaml = "- ! 12"
