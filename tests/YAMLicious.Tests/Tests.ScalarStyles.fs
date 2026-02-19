@@ -136,4 +136,19 @@ let Main =
 
         let reparsed = Reader.read written
         Expect.equal reparsed parsed "Expression read-write-read should preserve style metadata and semantics"
+
+    testCase "Resolved tag round-trip stays semantically stable" <| fun _ ->
+        let yaml = "foo: !!str bar"
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        Expect.equal (written.Contains("!<tag:yaml.org,2002:str>")) true "Writer should emit resolved tag as verbatim form"
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Resolved tags should survive read-write-read without mutation"
+
+    testCase "Non-specific tag round-trip remains '!'" <| fun _ ->
+        let yaml = "- ! 12"
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Non-specific tag should not be rewritten to another tag kind"
   ]

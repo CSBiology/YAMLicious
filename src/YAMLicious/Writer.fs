@@ -30,9 +30,11 @@ module Formatting =
     let mkMinusLine (c: string) = "- " + c
 
     let private mkTag (tag: string option) =
-        tag
-        |> Option.map (fun s -> if s.StartsWith("<") then "!" + s + " " else "!" + s + " ")
-        |> Option.defaultValue ""
+        match tag with
+        | None -> ""
+        | Some "!" -> "! "
+        | Some s when s.StartsWith("!") && not (s.StartsWith("!!")) -> s + " "
+        | Some s -> "!<" + s + "> "
 
     let private mkAnchor (anchor: string option) =
         anchor
