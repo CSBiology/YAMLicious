@@ -147,6 +147,63 @@ let Main =
         let actual = Reader.read yaml
         Expect.equal actual expected "Root block scalar should parse as value node"
 
+    testCase "Sequence item supports literal block scalar" <| fun _ ->
+        let yaml = """- |
+  text
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            "text\n",
+                            style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                        )
+                    )
+                ]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Sequence block scalar should parse as a single scalar value item"
+
+    testCase "Literal block scalar preserves trailing spaces" <| fun _ ->
+        let yaml = """doc: |
+  a 
+  b  
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "a \nb  \n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Trailing spaces in literal block content should be preserved"
+
+    testCase "Block scalar keeps quote delimiters exactly" <| fun _ ->
+        let yaml = """doc: |
+  sql: 'it''s'
+  if x == "y"
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "sql: 'it''s'\nif x == \"y\"\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Quoted delimiters inside block scalars should remain literal content"
+
     testCase "Block scalar keeps quote delimiters in placeholders" <| fun _ ->
         let yaml = """expression: >
   ${ return (function() {

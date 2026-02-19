@@ -119,7 +119,7 @@ My Key: # This is a comment
         let expected = Level [
             Line "My Key: <c f=0/>"
             Intendation [
-                Line "My Value1"
+                Line "My Value1 "
                 Line "<s f=0/>"
                 Line "My Value3 <c f=1/>"
             ]

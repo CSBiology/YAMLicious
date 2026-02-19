@@ -152,6 +152,16 @@ let Main =
         let reparsed = Reader.read written
         Expect.equal reparsed parsed "Expression read-write-read should preserve style metadata and semantics"
 
+    testCase "Root block scalar preserves tag/anchor/comment on write" <| fun _ ->
+        let yaml = """!<tag:foo> &a1 | # c
+  hi
+"""
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        Expect.equal (written.Contains("!<tag:foo> &a1 | # c")) true "Writer should emit root block-scalar metadata prefix and comment"
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Root block scalar metadata should survive read-write-read"
+
     testCase "Resolved tag round-trip stays semantically stable" <| fun _ ->
         let yaml = "foo: !!str bar"
         let parsed = Reader.read yaml

@@ -222,6 +222,32 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected "Single quotes inside double-quoted scalar should not be placeholder-leaked"
 
+    testCase "Plain scalar with embedded single quotes stays intact" <| fun _ ->
+        let yaml = "key: rock 'n' roll"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("rock 'n' roll"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Single quotes in plain scalars should remain literal content"
+
+    testCase "Plain scalar with embedded double quotes stays intact" <| fun _ ->
+        let yaml = "key: he said \"hi\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("he said \"hi\""))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Double quotes in plain scalars should remain literal content"
+
     testCase "Sequence" <| fun _ ->
         let yaml = """
 - My Value 1

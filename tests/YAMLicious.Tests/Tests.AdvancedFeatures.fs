@@ -217,13 +217,11 @@ rbi:
  2nd non-empty 
  3rd non-empty '"""
         let actual = Reader.read yaml
-        let expectedValuePrimary = " 1st non-empty\n2nd non-empty 3rd non-empty "
-        let expectedValueSecondary = " 1st non-empty\n 2nd non-empty 3rd non-empty "
+        let expectedValue = " 1st non-empty\n2nd non-empty 3rd non-empty "
         match actual with
         | YAMLElement.Object [YAMLElement.Mapping(k, YAMLElement.Object [YAMLElement.Value value])] ->
             Expect.equal k.Value "single" "Mapping key should be parsed"
-            let valueMatches = value.Value = expectedValuePrimary || value.Value = expectedValueSecondary
-            Expect.equal valueMatches true "Multiline single-quoted scalar should preserve semantic folding"
+            Expect.equal value.Value expectedValue "Multiline single-quoted scalar should preserve semantic folding"
             Expect.equal value.Style (Some ScalarStyle.SingleQuoted) "Single-quoted style should be preserved"
         | _ ->
             failwithf "Unexpected AST: %A" actual
