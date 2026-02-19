@@ -14,7 +14,7 @@ let Main = testList "Advanced Features" [
 """
         let actual = Reader.read yaml
         let expected = YAMLElement.Object [
-            YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo"))
+            YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo", style=ScalarStyle.DoubleQuoted))
         ]
         Expect.equal actual expected "Primary tag handle ! should resolve"
 
@@ -25,7 +25,7 @@ let Main = testList "Advanced Features" [
 """
         let actual = Reader.read yaml
         let expected = YAMLElement.Object [
-            YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo"))
+            YAMLElement.Value(YAMLContent.create("bar", tag="tag:example.com,2000:app/foo", style=ScalarStyle.DoubleQuoted))
         ]
         Expect.equal actual expected "Named tag handle !e! should resolve"
 
@@ -195,7 +195,7 @@ rbi:
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                  YAMLContent.create("single"),
-                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("here's to \"quotes\""))]
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("here's to \"quotes\"", style=ScalarStyle.SingleQuoted))]
             )
         ]
         Expect.equal actual expected "Should handle escaped single quotes"
@@ -206,7 +206,7 @@ rbi:
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                  YAMLContent.create("tie-fighter"),
-                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("|\\-*-/|"))]
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("|\\-*-/|", style=ScalarStyle.SingleQuoted))]
             )
         ]
         Expect.equal actual expected "Should preserve backslashes literal"
@@ -226,7 +226,7 @@ rbi:
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                  YAMLContent.create("single"),
-                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create(expectedValue))]
+                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create(expectedValue, style=ScalarStyle.SingleQuoted))]
             )
         ]
         Expect.equal actual expected "Should handle multi-line single quoted strings"

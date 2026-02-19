@@ -135,7 +135,7 @@ doc3"""
         // Therefore, `!foo` (which uses the `!` handle) resolves to `t!` + `foo` = `t!foo`.
         // We verify that the parser correctly performs this expansion.
         let doc2 = YAMLElement.Object [
-            YAMLElement.Value(YAMLContent.create("doc2", tag="t!foo"))
+            YAMLElement.Value(YAMLContent.create("doc2", tag="t!foo", style=ScalarStyle.DoubleQuoted))
         ]
         
         // Document 3: Simple scalar

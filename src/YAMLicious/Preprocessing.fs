@@ -42,17 +42,30 @@ let read (yamlStr: string) =
         match lines with
         | [] -> acc
         | line :: rest ->
-            let lineEle = Line(line.Trim())
-            let nextIntendation = ReadHelpers.indentLevel line
+            let isEmptyLine = line.Trim() = ""
+            let trimmedLine = if isEmptyLine then "" else line.Trim()
+            let lineEle = Line(trimmedLine)
+            // Empty lines belong to the current indentation context.
+            let nextIntendation =
+                if isEmptyLine then currentIntendation
+                else ReadHelpers.indentLevel line
 
             if nextIntendation = currentIntendation then
-                loop rest currentIntendation (Line(line.Trim()) :: acc)
+                loop rest currentIntendation (lineEle :: acc)
             else
                 let nextLevelLines =
-                    rest |> List.takeWhile (fun l -> ReadHelpers.indentLevel l > currentIntendation)
+                    rest
+                    |> List.takeWhile (fun l ->
+                        let isEmpty = l.Trim() = ""
+                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                    )
 
                 let currentLevelLines =
-                    rest |> List.skipWhile (fun l -> ReadHelpers.indentLevel l > currentIntendation)
+                    rest
+                    |> List.skipWhile (fun l ->
+                        let isEmpty = l.Trim() = ""
+                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                    )
 
                 let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
                 let children = lineEle :: otherChildren

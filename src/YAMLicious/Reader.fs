@@ -9,48 +9,70 @@ open YAMLicious.RegexActivePatterns
 open YAMLicious.YAMLiciousTypes
 open System.Collections.Generic
 
-let private tryGetSingleQuotedPlaceholderValue (rawString: string) =
-    if rawString.StartsWith(YAMLicious.Persil.SingleQuotedMarker) then
-        Some (rawString.Substring(YAMLicious.Persil.SingleQuotedMarker.Length))
-    else
-        None
-
-let private restoreScalarPlaceholderValue (rawString: string) =
-    match tryGetSingleQuotedPlaceholderValue rawString with
-    | Some singleQuoted -> singleQuoted
-    | None ->
+let private restoreScalarPlaceholderValue (entry: StringMapEntry) =
+    match entry.Kind with
+    | QuotedStringKind.SingleQuotedString -> entry.Value
+    | QuotedStringKind.DoubleQuotedString ->
         // Double-quoted scalars need escape processing for the decoded value.
-        YAMLicious.Escapes.unescapeDoubleQuoted rawString
+        YAMLicious.Escapes.unescapeDoubleQuoted entry.Value
 
-let private restoreBlockScalarPlaceholderValue (rawString: string) =
-    match tryGetSingleQuotedPlaceholderValue rawString with
-    | Some singleQuoted ->
+let private restoreBlockScalarPlaceholderValue (entry: StringMapEntry) =
+    match entry.Kind with
+    | QuotedStringKind.SingleQuotedString ->
         // Inside a block scalar, quote delimiters are literal content and must be preserved.
-        "'" + singleQuoted + "'"
-    | None ->
-        "\"" + rawString + "\""
+        "'" + entry.Value + "'"
+    | QuotedStringKind.DoubleQuotedString ->
+        "\"" + entry.Value + "\""
 
-let private restoreStringReplace (stringDict: Dictionary<int, string>) (v: string)  =
+let private tryParseExactPlaceholderIndex (v: string) =
+    let m = Regex.Match(v.Trim(), "^\<s f=(?<index>\d+)\/\>$")
+    if m.Success then Some (int m.Groups.["index"].Value) else None
+
+let private restoreStringReplace (stringDict: Dictionary<int, StringMapEntry>) (v: string)  =
     System.Text.RegularExpressions.Regex.Replace(v, StringReplacementPattern, fun m ->
         let index = m.Groups.["index"].Value |> int
-        let rawString = stringDict.[index]
-        restoreScalarPlaceholderValue rawString
+        restoreScalarPlaceholderValue stringDict.[index]
     )
 
 let private parseBlockScalarHeader (header: string) =
-    let m = System.Text.RegularExpressions.Regex.Match(header, "^([|>])([1-9])?([+-])?")
-    if m.Success then
-        let style = m.Groups.[1].Value
-        let indent = if m.Groups.[2].Success then Some (int m.Groups.[2].Value) else None
-        let chomp = if m.Groups.[3].Success then Some m.Groups.[3].Value else None
-        Some (style, indent, chomp)
-    else None
+    let h = header.Trim()
+    if System.String.IsNullOrWhiteSpace h then None
+    else
+        let styleOpt =
+            match h.[0] with
+            | '|' -> Some BlockScalarStyle.Literal
+            | '>' -> Some BlockScalarStyle.Folded
+            | _ -> None
 
-let private applyChomping (chomp: string option) (content: string) =
+        match styleOpt with
+        | None -> None
+        | Some style ->
+            let mutable indent: int option = None
+            let mutable chomp = ChompingMode.Clip
+            let mutable isValid = true
+
+            for i in 1 .. h.Length - 1 do
+                match h.[i] with
+                | c when c >= '1' && c <= '9' ->
+                    if indent.IsSome then isValid <- false
+                    else indent <- Some (int (string c))
+                | '-' ->
+                    if chomp <> ChompingMode.Clip then isValid <- false
+                    else chomp <- ChompingMode.Strip
+                | '+' ->
+                    if chomp <> ChompingMode.Clip then isValid <- false
+                    else chomp <- ChompingMode.Keep
+                | _ ->
+                    isValid <- false
+
+            if isValid then Some (style, indent, chomp) else None
+
+let private applyChomping (chomp: ChompingMode) (content: string) =
     match chomp with
-    | Some "-" -> content.TrimEnd([|'\r'; '\n'|])
-    | Some "+" -> content
-    | _ -> // Clip: keep one newline at end if present
+    | ChompingMode.Strip -> content.TrimEnd([|'\r'; '\n'|])
+    | ChompingMode.Keep -> content
+    | ChompingMode.Clip ->
+        // Clip: keep one newline at end if present
         let trimmed = content.TrimEnd([|'\r'; '\n'|])
         if content.Length > trimmed.Length then trimmed + "\n" else trimmed
 
@@ -109,7 +131,7 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
     
 let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
 
-let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, string>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
+let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     // First pass: transform any flow-style elements to block-style
     let ctx = defaultContext stringDict
     let blockStyleList = transformElements ctx yamlList
@@ -121,7 +143,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 StringReplacementPattern,
                 (fun (m: Match) ->
                     let idx = m.Groups.["index"].Value |> int
-                    restoreBlockScalarPlaceholderValue (stringDict.[idx])
+                    restoreBlockScalarPlaceholderValue stringDict.[idx]
                 )
             )
         Regex.Replace(
@@ -142,6 +164,21 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ["- " + restoreInlinePlaceholders v.Value.Value]
             | SequenceMinusOpener _ -> ["-"]
             | _ -> [])
+
+    let restoreScalarWithStyle (raw: string) =
+        match tryParseExactPlaceholderIndex raw with
+        | Some idx ->
+            let entry = stringDict.[idx]
+            let value = restoreScalarPlaceholderValue entry
+            let style =
+                match entry.Kind with
+                | QuotedStringKind.SingleQuotedString -> ScalarStyle.SingleQuoted
+                | QuotedStringKind.DoubleQuotedString -> ScalarStyle.DoubleQuoted
+            value, Some style
+        | None ->
+            let value = restoreStringReplace stringDict raw
+            // Keep plain scalars style-neutral for backward compatibility.
+            value, None
 
     let resolveTagShorthand (handles: Map<string, string>) (shorthand: string) : string =
         if shorthand = "!" then "!"
@@ -441,7 +478,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 let lines = flattenBlockScalar block
                 
                 let content = 
-                    if style = "|" then
+                    if style = BlockScalarStyle.Literal then
                         // Literal: join with newlines
                         System.String.Join("\n", lines) + "\n" // Literal style implies keeping newlines + one at end usually
                     else
@@ -455,7 +492,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 let current =
                     YAMLElement.Mapping (
                         YAMLContent.create(props.Value, ?anchor=props.Anchor, ?tag=props.Tag),
-                        YAMLElement.Value (YAMLContent.create(finalContent))
+                        YAMLElement.Value (
+                            YAMLContent.create(
+                                finalContent,
+                                style = ScalarStyle.Block(style, chomp, indent)
+                            )
+                        )
                     )
                 loopRead handles rest (current::acc)
             | None -> failwithf "Invalid block scalar header: %s" v.Value
@@ -475,14 +517,17 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current = 
                 YAMLElement.Comment (c)
             loopRead handles rest (current::acc)
+        | YamlValue v::rest when v.Value = "" && v.Comment.IsNone ->
+            // Ignore structural blank lines outside explicit scalar contexts.
+            loopRead handles rest acc
         // My Value <c f=1/>
         | YamlValue v::rest -> // createValue
             let c = restoreCommentReplace commentDict v.Comment
             let props = extractProperties handles v.Value
-            let finalValue = restoreStringReplace stringDict props.Value
+            let finalValue, finalStyle = restoreScalarWithStyle props.Value
             let current = 
                 YAMLElement.Value (
-                    YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag)
+                    YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
                 )
             loopRead handles rest (current::acc)
         | [] ->

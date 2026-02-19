@@ -125,7 +125,10 @@ My Key: # This is a comment
             ]
         ]
         let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
-        let expectedStringDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, "# This is not a comment!"])
+        let expectedStringDict =
+            new System.Collections.Generic.Dictionary<int, StringMapEntry>(
+                Map [0, { Value = "# This is not a comment!"; Kind = QuotedStringKind.DoubleQuotedString }]
+            )
         Expect.equal actual.AST expected "ast"
         Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
         Expect.dictEqual actual.StringMap expectedStringDict "strings"

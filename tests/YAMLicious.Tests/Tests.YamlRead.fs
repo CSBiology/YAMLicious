@@ -85,7 +85,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("single"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("hello world"))
+                    YAMLElement.Value(YAMLContent.create("hello world", style=ScalarStyle.SingleQuoted))
                 ]
             )
         ]
@@ -98,7 +98,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("single"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("here's to quotes"))
+                    YAMLElement.Value(YAMLContent.create("here's to quotes", style=ScalarStyle.SingleQuoted))
                 ]
             )
         ]
@@ -111,7 +111,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("tie-fighter"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("|\\-*-/|"))
+                    YAMLElement.Value(YAMLContent.create("|\\-*-/|", style=ScalarStyle.SingleQuoted))
                 ]
             )
         ]
@@ -124,7 +124,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("line1\nline2"))
+                    YAMLElement.Value(YAMLContent.create("line1\nline2", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -137,7 +137,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("before\tafter"))
+                    YAMLElement.Value(YAMLContent.create("before\tafter", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -150,7 +150,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("path\\to\\file"))
+                    YAMLElement.Value(YAMLContent.create("path\\to\\file", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -163,7 +163,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("ABC"))
+                    YAMLElement.Value(YAMLContent.create("ABC", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -176,7 +176,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("☺"))
+                    YAMLElement.Value(YAMLContent.create("☺", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -189,7 +189,7 @@ let Main = testList "YamlRead" [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("before\u0000after"))
+                    YAMLElement.Value(YAMLContent.create("before\u0000after", style=ScalarStyle.DoubleQuoted))
                 ]
             )
         ]
@@ -527,7 +527,7 @@ $namespaces:
   - R and combinations of library dependencies are available as multi-package containers from [BioContainers](https://github.com/BioContainers/multi-package-containers)
   - Searched for `repo:BioContainers/multi-package-containers deseq2 tximport rhdf5`
   - and found `quay.io/biocontainers/mulled-v2-05fd88b9ac812a9149da2f2d881d62f01cc49835:a10f0e3a7a70fc45494f8781d33901086d2214d0-0` :tada:"""
-        let block = System.String.Join("\n", [|
+        let blockLines = [|
             "DESeq2 example workflow for **differential gene expression analysis**";
             "";
             "This workflow runs DESeq2 on the output of the kallisto workflow";
@@ -536,19 +536,23 @@ $namespaces:
             "1. Read kallsito data";
             "2. Prep / run deseq2";
             "3. Plot results";
+            "";
             "## DESeq2 docs:";
             "https://bioconductor.org/packages/release/bioc/html/DESeq2.html";
+            "";
             "## Importing kallisto output with tximport";
             "https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html#kallisto";
+            "";
             "## Multi-package containers";
             "- R and combinations of library dependencies are available as multi-package containers from [BioContainers](https://github.com/BioContainers/multi-package-containers)";
             "- Searched for `repo:BioContainers/multi-package-containers deseq2 tximport rhdf5`";
             "- and found `quay.io/biocontainers/mulled-v2-05fd88b9ac812a9149da2f2d881d62f01cc49835:a10f0e3a7a70fc45494f8781d33901086d2214d0-0` :tada:";
-        |])
+        |]
+        let block = System.String.Join("\n", blockLines) + "\n"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("doc"),
-                YAMLElement.Value (YAMLContent.create(block))
+                YAMLElement.Value (YAMLContent.create(block, style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
             )
         ]
         let actual = Reader.read yaml
@@ -635,14 +639,14 @@ Sammy Sosa: {
                         YAMLElement.Object [
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerImageId"),
-                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer", style=ScalarStyle.DoubleQuoted)) ]
                             );
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerFile"),
                                 YAMLElement.Object [
                                     YAMLElement.Mapping(
                                         YAMLContent.create("$include"),
-                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile", style=ScalarStyle.DoubleQuoted)) ]
                                     )
                                 ]
                             )
@@ -693,14 +697,14 @@ Sammy Sosa: {
                         YAMLElement.Object [
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerImageId"),
-                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer", style=ScalarStyle.DoubleQuoted)) ]
                             );
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerFile"),
                                 YAMLElement.Object [
                                     YAMLElement.Mapping(
                                         YAMLContent.create("$include"),
-                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile", style=ScalarStyle.DoubleQuoted)) ]
                                     )
                                 ]
                             )
@@ -761,12 +765,12 @@ Sammy Sosa: {
                                 YAMLElement.Object [
                                     YAMLElement.Sequence [
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)", style=ScalarStyle.DoubleQuoted)) ]);
                                             YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
                                         ];
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)", style=ScalarStyle.DoubleQuoted)) ]);
                                             YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
                                         ]
                                     ]
@@ -782,12 +786,12 @@ Sammy Sosa: {
                                 YAMLElement.Object [
                                     YAMLElement.Sequence [
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("DOTNET_NOLOGO")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("DOTNET_NOLOGO", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true", style=ScalarStyle.DoubleQuoted)) ])
                                         ];
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("TEST")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("false")) ])
+                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("TEST", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("false", style=ScalarStyle.DoubleQuoted)) ])
                                         ]
                                     ]
                                 ]

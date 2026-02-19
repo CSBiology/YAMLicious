@@ -3,6 +3,7 @@
 open System
 open System.Collections.Generic
 open System.Text.RegularExpressions
+open YAMLiciousTypes
 
 // Patterns:
 // https://regex101.com/r/V0AkIH/1
@@ -44,11 +45,7 @@ let CommentMatchPattern =
 [<Literal>]
 let NewLineChar = '\n'
 
-/// Internal marker so Reader can distinguish placeholders originating from single-quoted scalars.
-[<Literal>]
-let SingleQuotedMarker = "\u0001SQ\u0001"
-
-let private nextStringIndex (dict: Dictionary<int, string>) =
+let private nextStringIndex (dict: Dictionary<int, StringMapEntry>) =
     if dict.Count = 0 then 0
     else (dict.Keys |> Seq.max) + 1
 
@@ -65,7 +62,7 @@ let encodingCleanUp (s: string) =
     //    sb.ToString()
     s1
 
-let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
+let stringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
     let mutable n = nextStringIndex dict
     let regex = Regex(StringMatchPattern)
     let matcheval = new MatchEvaluator(fun m ->
@@ -76,7 +73,7 @@ let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
             let v = m.Groups.["stringValue"].Value
             let currentN = n
             n <- n + 1
-            dict.Add(currentN, v)
+            dict.Add(currentN, { Value = v; Kind = QuotedStringKind.DoubleQuotedString })
             sprintf "<s f=%i/>" currentN
     )
     regex.Replace(s, matcheval)
@@ -97,7 +94,7 @@ let foldSingleQuoted (s: string) =
             sb.Append(line) |> ignore
     sb.ToString().Replace("''", "'")
 
-let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
+let singleQuotedStringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
     let mutable n = nextStringIndex dict
     let regex = Regex(SingleQuotedStringPattern)
     let matcheval = new MatchEvaluator(fun m ->
@@ -109,7 +106,7 @@ let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
             let v = foldSingleQuoted m.Groups.["stringValue"].Value
             let currentN = n
             n <- n + 1
-            dict.Add(currentN, SingleQuotedMarker + v)
+            dict.Add(currentN, { Value = v; Kind = QuotedStringKind.SingleQuotedString })
             sprintf "<s f=%i/>" currentN
     )
     regex.Replace(s, matcheval)
@@ -127,7 +124,18 @@ let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
     regex.Replace(s, matcheval)
 
 let cut(yamlString: string) =
-    yamlString.Split([|NewLineChar|], StringSplitOptions.RemoveEmptyEntries)
+    let lines =
+        yamlString.Split([|NewLineChar|], StringSplitOptions.None)
+        |> Array.toList
+    let withoutLeading =
+        match lines with
+        | ""::rest -> rest
+        | _ -> lines
+    let withoutTrailing =
+        match List.rev withoutLeading with
+        | ""::rest -> List.rev rest
+        | _ -> withoutLeading
+    withoutTrailing |> List.toArray
 
 let parseYAMLDirective (line: string) : YAMLiciousTypes.YAMLDirective option =
     let m = Regex.Match(line.Trim(), "^%YAML\s+(\d+)\.(\d+)")
@@ -143,7 +151,7 @@ let parseTagDirective (line: string) : (string * string) option =
     else None
 
 let pipeline (yamlString: string) =
-    let stringMap = new Dictionary<int, string>()
+    let stringMap = new Dictionary<int, StringMapEntry>()
     let commentMap = new Dictionary<int, string>()
     let lines =
         encodingCleanUp yamlString

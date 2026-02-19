@@ -9,7 +9,7 @@ open Regex
 type TransformContext = {
     BaseIndent: int           // Current indentation level (in spaces)
     IndentStep: int           // Spaces per indent level (default: 2)
-    StringDict: Dictionary<int, string>  // For string placeholder lookup
+    StringDict: Dictionary<int, StringMapEntry>  // For string placeholder lookup
 }
 
 let defaultContext stringDict = {

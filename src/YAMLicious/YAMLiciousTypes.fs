@@ -16,9 +16,43 @@ type Config =
 
 type YAMLDirective = { Major: int; Minor: int }
 
+type BlockScalarStyle =
+    | Literal
+    | Folded
+
+type ChompingMode =
+    | Strip
+    | Clip
+    | Keep
+
+type ScalarStyle =
+    | Plain
+    | SingleQuoted
+    | DoubleQuoted
+    | Block of BlockScalarStyle * ChompingMode * int option
+
+type QuotedStringKind =
+    | SingleQuotedString
+    | DoubleQuotedString
+
+type StringMapEntry = {
+    Value: string
+    Kind: QuotedStringKind
+}
+
+type WriterOptions = {
+    PreserveScalarStyle: bool
+    MultilineFallbackStyle: BlockScalarStyle
+    MultilineFallbackChomping: ChompingMode
+} with
+    static member Default =
+        { PreserveScalarStyle = true
+          MultilineFallbackStyle = BlockScalarStyle.Literal
+          MultilineFallbackChomping = ChompingMode.Strip }
+
 type Preprocessor = {
     AST: PreprocessorElement
-    StringMap: Dictionary<int, string>
+    StringMap: Dictionary<int, StringMapEntry>
     CommentMap: Dictionary<int, string>
     YAMLVersion: YAMLDirective option
     TagHandles: Map<string, string> 
@@ -58,9 +92,10 @@ type YAMLContent = {
     Comment: string option
     Anchor: string option
     Tag: string option
+    Style: ScalarStyle option
 } with
-    static member create(value, ?comment, ?anchor, ?tag) = 
-        { Value = value; Comment = comment; Anchor = anchor; Tag = tag }
+    static member create(value, ?comment, ?anchor, ?tag, ?style) = 
+        { Value = value; Comment = comment; Anchor = anchor; Tag = tag; Style = style }
 
 [<RequireQualifiedAccess>]
 type YAMLElement =
@@ -90,3 +125,25 @@ let NewLineChar = '\n'
 
 [<Literal>]
 let YAML_NULL = "null"
+
+module YAMLElementNormalization =
+
+    let withoutScalarStyleInContent (content: YAMLContent) =
+        { content with Style = None }
+
+    let rec withoutScalarStyle (element: YAMLElement) =
+        match element with
+        | YAMLElement.Mapping (key, value) ->
+            YAMLElement.Mapping (withoutScalarStyleInContent key, withoutScalarStyle value)
+        | YAMLElement.Value value ->
+            YAMLElement.Value (withoutScalarStyleInContent value)
+        | YAMLElement.Sequence items ->
+            YAMLElement.Sequence (items |> List.map withoutScalarStyle)
+        | YAMLElement.Object items ->
+            YAMLElement.Object (items |> List.map withoutScalarStyle)
+        | YAMLElement.Comment _
+        | YAMLElement.DocumentStart
+        | YAMLElement.DocumentEnd
+        | YAMLElement.Alias _
+        | YAMLElement.Nil ->
+            element

@@ -19,7 +19,7 @@ let Main =
                 // If we use |2, we tell the parser the indentation level.
                 // NOTE: Current YAMLicious preprocessing separates indentation before Reader sees it.
                 // We test if Reader accepts the header "|2".
-                YAMLElement.Value(YAMLContent.create("explicit\n"))
+                YAMLElement.Value(YAMLContent.create("explicit\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 2)))
             )
         ]
         let actual = Reader.read yaml
@@ -32,7 +32,7 @@ let Main =
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("strip"),
-                YAMLElement.Value(YAMLContent.create("text"))
+                YAMLElement.Value(YAMLContent.create("text", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Strip, None)))
             )
         ]
         let actual = Reader.read yaml
@@ -47,7 +47,7 @@ let Main =
              YAMLElement.Mapping(
                 YAMLContent.create("keep"),
                 // "text\n" (from text line) + "\n" (empty line) -> "text\n\n"
-                YAMLElement.Value(YAMLContent.create("text\n\n"))
+                YAMLElement.Value(YAMLContent.create("text\n\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Keep, None)))
             )
         ]
         let actual = Reader.read yaml
@@ -61,7 +61,7 @@ let Main =
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("folded"),
-                YAMLElement.Value(YAMLContent.create("line 1 line 2\n"))
+                YAMLElement.Value(YAMLContent.create("line 1 line 2\n", style=ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Clip, None)))
             )
         ]
         let actual = Reader.read yaml

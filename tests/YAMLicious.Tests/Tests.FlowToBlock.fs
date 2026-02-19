@@ -97,7 +97,7 @@ let Main = testList "FlowToBlock" [
 
     testList "transformFlowContent" [
         testCase "simple object to block" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "{key: value}"
             let result = transformFlowContent ctx input
@@ -105,7 +105,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should convert simple object to block style"
 
         testCase "nested object to block" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "{outer: {inner: value}}"
             let result = transformFlowContent ctx input
@@ -118,7 +118,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should convert nested object to block style with indentation"
 
         testCase "multi-key object to block" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "{a: 1, b: 2, c: 3}"
             let result = transformFlowContent ctx input
@@ -130,7 +130,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should convert multi-key object to block style"
 
         testCase "simple array to block" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "[a, b, c]"
             let result = transformFlowContent ctx input
@@ -142,7 +142,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should convert simple array to block style"
 
         testCase "array of objects to block" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "[{a: 1}, {b: 2}]"
             let result = transformFlowContent ctx input
@@ -154,7 +154,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should convert array of objects to block style"
 
         testCase "deeply nested structure" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "{a: {b: {c: value}}}"
             let result = transformFlowContent ctx input
@@ -170,7 +170,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should handle deeply nested structures with proper indentation"
 
         testCase "empty object" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let input = "{}"
             let result = transformFlowContent ctx input
@@ -178,8 +178,8 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should return empty list for empty object"
 
         testCase "preserves string placeholders" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
-            stringDict.Add(0, "Hello World")
+            let stringDict = Dictionary<int, StringMapEntry>()
+            stringDict.Add(0, { Value = "Hello World"; Kind = QuotedStringKind.DoubleQuotedString })
             let ctx = defaultContext stringDict
             let input = "{key: <s f=0/>}"
             let result = transformFlowContent ctx input
@@ -189,7 +189,7 @@ let Main = testList "FlowToBlock" [
 
     testList "transformElement" [
         testCase "key-value with flow object" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Line "key: {a: 1, b: 2}"
             let result = transformElement ctx element
@@ -203,7 +203,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should transform key-value with flow object"
 
         testCase "key-value with flow array" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Line "key: [1, 2, 3]"
             let result = transformElement ctx element
@@ -218,7 +218,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should transform key-value with flow array"
 
         testCase "preserves non-flow elements" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Line "normal: value"
             let result = transformElement ctx element
@@ -226,7 +226,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should preserve non-flow elements unchanged"
 
         testCase "handles indentation element" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Intendation [
                 PreprocessorElement.Line "key: {a: 1}"
@@ -245,7 +245,7 @@ let Main = testList "FlowToBlock" [
 
     testList "indentation tracking" [
         testCase "custom indent step" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = { BaseIndent = 0; IndentStep = 4; StringDict = stringDict }
             let input = "{outer: {inner: value}}"
             let result = transformFlowContent ctx input
@@ -260,7 +260,7 @@ let Main = testList "FlowToBlock" [
             Expect.equal result expected "Should handle custom indent step"
 
         testCase "non-zero base indent" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = { BaseIndent = 2; IndentStep = 2; StringDict = stringDict }
             let input = "{key: value}"
             let result = transformFlowContent ctx input
@@ -270,7 +270,7 @@ let Main = testList "FlowToBlock" [
 
     testList "comment preservation" [
         testCase "comment after flow array" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Line "[a, b, c] <c f=1/>"
             let result = transformElement ctx element
@@ -291,7 +291,7 @@ let Main = testList "FlowToBlock" [
             Expect.isTrue containsComment "Should preserve comment placeholder"
 
         testCase "comment after flow object" <| fun _ ->
-            let stringDict = Dictionary<int, string>()
+            let stringDict = Dictionary<int, StringMapEntry>()
             let ctx = defaultContext stringDict
             let element = PreprocessorElement.Line "key: {a: 1} <c f=2/>"
             let result = transformElement ctx element
