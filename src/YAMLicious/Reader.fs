@@ -25,7 +25,7 @@ let private restoreBlockScalarPlaceholderValue (entry: StringMapEntry) =
         "\"" + entry.Value + "\""
 
 let private tryParseExactPlaceholderIndex (v: string) =
-    let m = Regex.Match(v.Trim(), "^\<s f=(?<index>\d+)\/\>$")
+    let m = Regex.Match(v.Trim(), $"^{StringReplacementPattern}$")
     if m.Success then Some (int m.Groups.["index"].Value) else None
 
 let private restoreStringReplace (stringDict: Dictionary<int, StringMapEntry>) (v: string)  =
@@ -206,12 +206,20 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             )
         )
 
-    let rec flattenBlockScalar (eles: PreprocessorElement list) : string list =
+    let rec flattenBlockScalarWithDepth (depth: int) (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
-            | Line s -> [restoreInlinePlaceholders s]
-            | Intendation children -> flattenBlockScalar children
+            | Line s ->
+                let prefix =
+                    if s = "" then ""
+                    else System.String(' ', depth * 2)
+                [prefix + restoreInlinePlaceholders s]
+            | Intendation children ->
+                flattenBlockScalarWithDepth (depth + 1) children
             | _ -> [])
+
+    let flattenBlockScalar (eles: PreprocessorElement list) : string list =
+        flattenBlockScalarWithDepth 0 eles
 
     let restoreScalarWithStyle (raw: string) =
         match tryParseExactPlaceholderIndex raw with
@@ -301,8 +309,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         match restlist with
         | AliasNode alias::rest ->
             loopRead handles rest (YAMLElement.Alias alias::acc)
-        | DocumentEnd::rest ->
-            loopRead handles rest acc
+        | DocumentEnd::_ ->
+            acc
+            |> List.rev
+            |> YAMLElement.Object
         | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let objectList = 
                 PreprocessorElement.Line v.Key::yamlAstList
@@ -627,47 +637,122 @@ let read (yaml: string) =
         tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles
     | _ -> failwith "Not a root!"
 
-let readDocuments (yaml: string) : YAMLElement list =
-    // Split the input YAML by document start markers (---)
-    let lines = yaml.Split([|"\r\n"; "\n"|], System.StringSplitOptions.None) |> Array.toList
-    
-    // Reconstruct documents by grouping lines
-    let rec splitDocuments (lines: string list) (currentDoc: string list) (docs: string list list) =
-        match lines with
-        | [] ->
-            if List.isEmpty currentDoc then
-                List.rev docs
-            else
-                List.rev (List.rev currentDoc :: docs)
-        | line::rest when isDocumentStart line ->
-            // Start a new document (skip the --- line)
-            // But if the current document contains ONLY directives, then this --- strictly belongs to it (as separator)
-            // and we should continue accumulating.
-            let isOnlyDirectives (lines: string list) =
-                lines |> List.forall (fun l -> l.TrimStart().StartsWith("%") || l.Trim() = "")
+let private isStreamDocumentMarker (markerCheck: string -> bool) (line: string) =
+    countLeadingSpaces line = 0 && markerCheck line
 
-            if List.isEmpty currentDoc || (isOnlyDirectives currentDoc) then
-                // Merge this --- marker into the document? No, usually we skip it, but Preprocessing might need it?
-                // Actually Preprocessing doesn't care about ---.
-                // But we must NOT push currentDoc to docs yet.
-                splitDocuments rest currentDoc docs
+let private tryInlineContentAfterStartMarker (line: string) =
+    let trimmed = line.TrimStart()
+    if not (trimmed.StartsWith("---")) then
+        None
+    else
+        let rest = trimmed.Substring(3).TrimStart()
+        if System.String.IsNullOrWhiteSpace(rest) || rest.StartsWith("#") then
+            None
+        else
+            Some rest
+
+let private isDirectivePreludeLine (line: string) =
+    let t = line.TrimStart()
+    t = "" || t.StartsWith("%") || t.StartsWith("#")
+
+let private isDirectivePreludeOnly (lines: string list) =
+    let hasDirective =
+        lines
+        |> List.exists (fun line -> line.TrimStart().StartsWith("%"))
+    hasDirective && (lines |> List.forall isDirectivePreludeLine)
+
+let private tryDetectBlockScalarHeaderIndent (line: string) =
+    let stripProperties (s: string) =
+        let rec loop (current: string) =
+            let c = current.TrimStart()
+            if c.StartsWith("&") then
+                let idx = c.IndexOf(' ')
+                if idx < 0 then "" else loop (c.Substring(idx + 1))
+            elif c.StartsWith("!<") then
+                let idx = c.IndexOf('>')
+                if idx < 0 then c else loop (c.Substring(idx + 1))
+            elif c.StartsWith("!") && not (c.StartsWith("|")) && not (c.StartsWith(">")) then
+                let idx = c.IndexOf(' ')
+                if idx < 0 then "" else loop (c.Substring(idx + 1))
             else
-                splitDocuments rest [] (List.rev currentDoc :: docs)
-        | line::rest when isDocumentEnd line ->
-            // End current document (don't include the ... marker) - using DocumentEnd pattern logic
-            if List.isEmpty currentDoc then
-                splitDocuments rest [] docs
-            else
-                splitDocuments rest [] (List.rev currentDoc :: docs)
+                c
+        loop s
+
+    let trimmed = line.TrimStart()
+    let afterDash =
+        if trimmed.StartsWith("- ") then
+            trimmed.Substring(2).TrimStart()
+        else
+            trimmed
+    let candidate =
+        let idx = afterDash.IndexOf(':')
+        if idx >= 0 then afterDash.Substring(idx + 1).TrimStart()
+        else afterDash
+    let withoutProps = stripProperties candidate
+    let headerToken =
+        withoutProps.Split([|' '; '\t'|], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.tryHead
+
+    match headerToken with
+    | Some token when parseBlockScalarHeader token |> Option.isSome ->
+        Some (countLeadingSpaces line)
+    | _ ->
+        None
+
+let readDocuments (yaml: string) : YAMLElement list =
+    let normalized = yaml.Replace("\r\n", "\n").Replace("\r", "\n")
+    let lines = normalized.Split([|'\n'|], System.StringSplitOptions.None) |> Array.toList
+
+    let appendCurrentDocument (currentDoc: string list) (docs: string list list) =
+        if List.isEmpty currentDoc then docs else (List.rev currentDoc)::docs
+
+    let rec splitDocuments (remaining: string list) (currentDoc: string list) (docs: string list list) (blockHeaderIndent: int option) =
+        match remaining with
+        | [] ->
+            appendCurrentDocument currentDoc docs |> List.rev
         | line::rest ->
-            splitDocuments rest (line::currentDoc) docs
-    
-    // Split documents by markers
-    let documentTexts = splitDocuments lines [] []
-    
-    // Parse each document
+            match blockHeaderIndent with
+            | Some headerIndent ->
+                if line.Trim() = "" || countLeadingSpaces line > headerIndent then
+                    splitDocuments rest (line::currentDoc) docs blockHeaderIndent
+                else
+                    // A non-empty line dedented to the header level ends the block scalar.
+                    splitDocuments remaining currentDoc docs None
+            | None when isStreamDocumentMarker isDocumentStart line ->
+                let inlineContent = tryInlineContentAfterStartMarker line
+                if List.isEmpty currentDoc || isDirectivePreludeOnly currentDoc then
+                    let preludeDirectives =
+                        currentDoc
+                        |> List.filter (fun l -> l.TrimStart().StartsWith("%"))
+                    let nextDoc =
+                        match inlineContent with
+                        | Some content -> content::preludeDirectives
+                        | None -> preludeDirectives
+                    splitDocuments rest nextDoc docs None
+                else
+                    let docs' = appendCurrentDocument currentDoc docs
+                    let nextDoc =
+                        match inlineContent with
+                        | Some content -> [content]
+                        | None -> []
+                    splitDocuments rest nextDoc docs' None
+            | None when isStreamDocumentMarker isDocumentEnd line ->
+                let docs' = appendCurrentDocument currentDoc docs
+                splitDocuments rest [] docs' None
+            | None ->
+                let nextBlock =
+                    match tryDetectBlockScalarHeaderIndent line with
+                    | Some indent -> Some indent
+                    | None -> None
+                splitDocuments rest (line::currentDoc) docs nextBlock
+
+    let documentTexts =
+        splitDocuments lines [] [] None
+        |> List.filter (fun doc ->
+            doc |> List.exists (fun l -> l.Trim() <> "")
+        )
+
     documentTexts
-    |> List.filter (fun doc -> not (List.isEmpty doc))
     |> List.map (fun docLines ->
         let docText = String.concat "\n" docLines
         read docText

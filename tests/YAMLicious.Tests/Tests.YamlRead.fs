@@ -209,6 +209,19 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Double-quoted string with embedded single quotes stays intact" <| fun _ ->
+        let yaml = "key: \"a 'b' c\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("a 'b' c", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Single quotes inside double-quoted scalar should not be placeholder-leaked"
+
     testCase "Sequence" <| fun _ ->
         let yaml = """
 - My Value 1
@@ -867,5 +880,19 @@ key: value
                 Expect.equal key.Value "key" "Document key should be key"
             | _ -> failwith "Expected mapping in document"
         | _ -> failwith "Expected object in document"
+
+    testCase "Reader.read stops at document end marker" <| fun _ ->
+        let yaml = """---
+key: value
+...
+trailing: ignored"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Reader.read should ignore content after explicit document end"
 ]
 

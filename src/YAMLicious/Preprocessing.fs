@@ -53,7 +53,7 @@ let read (yamlStr: string) =
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
-            let lineText = if isEmptyLine then "" else line
+            let lineText = if isEmptyLine then "" else line.Trim()
             let lineEle = Line(lineText)
             // Empty lines belong to the current indentation context.
             let nextIntendation =

@@ -69,6 +69,14 @@ key: value"""
         ]
         Expect.equal actual expected "Start marker with inline comment should be recognized"
 
+    testCase "Single document: Explicit Start with inline root node" <| fun _ ->
+        let yaml = "--- foo"
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("foo"))]
+        ]
+        Expect.equal actual expected "Inline content after start marker should become document content"
+
     testCase "Single document: Expect End" <| fun _ ->
         let yaml = """key: value
 ..."""
@@ -170,12 +178,13 @@ doc1
 # Just a comment
 ---
 doc2"""
-        // We want to verify that truly empty documents (e.g. adjacent markers) are skipped.
-        // However, documents containing only comments are currently treated as valid documents 
-        // because the preprocessor preserves them.
-        
         let actual = Reader.readDocuments yaml
-        // With comments preserved, the middle document exists.
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc1"))]
+            YAMLElement.Object [YAMLElement.Comment(" Just a comment")]
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc2"))]
+        ]
+        Expect.equal actual expected "Comment-only documents should be preserved as document content"
         
         // Test ignoring truly empty documents:
         let yaml2 = """---
@@ -187,6 +196,61 @@ doc2"""
         // Usage of empty document markers (e.g. adjacent ---) is valid YAML.
         // Reader.readDocuments is designed to filter out these truly empty documents.
         Expect.equal actual2.Length 2 "Should skip empty document"
+
+    testCase "Directive prelude comments are kept with the same document" <| fun _ ->
+        let yaml = """%YAML 1.2
+# prelude
+---
+foo: bar
+---
+baz: qux"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("foo"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar"))]
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("baz"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("qux"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Comments in directive prelude must not create an extra pseudo-document"
+
+    testCase "Document markers inside block scalar content do not split documents" <| fun _ ->
+        let yaml = """---
+text: |
+  line1
+  ---
+  ...
+  line2
+---
+next: ok"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("text"),
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            "line1\n---\n...\nline2\n",
+                            style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                        )
+                    )
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("next"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("ok"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Indented marker-like content in block scalars must remain scalar content"
 
     testCase "End-marker prefix is not treated as document end" <| fun _ ->
         let yaml = """...foo: bar

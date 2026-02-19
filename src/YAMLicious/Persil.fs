@@ -65,6 +65,49 @@ let private foldSingleQuoted (s: string) =
             sb.Append(line) |> ignore
     sb.ToString().Replace("''", "'")
 
+let private parseSingleQuotedSegment (s: string) (startIndex: int) =
+    let content = new System.Text.StringBuilder()
+    let mutable i = startIndex + 1
+    let mutable closed = false
+    while i < s.Length && not closed do
+        let ch = s.[i]
+        if ch = '\'' then
+            if i + 1 < s.Length && s.[i + 1] = '\'' then
+                content.Append("''") |> ignore
+                i <- i + 2
+            else
+                closed <- true
+                i <- i + 1
+        else
+            content.Append(ch) |> ignore
+            i <- i + 1
+    closed, content.ToString(), i
+
+let private parseDoubleQuotedSegment (s: string) (startIndex: int) =
+    let content = new System.Text.StringBuilder()
+    let mutable i = startIndex + 1
+    let mutable closed = false
+    let mutable escaped = false
+    while i < s.Length && not closed do
+        let ch = s.[i]
+        if escaped then
+            content.Append(ch) |> ignore
+            escaped <- false
+            i <- i + 1
+        else
+            match ch with
+            | '\\' ->
+                content.Append(ch) |> ignore
+                escaped <- true
+                i <- i + 1
+            | '"' ->
+                closed <- true
+                i <- i + 1
+            | _ ->
+                content.Append(ch) |> ignore
+                i <- i + 1
+    closed, content.ToString(), i
+
 let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (s: string) =
     let sb = new System.Text.StringBuilder(s.Length)
     let mutable i = 0
@@ -92,55 +135,32 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
                 sb.Append(c) |> ignore
                 i <- i + 1
             | '\'' when target = QuotedStringKind.SingleQuotedString ->
-                i <- i + 1
-                let content = new System.Text.StringBuilder()
-                let mutable closed = false
-                while i < length && not closed do
-                    let ch = s.[i]
-                    if ch = '\'' then
-                        if i + 1 < length && s.[i + 1] = '\'' then
-                            content.Append("''") |> ignore
-                            i <- i + 2
-                        else
-                            closed <- true
-                            i <- i + 1
-                    else
-                        content.Append(ch) |> ignore
-                        i <- i + 1
+                let closed, rawContent, nextIndex = parseSingleQuotedSegment s i
 
                 if closed then
-                    let folded = foldSingleQuoted (content.ToString())
+                    let folded = foldSingleQuoted rawContent
                     appendPlaceholder { Value = folded; Kind = QuotedStringKind.SingleQuotedString }
                 else
-                    sb.Append('\'').Append(content.ToString()) |> ignore
+                    sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                i <- nextIndex
+            | '\'' ->
+                // Preserve single-quoted segments untouched during double-quote pass.
+                let _, _, nextIndex = parseSingleQuotedSegment s i
+                sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                i <- nextIndex
             | '"' when target = QuotedStringKind.DoubleQuotedString ->
-                i <- i + 1
-                let content = new System.Text.StringBuilder()
-                let mutable closed = false
-                let mutable escaped = false
-                while i < length && not closed do
-                    let ch = s.[i]
-                    if escaped then
-                        content.Append(ch) |> ignore
-                        escaped <- false
-                        i <- i + 1
-                    else
-                        match ch with
-                        | '\\' ->
-                            content.Append(ch) |> ignore
-                            escaped <- true
-                            i <- i + 1
-                        | '"' ->
-                            closed <- true
-                            i <- i + 1
-                        | _ ->
-                            content.Append(ch) |> ignore
-                            i <- i + 1
+                let closed, rawContent, nextIndex = parseDoubleQuotedSegment s i
 
                 if closed then
-                    appendPlaceholder { Value = content.ToString(); Kind = QuotedStringKind.DoubleQuotedString }
+                    appendPlaceholder { Value = rawContent; Kind = QuotedStringKind.DoubleQuotedString }
                 else
-                    sb.Append('"').Append(content.ToString()) |> ignore
+                    sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                i <- nextIndex
+            | '"' ->
+                // Preserve double-quoted segments untouched during single-quote pass.
+                let _, _, nextIndex = parseDoubleQuotedSegment s i
+                sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                i <- nextIndex
             | _ ->
                 sb.Append(c) |> ignore
                 i <- i + 1
@@ -224,8 +244,28 @@ let pipeline (yamlString: string) =
         |> stringCleanUp stringMap              // Then handle double-quoted strings
         |> commentCleanUp commentMap
         |> cut
-    let directiveLines = lines |> Array.takeWhile (fun l -> l.TrimStart().StartsWith("%"))
-    let contentLines = lines.[directiveLines.Length..]
+    let hasDirectivePrelude =
+        lines
+        |> Array.tryFind (fun l ->
+            let t = l.Trim()
+            t <> "" && not (t.StartsWith("#"))
+        )
+        |> Option.map (fun line -> line.TrimStart().StartsWith("%"))
+        |> Option.defaultValue false
+
+    let directivePreludeLength =
+        if hasDirectivePrelude then
+            lines
+            |> Array.takeWhile (fun l ->
+                let t = l.TrimStart()
+                t.StartsWith("%") || t.StartsWith("#") || t.Trim() = ""
+            )
+            |> Array.length
+        else
+            0
+
+    let directiveLines = lines |> Array.take directivePreludeLength
+    let contentLines = lines.[directivePreludeLength..]
     let mutable yamlVersion = None
     let mutable tagHandles = 
         Map.empty 

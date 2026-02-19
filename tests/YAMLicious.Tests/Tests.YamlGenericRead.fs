@@ -40,15 +40,15 @@ let Main = testList "YamlGenericRead" [
         let expected = Level [
             Line "-"
             Intendation [
-                Line "  My Key1: My Value1"
-                Line "  My Key2: My Value2"
-                Line "  My Key3: My Value3"
+                Line "My Key1: My Value1"
+                Line "My Key2: My Value2"
+                Line "My Key3: My Value3"
             ]
             Line "-"
             Intendation [
-                Line "  My Key4: My Value4"
-                Line "  My Key5: My Value5"
-                Line "  My Key6: My Value6"
+                Line "My Key4: My Value4"
+                Line "My Key5: My Value5"
+                Line "My Key6: My Value6"
             ]
         ]
         Expect.equal actual.AST expected ""
@@ -80,32 +80,32 @@ classDiagram
         let expected = Level [
             Line "classDiagram"
             Intendation [
-                Line "    Animal <|-- Duck"
-                Line "    Animal <|-- Fish"
-                Line "    Animal <|-- Zebra"
-                Line "    Animal : +int age"
-                Line "    Animal : +String gender"
-                Line "    Animal: +isMammal()"
-                Line "    Animal: +mate()"
-                Line "    class Duck{"
+                Line "Animal <|-- Duck"
+                Line "Animal <|-- Fish"
+                Line "Animal <|-- Zebra"
+                Line "Animal : +int age"
+                Line "Animal : +String gender"
+                Line "Animal: +isMammal()"
+                Line "Animal: +mate()"
+                Line "class Duck{"
                 Intendation [
-                    Line "      +String beakColor"
-                    Line "      +swim()"
-                    Line "      +quack()"
+                    Line "+String beakColor"
+                    Line "+swim()"
+                    Line "+quack()"
                 ]
-                Line "    }"
-                Line "    class Fish{"
+                Line "}"
+                Line "class Fish{"
                 Intendation [
-                    Line "      -int sizeInFeet"
-                    Line "      -canEat()"
+                    Line "-int sizeInFeet"
+                    Line "-canEat()"
                 ]
-                Line "    }"
-                Line "    class Zebra{"
+                Line "}"
+                Line "class Zebra{"
                 Intendation [
-                    Line "      +bool is_wild"
-                    Line "      +run()"
+                    Line "+bool is_wild"
+                    Line "+run()"
                 ]
-                Line "    }"
+                Line "}"
             ]
         ]
         Expect.equal actual.AST expected ""
@@ -119,9 +119,9 @@ My Key: # This is a comment
         let expected = Level [
             Line "My Key: <c f=0/>"
             Intendation [
-                Line "  My Value1 "
-                Line "  <s f=0/>"
-                Line "  My Value3 <c f=1/>"
+                Line "My Value1"
+                Line "<s f=0/>"
+                Line "My Value3 <c f=1/>"
             ]
         ]
         let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
@@ -132,4 +132,16 @@ My Key: # This is a comment
         Expect.equal actual.AST expected "ast"
         Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
         Expect.dictEqual actual.StringMap expectedStringDict "strings"
+
+    testCase "Preprocessing read/write keeps stable structural indentation" <| fun _ ->
+        let yaml = """a:
+  b:
+    c: d"""
+        let pre = read yaml
+        let written = write (pre.AST, None)
+        let expected = """a:
+    b:
+        c: d"""
+        let normalizeNewlines (s: string) = s.Replace("\r\n", "\n").Trim()
+        Expect.equal (normalizeNewlines written) (normalizeNewlines expected) "read -> write should not duplicate indentation from parsed line payloads"
 ]
