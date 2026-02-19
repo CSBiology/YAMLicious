@@ -9,7 +9,7 @@ let Main =
   testList "Escapes" [
     testCase "Double-quoted escape: unicode 32-bit" <| fun _ ->
         let yaml = "key: \"\\U0001F600\""
-        let expectedEmoji = System.Char.ConvertFromUtf32(0x1F600)
+        let expectedEmoji = "\uD83D\uDE00"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),

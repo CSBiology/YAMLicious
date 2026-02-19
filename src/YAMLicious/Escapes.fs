@@ -46,10 +46,14 @@ let unescapeDoubleQuoted (s: string) : string =
                 let hex = s.Substring(i + 2, 8)
                 try
                     let codePoint = Convert.ToInt32(hex, 16)
+                    #if FABLE_COMPILER_PYTHON
+                    // Python's chr() supports full Unicode code points.
+                    let utf32 = YAMLicious.PyInterop.fromCodePoint codePoint
+                    sb.Append(utf32) |> ignore
+                    #else
                     #if FABLE_COMPILER
-                    // For Fable, use a simple approach for high Unicode points
+                    // JS strings are UTF-16, so encode supplementary planes as surrogate pairs.
                     if codePoint >= 0x10000 then
-                        // Surrogate pair encoding for characters outside BMP
                         let cp = codePoint - 0x10000
                         let high = 0xD800 + (cp / 0x400)
                         let low = 0xDC00 + (cp % 0x400)
@@ -58,6 +62,7 @@ let unescapeDoubleQuoted (s: string) : string =
                         sb.Append(char codePoint) |> ignore
                     #else
                     sb.Append(Char.ConvertFromUtf32(codePoint)) |> ignore
+                    #endif
                     #endif
                     loop (i + 10)
                 with _ -> 
