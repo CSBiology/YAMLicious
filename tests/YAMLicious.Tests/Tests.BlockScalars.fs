@@ -239,4 +239,32 @@ let Main =
             Expect.equal (content.Value.Contains("\"Directory\"")) true "Should preserve all double-quoted strings in block scalars"
         | _ ->
             failwithf "Unexpected AST: %A" actual
+
+    testCase "Block scalar with hash content" <| fun _ ->
+        let yaml = """comment: |
+  # Not a comment
+  value"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("comment"),
+                YAMLElement.Value(YAMLContent.create("# Not a comment\nvalue\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Hash inside block scalar should be treated as content, not a comment"
+
+    testCase "Combined explicit indent and strip chomping" <| fun _ ->
+        let yaml = """data: |2-
+  text
+  more
+
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("data"),
+                YAMLElement.Value(YAMLContent.create("text\nmore", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Strip, Some 2)))
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Combined explicit indent and strip chomping should parse correctly"
   ]

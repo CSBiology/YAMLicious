@@ -196,4 +196,46 @@ let Main = testList "YamlWrite" [
 - v2
 - v3"
         Expect.trimEqual actual expected ""
+
+    testCase "DocumentStart writes ---" <| fun _ ->
+        let ele = YAMLElement.Object [
+            YAMLElement.DocumentStart
+            YAMLElement.Mapping(YAMLContent.create("key"), YAMLElement.Value(YAMLContent.create("value")))
+        ]
+        let actual = write ele None
+        let expected = "---\nkey: value"
+        Expect.trimEqual actual expected "DocumentStart should be written as ---"
+
+    testCase "DocumentEnd writes ..." <| fun _ ->
+        let ele = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), YAMLElement.Value(YAMLContent.create("value")))
+            YAMLElement.DocumentEnd
+        ]
+        let actual = write ele None
+        let expected = "key: value\n..."
+        Expect.trimEqual actual expected "DocumentEnd should be written as ..."
+
+    testCase "Alias round-trip write" <| fun _ ->
+        let ele = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("first"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("val", anchor="a1"))]
+            )
+            YAMLElement.Mapping(
+                YAMLContent.create("second"),
+                YAMLElement.Object [YAMLElement.Alias("a1")]
+            )
+        ]
+        let actual = write ele None
+        let expected = "first:\n    &a1 val\nsecond:\n    *a1"
+        Expect.trimEqual actual expected "Alias should be written as *name"
+
+    testCase "Double-quoted escapes control characters" <| fun _ ->
+        let ele = YAMLElement.Object [
+            YAMLElement.Value(YAMLContent.create("null\u0000bell\u0007back\u0008", style=ScalarStyle.DoubleQuoted))
+        ]
+        let actual = write ele None
+        Expect.equal (actual.Contains("\\0")) true "Null byte should be escaped"
+        Expect.equal (actual.Contains("\\a")) true "Bell should be escaped"
+        Expect.equal (actual.Contains("\\b")) true "Backspace should be escaped"
 ]

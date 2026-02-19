@@ -51,8 +51,16 @@ let Main =
     testCase "Double-quoted escaped continuation with blank escaped line" <| fun _ ->
         let yaml = "\"folded \\\nto a space,\t\\\n \\\nto a line feed\""
         let expected = YAMLElement.Object [
-            YAMLElement.Value(YAMLContent.create("folded to a space,\nto a line feed", style=ScalarStyle.DoubleQuoted))
+            YAMLElement.Value(YAMLContent.create("foldedto a space,\nto a line feed", style=ScalarStyle.DoubleQuoted))
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Escaped continuation lines should fold according to YAML semantics"
+
+    testCase "Double-quoted escaped continuation strips trailing spaces" <| fun _ ->
+        let yaml = "\"trailing spaces   \\\nnext\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Value(YAMLContent.create("trailing spacesnext", style=ScalarStyle.DoubleQuoted))
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Escaped line continuation should strip trailing spaces before the backslash"
   ]

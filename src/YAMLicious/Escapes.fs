@@ -82,7 +82,7 @@ let unescapeDoubleQuoted (s: string) : string =
                 // Escaped line break continuation:
                 // - first escaped break folds away
                 // - additional escaped empty continuation lines become '\n'
-                while sb.Length > 0 && sb.[sb.Length - 1] = '\t' do
+                while sb.Length > 0 && (sb.[sb.Length - 1] = '\t' || sb.[sb.Length - 1] = ' ') do
                     sb.Length <- sb.Length - 1
                 let extraBreaks, nextIndex = consumeEscapedLineBreaks i 0
                 if extraBreaks > 0 then

@@ -56,8 +56,18 @@ module Formatting =
         s
             .Replace("\\", "\\\\")
             .Replace("\"", "\\\"")
+            .Replace("\u0000", "\\0")
+            .Replace("\u0007", "\\a")
+            .Replace("\u0008", "\\b")
             .Replace("\t", "\\t")
+            .Replace("\u000B", "\\v")
+            .Replace("\u000C", "\\f")
             .Replace("\r", "\\r")
+            .Replace("\u001B", "\\e")
+            .Replace("\u0085", "\\N")
+            .Replace("\u00A0", "\\_")
+            .Replace("\u2028", "\\L")
+            .Replace("\u2029", "\\P")
             .Replace("\n", "\\n")
 
     let private normalizeNewlines (s: string) =

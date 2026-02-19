@@ -168,7 +168,10 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
         ]
     | SequenceMinusOpener v::rest ->
         [
-            [PreprocessorElement.Line v.Value.Value]
+            if v.Value.IsSome then
+                [PreprocessorElement.Line v.Value.Value]
+            else
+                []
             yield! collectSequenceElements rest
         ]
     | YamlComment _ as v::rest ->
@@ -406,9 +409,14 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let objectList =
+                if v.Value.IsSome then
+                    [PreprocessorElement.Line v.Value.Value]
+                else
+                    []
             let current =
                 YAMLElement.Sequence [
-                    loopRead handles [PreprocessorElement.Line v.Value.Value] []
+                    loopRead handles objectList []
                     for i in sequenceElements do
                         loopRead handles i []
                 ]

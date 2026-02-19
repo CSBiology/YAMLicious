@@ -928,5 +928,31 @@ trailing: ignored"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Reader.read should parse inline content after --- as the document root"
+
+    testCase "Bare dash sequence element" <| fun _ ->
+        let yaml = """- 
+- value"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object []
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Bare dash with no value should not crash"
+
+    testCase "Multiple bare dash sequence elements" <| fun _ ->
+        let yaml = """- 
+- 
+- end"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object []
+                YAMLElement.Object []
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("end"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Multiple bare dashes should be parsed as empty sequence elements"
 ]
 
