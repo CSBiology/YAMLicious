@@ -156,7 +156,7 @@ rbi:
   - Chicago cubs
 : - 2001-07-23"""
         let actual = Reader.read yaml
-        let expectedKey = "- Detroit Tigers\n- Chicago cubs"
+        let expectedKey = "- Detroit Tigers\n  - Chicago cubs"
         // Since we flatten complex keys to string for now:
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
@@ -172,7 +172,7 @@ rbi:
 : [ 2001-07-02, 2001-08-12,
     2001-08-14 ]"""
         let actual = Reader.read yaml
-        let expectedKey = "[ New York Yankees,\nAtlanta Braves ]"
+        let expectedKey = "[ New York Yankees,\n    Atlanta Braves ]"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                  YAMLContent.create(expectedKey),

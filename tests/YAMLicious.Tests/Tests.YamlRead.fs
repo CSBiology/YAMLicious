@@ -157,6 +157,19 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Double-quoted escape: escaped quote" <| fun _ ->
+        let yaml = "key: \"a \\\"b\\\" c\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("a \"b\" c", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
     testCase "Double-quoted escape: hex unicode" <| fun _ ->
         let yaml = "key: \"\\x41\\x42\\x43\""
         let expected = YAMLElement.Object [
@@ -533,15 +546,15 @@ $namespaces:
             "This workflow runs DESeq2 on the output of the kallisto workflow";
             "and the metadata file.";
             "It runs an R script, deseq2.R, which ideally should be split into three sub scripts and accordingly three workflow steps";
-            "1. Read kallsito data";
-            "2. Prep / run deseq2";
-            "3. Plot results";
+            "  1. Read kallsito data";
+            "  2. Prep / run deseq2";
+            "  3. Plot results";
             "";
             "## DESeq2 docs:";
-            "https://bioconductor.org/packages/release/bioc/html/DESeq2.html";
+            "  https://bioconductor.org/packages/release/bioc/html/DESeq2.html";
             "";
             "## Importing kallisto output with tximport";
-            "https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html#kallisto";
+            "  https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html#kallisto";
             "";
             "## Multi-package containers";
             "- R and combinations of library dependencies are available as multi-package containers from [BioContainers](https://github.com/BioContainers/multi-package-containers)";

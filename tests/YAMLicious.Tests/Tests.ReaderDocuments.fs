@@ -55,6 +55,20 @@ key: value"""
         ]
         Expect.equal actual expected "Should handle explicit start marker"
 
+    testCase "Single document: Explicit Start with comment" <| fun _ ->
+        let yaml = """--- # start
+key: value"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Start marker with inline comment should be recognized"
+
     testCase "Single document: Expect End" <| fun _ ->
         let yaml = """key: value
 ..."""
@@ -173,4 +187,22 @@ doc2"""
         // Usage of empty document markers (e.g. adjacent ---) is valid YAML.
         // Reader.readDocuments is designed to filter out these truly empty documents.
         Expect.equal actual2.Length 2 "Should skip empty document"
+
+    testCase "End-marker prefix is not treated as document end" <| fun _ ->
+        let yaml = """...foo: bar
+next: v"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("...foo"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar"))]
+                )
+                YAMLElement.Mapping(
+                    YAMLContent.create("next"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("v"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Only standalone ... markers should terminate a document"
 ]

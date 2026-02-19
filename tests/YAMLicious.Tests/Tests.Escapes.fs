@@ -34,4 +34,17 @@ let Main =
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Should handle complex mixed escapes"
+
+    testCase "Double-quoted multiline escaped line break" <| fun _ ->
+        let yaml = "key: \"a\\\nb\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("ab", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Escaped line breaks should be consumed in double-quoted scalars"
   ]

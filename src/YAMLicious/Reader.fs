@@ -76,31 +76,82 @@ let private applyChomping (chomp: ChompingMode) (content: string) =
         let trimmed = content.TrimEnd([|'\r'; '\n'|])
         if content.Length > trimmed.Length then trimmed + "\n" else trimmed
 
-let private foldLines (lines: string list) : string =
-    let rec fold (acc: string list) (currentLines: string list) =
-        match currentLines with
-        | [] -> System.String.Concat(List.rev acc)
-        | line::rest ->
-            if line.Trim() = "" then
-                // Empty line
-                fold ("\n"::acc) rest
-            elif line.StartsWith(" ") || line.StartsWith("\t") then
-                // Indented line
-                let acc' = 
-                    match acc with
-                    | prev::_ when not (prev.EndsWith("\n")) -> "\n"::acc
-                    | _ -> acc
-                fold ((line + "\n")::acc') rest
+let private countLeadingSpaces (line: string) =
+    line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
+
+let private splitTrailingCommentPlaceholder (s: string) =
+    let m = Regex.Match(s, $"^(?<header>.*?)\s*(?:{CommentPattern})\s*$")
+    if m.Success then
+        let header = m.Groups.["header"].Value.TrimEnd()
+        let commentGroup = m.Groups.["comment"]
+        let commentId =
+            if commentGroup.Success && commentGroup.Value <> "" then
+                Some (int commentGroup.Value)
             else
-                // Normal line
-                let sep = 
-                    match acc with
-                    | [] -> "" 
-                    | prev::_ when prev.EndsWith("\n") -> ""
-                    | _ -> " "
-                fold ((sep + line)::acc) rest
-    
-    fold [] lines
+                None
+        header, commentId
+    else
+        s.TrimEnd(), None
+
+let private stripBlockIndent (indent: int) (line: string) =
+    if line.Trim() = "" then
+        ""
+    else
+        let available = countLeadingSpaces line
+        let toStrip = min indent available
+        line.Substring(toStrip)
+
+let private foldLines (lines: string list) : string =
+    let isMoreIndented (line: string) =
+        line.StartsWith(" ") || line.StartsWith("\t")
+
+    let arr = lines |> List.toArray
+    let sb = System.Text.StringBuilder()
+
+    for i in 0 .. arr.Length - 1 do
+        let line = arr.[i]
+        let isEmpty = line.Trim() = ""
+
+        if isEmpty then
+            sb.Append('\n') |> ignore
+        else
+            sb.Append(line) |> ignore
+            if i < arr.Length - 1 then
+                let next = arr.[i + 1]
+                let nextIsEmpty = next.Trim() = ""
+                if nextIsEmpty then
+                    sb.Append('\n') |> ignore
+                elif isMoreIndented line || isMoreIndented next then
+                    sb.Append('\n') |> ignore
+                else
+                    sb.Append(' ') |> ignore
+
+    sb.ToString()
+
+let private deindentBlockLines (headerIndent: int) (explicitIndent: int option) (lines: string list) =
+    let contentIndent =
+        match explicitIndent with
+        | Some i -> headerIndent + i
+        | None ->
+            lines
+            |> List.filter (fun l -> l.Trim() <> "")
+            |> List.map countLeadingSpaces
+            |> function
+                | [] -> headerIndent
+                | indents -> indents |> List.min
+
+    lines |> List.map (stripBlockIndent contentIndent)
+
+let private buildBlockScalarContent (style: BlockScalarStyle) (chomp: ChompingMode) (headerIndent: int) (explicitIndent: int option) (lines: string list) =
+    let deindentedLines = deindentBlockLines headerIndent explicitIndent lines
+    let content =
+        match style with
+        | BlockScalarStyle.Literal ->
+            if List.isEmpty deindentedLines then "" else System.String.Join("\n", deindentedLines) + "\n"
+        | BlockScalarStyle.Folded ->
+            let folded = foldLines deindentedLines
+            if folded.EndsWith("\n") then folded else folded + "\n"
+    applyChomping chomp content
 
 let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commentId: int option) =
     commentId |> Option.map (fun id -> commentDict.[id])
@@ -160,9 +211,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         |> List.collect (function
             | Line s -> [restoreInlinePlaceholders s]
             | Intendation children -> flattenBlockScalar children
-            | SequenceMinusOpener v when v.Value.IsSome -> 
-                ["- " + restoreInlinePlaceholders v.Value.Value]
-            | SequenceMinusOpener _ -> ["-"]
             | _ -> [])
 
     let restoreScalarWithStyle (raw: string) =
@@ -220,6 +268,34 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 changed <- true
 
         {| Value = current; Tag = tag; Anchor = anchor |}
+
+    let isBlockScalarHeaderCandidate (rawHeader: string) =
+        let headerWithoutComment, _ = splitTrailingCommentPlaceholder rawHeader
+        let props = extractProperties handles headerWithoutComment
+        props.Value.StartsWith("|") || props.Value.StartsWith(">")
+
+    let tryReadBlockScalar (rawHeader: string) (headerIndent: int) (baseCommentId: int option) (block: PreprocessorElement list) =
+        let headerWithoutComment, headerCommentId = splitTrailingCommentPlaceholder rawHeader
+        let props = extractProperties handles headerWithoutComment
+        let commentId =
+            match baseCommentId with
+            | Some _ -> baseCommentId
+            | None -> headerCommentId
+
+        match parseBlockScalarHeader props.Value with
+        | Some (style, indent, chomp) ->
+            let lines = flattenBlockScalar block
+            let value = buildBlockScalarContent style chomp headerIndent indent lines
+            let comment = restoreCommentReplace commentDict commentId
+            Some
+                {| Props = props
+                   Comment = comment
+                   Style = style
+                   Chomp = chomp
+                   Indent = indent
+                   Value = value |}
+        | None ->
+            None
 
     let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
@@ -471,36 +547,26 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 )
             loopRead handles rest (current::acc)
         // doc: |2\n  <block>
-        | KeyValue v::Intendation block::rest when v.Value.StartsWith("|") || v.Value.StartsWith(">") ->
-            let header = parseBlockScalarHeader v.Value
-            match header with
-            | Some (style, indent, chomp) ->
-                let lines = flattenBlockScalar block
-                
-                let content = 
-                    if style = BlockScalarStyle.Literal then
-                        // Literal: join with newlines
-                        System.String.Join("\n", lines) + "\n" // Literal style implies keeping newlines + one at end usually
-                    else
-                        // Folded: fold lines
-                        foldLines lines + "\n"
-                         
-                // Now apply chomping to the result
-                let finalContent = applyChomping chomp content
-
-                let props = extractProperties handles v.Key
+        | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+            match tryReadBlockScalar v.Value v.Indent None block with
+            | Some blockScalar ->
+                let keyProps = extractProperties handles v.Key
                 let current =
-                    YAMLElement.Mapping (
-                        YAMLContent.create(props.Value, ?anchor=props.Anchor, ?tag=props.Tag),
-                        YAMLElement.Value (
+                    YAMLElement.Mapping(
+                        YAMLContent.create(keyProps.Value, ?anchor=keyProps.Anchor, ?tag=keyProps.Tag),
+                        YAMLElement.Value(
                             YAMLContent.create(
-                                finalContent,
-                                style = ScalarStyle.Block(style, chomp, indent)
+                                blockScalar.Value,
+                                ?comment = blockScalar.Comment,
+                                ?anchor = blockScalar.Props.Anchor,
+                                ?tag = blockScalar.Props.Tag,
+                                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
                             )
                         )
                     )
                 loopRead handles rest (current::acc)
-            | None -> failwithf "Invalid block scalar header: %s" v.Value
+            | None ->
+                failwithf "Invalid block scalar header: %s" v.Value
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             let props = extractProperties handles v.Key
@@ -517,6 +583,23 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current = 
                 YAMLElement.Comment (c)
             loopRead handles rest (current::acc)
+        // Root-level block scalar
+        | YamlValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+            match tryReadBlockScalar v.Value v.Indent v.Comment block with
+            | Some blockScalar ->
+                let current =
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            blockScalar.Value,
+                            ?comment = blockScalar.Comment,
+                            ?anchor = blockScalar.Props.Anchor,
+                            ?tag = blockScalar.Props.Tag,
+                            style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
+                        )
+                    )
+                loopRead handles rest (current::acc)
+            | None ->
+                failwithf "Invalid block scalar header: %s" v.Value
         | YamlValue v::rest when v.Value = "" && v.Comment.IsNone ->
             // Ignore structural blank lines outside explicit scalar contexts.
             loopRead handles rest acc
@@ -570,7 +653,7 @@ let readDocuments (yaml: string) : YAMLElement list =
                 splitDocuments rest currentDoc docs
             else
                 splitDocuments rest [] (List.rev currentDoc :: docs)
-        | line::rest when line.TrimStart().StartsWith("...") ->
+        | line::rest when isDocumentEnd line ->
             // End current document (don't include the ... marker) - using DocumentEnd pattern logic
             if List.isEmpty currentDoc then
                 splitDocuments rest [] docs

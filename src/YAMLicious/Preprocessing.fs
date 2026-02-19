@@ -8,9 +8,19 @@ module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
 
-let isDocumentStart (line: string) = line.TrimStart() = "---"
+let private isDocumentMarker (marker: string) (line: string) =
+    let trimmed = line.TrimStart()
+    if not (trimmed.StartsWith(marker)) then
+        false
+    elif trimmed.Length = marker.Length then
+        true
+    else
+        let next = trimmed.[marker.Length]
+        System.Char.IsWhiteSpace(next)
 
-let isDocumentEnd (line: string) = line.TrimStart().StartsWith("...")
+let isDocumentStart (line: string) = isDocumentMarker "---" line
+
+let isDocumentEnd (line: string) = isDocumentMarker "..." line
 
 let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option) =
     let config =
@@ -43,8 +53,8 @@ let read (yamlStr: string) =
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
-            let trimmedLine = if isEmptyLine then "" else line.Trim()
-            let lineEle = Line(trimmedLine)
+            let lineText = if isEmptyLine then "" else line
+            let lineEle = Line(lineText)
             // Empty lines belong to the current indentation context.
             let nextIntendation =
                 if isEmptyLine then currentIntendation

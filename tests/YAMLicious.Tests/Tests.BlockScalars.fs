@@ -67,6 +67,86 @@ let Main =
         let actual = Reader.read yaml
         Expect.equal actual expected "Should fold newlines to spaces"
 
+    testCase "Literal style preserves additional indentation" <| fun _ ->
+        let yaml = """doc: |
+  line1
+    indented
+  line3
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "line1\n  indented\nline3\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Literal block should preserve relative indentation"
+
+    testCase "Folded style preserves more-indented lines" <| fun _ ->
+        let yaml = """folded: >
+  Sammy Sosa completed another
+  fine season with great stats.
+
+    63 Home Runs
+    0.288 Batting Average
+
+  What a year!
+"""
+        let expectedValue = "Sammy Sosa completed another fine season with great stats.\n\n  63 Home Runs\n  0.288 Batting Average\n\nWhat a year!\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("folded"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        expectedValue,
+                        style=ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Folded block should preserve more-indented line breaks"
+
+    testCase "Block scalar header supports inline comments" <| fun _ ->
+        let yaml = """doc: | # comment
+  hello
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "hello\n",
+                        comment=" comment",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Inline header comments should be parsed and preserved"
+
+    testCase "Root-level folded scalar parses" <| fun _ ->
+        let yaml = """>
+ text line1
+ text line2
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Value(
+                YAMLContent.create(
+                    "text line1 text line2\n",
+                    style=ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Clip, None)
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Root block scalar should parse as value node"
+
     testCase "Block scalar keeps quote delimiters in placeholders" <| fun _ ->
         let yaml = """expression: >
   ${ return (function() {
