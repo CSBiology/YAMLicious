@@ -16,7 +16,8 @@ let all =
           Tests.ReaderDocuments.Main
           Tests.Escapes.Main
           Tests.BlockScalars.Main
-          Tests.AdvancedFeatures.Main ]
+          Tests.AdvancedFeatures.Main
+          Tests.ScalarStyles.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

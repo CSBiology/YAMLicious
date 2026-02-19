@@ -19,6 +19,7 @@
     <Compile Include="Tests.Directives.fs" />
     <Compile Include="Tests.ReaderDocuments.fs" />
     <Compile Include="Tests.AdvancedFeatures.fs" />
+    <Compile Include="Tests.ScalarStyles.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
