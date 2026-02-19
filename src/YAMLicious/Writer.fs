@@ -152,6 +152,17 @@ module Formatting =
             PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
         ]
 
+    let mkBlockScalarRoot (options: WriterOptions) (content: YAMLContent) =
+        let style, chomp, indent = resolveBlockStyle options content
+        let header = mkBlockHeader style chomp indent
+        let bodyText = bodyTextForChomping chomp content.Value
+        let lines = splitPreservingEmpty bodyText
+        let headerLine = mkNodePrefix content + header |> appendComment content
+        PreprocessorElement.Level [
+            PreprocessorElement.Line headerLine
+            PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
+        ]
+
 let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
     let rec loop (ele: YAMLElement) =
         match ele with
@@ -175,31 +186,7 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                     ]
                 ]
         | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
-            let style, chomp, indent = Formatting.resolveBlockStyle options value
-            let header =
-                let styleChar =
-                    match style with
-                    | BlockScalarStyle.Literal -> "|"
-                    | BlockScalarStyle.Folded -> ">"
-                let indentPart = indent |> Option.map string |> Option.defaultValue ""
-                let chompPart =
-                    match chomp with
-                    | ChompingMode.Strip -> "-"
-                    | ChompingMode.Clip -> ""
-                    | ChompingMode.Keep -> "+"
-                styleChar + indentPart + chompPart
-            let bodyText =
-                let normalized = value.Value.Replace("\r\n", "\n")
-                match chomp with
-                | ChompingMode.Strip -> normalized.TrimEnd([| '\n' |])
-                | ChompingMode.Clip
-                | ChompingMode.Keep ->
-                    if normalized.EndsWith("\n") then normalized.Substring(0, normalized.Length - 1) else normalized
-            let lines = bodyText.Split([| '\n' |], System.StringSplitOptions.None) |> Array.toList
-            PreprocessorElement.Level [
-                PreprocessorElement.Line header
-                PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
-            ]
+            Formatting.mkBlockScalarRoot options value
         | YAMLElement.Value value ->
             PreprocessorElement.Line (Formatting.mkInlineContent options value)
         | YAMLElement.Object seq ->

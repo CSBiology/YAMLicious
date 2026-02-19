@@ -344,6 +344,32 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         //   My Key1: My Value1
         //   My Key2: My Value2
         //   My Key3: My Value3
+        | SequenceMinusOpener v::Intendation yamlAstList::rest0 when v.Value.IsSome && isBlockScalarHeaderCandidate v.Value.Value ->
+            match tryReadBlockScalar v.Value.Value v.Indent None yamlAstList with
+            | Some blockScalar ->
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let firstItem =
+                    YAMLElement.Object [
+                        YAMLElement.Value(
+                            YAMLContent.create(
+                                blockScalar.Value,
+                                ?comment = blockScalar.Comment,
+                                ?anchor = blockScalar.Props.Anchor,
+                                ?tag = blockScalar.Props.Tag,
+                                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
+                            )
+                        )
+                    ]
+                let current =
+                    YAMLElement.Sequence [
+                        firstItem
+                        for i in sequenceElements do
+                            loopRead handles i []
+                    ]
+                loopRead handles rest (current::acc)
+            | None ->
+                failwithf "Invalid sequence block scalar header: %s" v.Value.Value
         | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let objectList = 
                 if v.Value.IsSome then

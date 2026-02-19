@@ -78,7 +78,7 @@ let (|SequenceMinusOpener|_|) (input: PreprocessorElement) =
             let v: string option =
                 let v = m.Groups.["value"].Value.Trim()
                 if v = "" then None else Some v
-            Some {| Value = v |}
+            Some {| Value = v; Indent = leadingIndent s |}
         else
             None
     | _ -> None

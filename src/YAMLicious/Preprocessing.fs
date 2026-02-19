@@ -48,21 +48,30 @@ let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option)
 let read (yamlStr: string) =
     let content = Persil.pipeline yamlStr
 
+    let stripIndent (indent: int) (line: string) =
+        if indent <= 0 then line
+        elif line.Length >= indent then line.Substring(indent)
+        else line.TrimStart()
+
     let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
         match lines with
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
-            let lineText = if isEmptyLine then "" else line.Trim()
-            let lineEle = Line(lineText)
             // Empty lines belong to the current indentation context.
             let nextIntendation =
                 if isEmptyLine then currentIntendation
                 else ReadHelpers.indentLevel line
 
             if nextIntendation = currentIntendation then
+                let lineText =
+                    if isEmptyLine then "" else stripIndent currentIntendation line
+                let lineEle = Line(lineText)
                 loop rest currentIntendation (lineEle :: acc)
             else
+                let lineText =
+                    if isEmptyLine then "" else stripIndent nextIntendation line
+                let lineEle = Line(lineText)
                 let nextLevelLines =
                     rest
                     |> List.takeWhile (fun l ->

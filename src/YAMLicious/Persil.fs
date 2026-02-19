@@ -108,12 +108,71 @@ let private parseDoubleQuotedSegment (s: string) (startIndex: int) =
                 i <- i + 1
     closed, content.ToString(), i
 
-let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (s: string) =
+let private isTokenBoundaryStart (s: string) (quoteIndex: int) =
+    let isInlineWhitespace c = c = ' ' || c = '\t'
+    let isTokenSeparator c =
+        c = ' '
+        || c = '\t'
+        || c = '\n'
+        || c = '\r'
+        || c = ':'
+        || c = '-'
+        || c = ','
+        || c = '['
+        || c = '{'
+        || c = '?'
+    let mutable i = quoteIndex - 1
+    while i >= 0 && isInlineWhitespace s.[i] do
+        i <- i - 1
+
+    if i < 0 then
+        true
+    else
+        match s.[i] with
+        | '\n'
+        | '\r'
+        | ':'
+        | '-'
+        | ','
+        | '['
+        | '{'
+        | '?' -> true
+        | _ ->
+            // Allow quoted scalars immediately following a tag/anchor token
+            // (e.g. `!foo "bar"` or `&a "bar"`), while still rejecting plain
+            // scalar content like `rock 'n' roll`.
+            let mutable start = i
+            while start >= 0 && not (isTokenSeparator s.[start]) do
+                start <- start - 1
+            let token = s.Substring(start + 1, i - start)
+            token.StartsWith("!") || token.StartsWith("&")
+
+let private isTokenBoundaryEnd (s: string) (nextIndex: int) =
+    let isInlineWhitespace c = c = ' ' || c = '\t'
+    let mutable i = nextIndex
+    while i < s.Length && isInlineWhitespace s.[i] do
+        i <- i + 1
+
+    if i >= s.Length then
+        true
+    else
+        match s.[i] with
+        | '\n'
+        | '\r'
+        | '#'
+        | ','
+        | ']'
+        | '}'
+        | ':' -> true
+        | _ -> false
+
+let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
     let sb = new System.Text.StringBuilder(s.Length)
     let mutable i = 0
     let mutable n = nextStringIndex dict
     let mutable inComment = false
     let length = s.Length
+    let mutable lineIndex = 0
 
     let appendPlaceholder (entry: StringMapEntry) =
         let currentN = n
@@ -121,10 +180,29 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
         dict.Add(currentN, entry)
         sb.Append(sprintf "<s f=%i/>" currentN) |> ignore
 
+    let appendChar (c: char) =
+        sb.Append(c) |> ignore
+        if c = NewLineChar then
+            lineIndex <- lineIndex + 1
+
+    let appendText (text: string) =
+        for c in text do
+            appendChar c
+
+    let advanceLineIndex (startIndex: int) (endIndex: int) =
+        for j in startIndex .. endIndex - 1 do
+            if s.[j] = NewLineChar then
+                lineIndex <- lineIndex + 1
+
     while i < length do
         let c = s.[i]
-        if inComment then
-            sb.Append(c) |> ignore
+        if protectedBlockScalarLines.Contains lineIndex then
+            appendChar c
+            i <- i + 1
+            if c = NewLineChar then
+                inComment <- false
+        elif inComment then
+            appendChar c
             i <- i + 1
             if c = NewLineChar then
                 inComment <- false
@@ -132,37 +210,45 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
             match c with
             | '#' ->
                 inComment <- true
-                sb.Append(c) |> ignore
+                appendChar c
                 i <- i + 1
             | '\'' when target = QuotedStringKind.SingleQuotedString ->
-                let closed, rawContent, nextIndex = parseSingleQuotedSegment s i
-
-                if closed then
-                    let folded = foldSingleQuoted rawContent
-                    appendPlaceholder { Value = folded; Kind = QuotedStringKind.SingleQuotedString }
+                if isTokenBoundaryStart s i then
+                    let closed, rawContent, nextIndex = parseSingleQuotedSegment s i
+                    if closed && isTokenBoundaryEnd s nextIndex then
+                        let folded = foldSingleQuoted rawContent
+                        appendPlaceholder { Value = folded; Kind = QuotedStringKind.SingleQuotedString }
+                        advanceLineIndex i nextIndex
+                    else
+                        appendText (s.Substring(i, nextIndex - i))
+                    i <- nextIndex
                 else
-                    sb.Append(s.Substring(i, nextIndex - i)) |> ignore
-                i <- nextIndex
+                    appendChar c
+                    i <- i + 1
             | '\'' ->
                 // Preserve single-quoted segments untouched during double-quote pass.
                 let _, _, nextIndex = parseSingleQuotedSegment s i
-                sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                appendText (s.Substring(i, nextIndex - i))
                 i <- nextIndex
             | '"' when target = QuotedStringKind.DoubleQuotedString ->
-                let closed, rawContent, nextIndex = parseDoubleQuotedSegment s i
-
-                if closed then
-                    appendPlaceholder { Value = rawContent; Kind = QuotedStringKind.DoubleQuotedString }
+                if isTokenBoundaryStart s i then
+                    let closed, rawContent, nextIndex = parseDoubleQuotedSegment s i
+                    if closed && isTokenBoundaryEnd s nextIndex then
+                        appendPlaceholder { Value = rawContent; Kind = QuotedStringKind.DoubleQuotedString }
+                        advanceLineIndex i nextIndex
+                    else
+                        appendText (s.Substring(i, nextIndex - i))
+                    i <- nextIndex
                 else
-                    sb.Append(s.Substring(i, nextIndex - i)) |> ignore
-                i <- nextIndex
+                    appendChar c
+                    i <- i + 1
             | '"' ->
                 // Preserve double-quoted segments untouched during single-quote pass.
                 let _, _, nextIndex = parseDoubleQuotedSegment s i
-                sb.Append(s.Substring(i, nextIndex - i)) |> ignore
+                appendText (s.Substring(i, nextIndex - i))
                 i <- nextIndex
             | _ ->
-                sb.Append(c) |> ignore
+                appendChar c
                 i <- i + 1
 
     sb.ToString()
@@ -180,11 +266,114 @@ let encodingCleanUp (s: string) =
     //    sb.ToString()
     s1
 
+let private countLeadingSpaces (line: string) =
+    line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
+
+let private parseBlockScalarHeaderToken (token: string) =
+    if String.IsNullOrWhiteSpace token then
+        false
+    else
+        let t = token.Trim()
+        if t.Length = 0 then
+            false
+        else
+            let first = t.[0]
+            if first <> '|' && first <> '>' then
+                false
+            else
+                let mutable valid = true
+                let mutable seenIndent = false
+                let mutable seenChomp = false
+                let mutable idx = 1
+                while idx < t.Length && valid do
+                    match t.[idx] with
+                    | c when c >= '1' && c <= '9' ->
+                        if seenIndent then valid <- false
+                        else seenIndent <- true
+                    | '-'
+                    | '+' ->
+                        if seenChomp then valid <- false
+                        else seenChomp <- true
+                    | _ ->
+                        valid <- false
+                    idx <- idx + 1
+                valid
+
+let private tryDetectBlockScalarHeaderIndent (line: string) =
+    let stripProperties (s: string) =
+        let rec loop (current: string) =
+            let c = current.TrimStart()
+            if c.StartsWith("&") then
+                let idx = c.IndexOf(' ')
+                if idx < 0 then "" else loop (c.Substring(idx + 1))
+            elif c.StartsWith("!<") then
+                let idx = c.IndexOf('>')
+                if idx < 0 then c else loop (c.Substring(idx + 1))
+            elif c.StartsWith("!") && not (c.StartsWith("|")) && not (c.StartsWith(">")) then
+                let idx = c.IndexOf(' ')
+                if idx < 0 then "" else loop (c.Substring(idx + 1))
+            else
+                c
+        loop s
+
+    let trimmed = line.TrimStart()
+    let afterDash =
+        if trimmed.StartsWith("- ") then
+            trimmed.Substring(2).TrimStart()
+        else
+            trimmed
+    let candidate =
+        let idx = afterDash.IndexOf(':')
+        if idx >= 0 then afterDash.Substring(idx + 1).TrimStart()
+        else afterDash
+    let withoutProps = stripProperties candidate
+    let token =
+        withoutProps.Split([|' '; '\t'|], StringSplitOptions.RemoveEmptyEntries)
+        |> Array.tryHead
+
+    match token with
+    | Some t when parseBlockScalarHeaderToken t ->
+        Some (countLeadingSpaces line)
+    | _ ->
+        None
+
+let private detectBlockScalarContentLines (yamlString: string) =
+    let normalized = yamlString.Replace("\r\n", "\n").Replace("\r", "\n")
+    let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
+    let protectedLines = HashSet<int>()
+    let mutable i = 0
+    let mutable openBlockIndent: int option = None
+
+    while i < lines.Length do
+        match openBlockIndent with
+        | Some headerIndent ->
+            let line = lines.[i]
+            if line.Trim() = "" || countLeadingSpaces line > headerIndent then
+                protectedLines.Add(i) |> ignore
+                i <- i + 1
+            else
+                openBlockIndent <- None
+        | None ->
+            match tryDetectBlockScalarHeaderIndent lines.[i] with
+            | Some indent ->
+                openBlockIndent <- Some indent
+                i <- i + 1
+            | None ->
+                i <- i + 1
+
+    protectedLines |> Seq.toList |> Set.ofList
+
+let private stringCleanUpWithProtected (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
+    replaceQuotedStrings QuotedStringKind.DoubleQuotedString dict protectedBlockScalarLines s
+
+let private singleQuotedStringCleanUpWithProtected (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
+    replaceQuotedStrings QuotedStringKind.SingleQuotedString dict protectedBlockScalarLines s
+
 let stringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
-    replaceQuotedStrings QuotedStringKind.DoubleQuotedString dict s
+    stringCleanUpWithProtected dict Set.empty s
 
 let singleQuotedStringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
-    replaceQuotedStrings QuotedStringKind.SingleQuotedString dict s
+    singleQuotedStringCleanUpWithProtected dict Set.empty s
 
 let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
     let mutable n = 0
@@ -238,10 +427,12 @@ let private isDocumentMarker (marker: string) (line: string) =
 let pipeline (yamlString: string) =
     let stringMap = new Dictionary<int, StringMapEntry>()
     let commentMap = new Dictionary<int, string>()
+    let normalizedContent = encodingCleanUp yamlString
+    let protectedBlockScalarLines = detectBlockScalarContentLines normalizedContent
     let lines =
-        encodingCleanUp yamlString
-        |> singleQuotedStringCleanUp stringMap  // Handle single-quoted strings first
-        |> stringCleanUp stringMap              // Then handle double-quoted strings
+        normalizedContent
+        |> singleQuotedStringCleanUpWithProtected stringMap protectedBlockScalarLines  // Handle single-quoted strings first
+        |> stringCleanUpWithProtected stringMap protectedBlockScalarLines              // Then handle double-quoted strings
         |> commentCleanUp commentMap
         |> cut
     let hasDirectivePrelude =
@@ -267,20 +458,20 @@ let pipeline (yamlString: string) =
     let directiveLines = lines |> Array.take directivePreludeLength
     let contentLines = lines.[directivePreludeLength..]
     let mutable yamlVersion = None
-    let mutable tagHandles = 
-        Map.empty 
-        |> Map.add "!" "!" 
+    let mutable tagHandles =
+        Map.empty
+        |> Map.add "!" "!"
         |> Map.add "!!" "tag:yaml.org,2002:"
     for line in directiveLines do
         match parseYAMLDirective line with
-        | Some v -> 
+        | Some v ->
             if yamlVersion.IsSome then failwith "Duplicate YAML directive"
             yamlVersion <- Some v
         | None ->
             match parseTagDirective line with
             | Some (h, t) -> tagHandles <- Map.add h t tagHandles
             | None -> ()
-            
+
     let finalContentLines =
         if contentLines.Length > 0 && isDocumentMarker "---" contentLines.[0] then
             contentLines.[1..]
