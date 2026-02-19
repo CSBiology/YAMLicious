@@ -44,6 +44,14 @@ let CommentMatchPattern =
 [<Literal>]
 let NewLineChar = '\n'
 
+/// Internal marker so Reader can distinguish placeholders originating from single-quoted scalars.
+[<Literal>]
+let SingleQuotedMarker = "\u0001SQ\u0001"
+
+let private nextStringIndex (dict: Dictionary<int, string>) =
+    if dict.Count = 0 then 0
+    else (dict.Keys |> Seq.max) + 1
+
 let encodingCleanUp (s: string) =
     //let newLineChars = "\f\u0085\u2028\u2029" |> Array.ofSeq
     let s1 = s.Replace("\r\n", string NewLineChar)
@@ -58,7 +66,7 @@ let encodingCleanUp (s: string) =
     s1
 
 let stringCleanUp (dict: Dictionary<int, string>) (s: string) =
-    let mutable n = 0
+    let mutable n = nextStringIndex dict
     let regex = Regex(StringMatchPattern)
     let matcheval = new MatchEvaluator(fun m ->
         match m.Groups.["iscomment"].Success with
@@ -90,7 +98,7 @@ let foldSingleQuoted (s: string) =
     sb.ToString().Replace("''", "'")
 
 let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
-    let mutable n = 0
+    let mutable n = nextStringIndex dict
     let regex = Regex(SingleQuotedStringPattern)
     let matcheval = new MatchEvaluator(fun m ->
         match m.Groups.["iscomment"].Success with
@@ -101,7 +109,7 @@ let singleQuotedStringCleanUp (dict: Dictionary<int, string>) (s: string) =
             let v = foldSingleQuoted m.Groups.["stringValue"].Value
             let currentN = n
             n <- n + 1
-            dict.Add(currentN, v)
+            dict.Add(currentN, SingleQuotedMarker + v)
             sprintf "<s f=%i/>" currentN
     )
     regex.Replace(s, matcheval)

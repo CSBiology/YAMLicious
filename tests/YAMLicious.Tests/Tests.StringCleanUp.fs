@@ -45,6 +45,17 @@ My Key2: <s f=3/> ### A # in string is allowed!
             2, "Lorem ipsum dolor et"; 
             3, "Ehhhhh makarena"
         |])
-        Expect.equal actual expected "content"
+        let normalizeNewlines (s: string) = s.Replace("\r\n", "\n")
+        Expect.equal (normalizeNewlines actual) (normalizeNewlines expected) "content"
         Expect.dictEqual stringMap expectedDict "map"
+
+    testCase "mixed single and double quoted placeholders use unique indices" <| fun () ->
+        let stringMap = new Dictionary<int, string>()
+        let input = """mixed: ['a', "b"]"""
+        let withSingles = Persil.singleQuotedStringCleanUp stringMap input
+        let actual = Persil.stringCleanUp stringMap withSingles
+        let expected = """mixed: [<s f=0/>, <s f=1/>]"""
+        Expect.equal actual expected "content"
+        Expect.equal stringMap.[0] (Persil.SingleQuotedMarker + "a") "single quoted entry should be tagged"
+        Expect.equal stringMap.[1] "b" "double quoted entry should keep raw value"
 ]

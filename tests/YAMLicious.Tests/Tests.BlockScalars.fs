@@ -66,4 +66,21 @@ let Main =
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Should fold newlines to spaces"
+
+    testCase "Block scalar keeps quote delimiters in placeholders" <| fun _ ->
+        let yaml = """expression: >
+  ${ return (function() {
+    var allowedFields = ['class', 'basename'];
+    if (sanitized.basename === "arc") return null;
+    if (sanitized.class === "Directory") return null;
+  })(); }
+"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value content)] ->
+            Expect.equal (content.Value.Contains("'class'")) true "Should preserve single-quoted strings in block scalars"
+            Expect.equal (content.Value.Contains("\"arc\"")) true "Should preserve double-quoted strings in block scalars"
+            Expect.equal (content.Value.Contains("\"Directory\"")) true "Should preserve all double-quoted strings in block scalars"
+        | _ ->
+            failwithf "Unexpected AST: %A" actual
   ]

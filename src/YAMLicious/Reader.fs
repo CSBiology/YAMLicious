@@ -1,21 +1,84 @@
 module YAMLicious.Reader
 
-open Regex
-open Preprocessing
-open FlowToBlock
-open Escapes
+open YAMLicious.Regex
+open YAMLicious.Preprocessing
+open YAMLicious.FlowToBlock
+open YAMLicious.Escapes
 open System.Text.RegularExpressions
-open RegexActivePatterns
-open YAMLiciousTypes
+open YAMLicious.RegexActivePatterns
+open YAMLicious.YAMLiciousTypes
 open System.Collections.Generic
 
+let private tryGetSingleQuotedPlaceholderValue (rawString: string) =
+    if rawString.StartsWith(YAMLicious.Persil.SingleQuotedMarker) then
+        Some (rawString.Substring(YAMLicious.Persil.SingleQuotedMarker.Length))
+    else
+        None
+
+let private restoreScalarPlaceholderValue (rawString: string) =
+    match tryGetSingleQuotedPlaceholderValue rawString with
+    | Some singleQuoted -> singleQuoted
+    | None ->
+        // Double-quoted scalars need escape processing for the decoded value.
+        YAMLicious.Escapes.unescapeDoubleQuoted rawString
+
+let private restoreBlockScalarPlaceholderValue (rawString: string) =
+    match tryGetSingleQuotedPlaceholderValue rawString with
+    | Some singleQuoted ->
+        // Inside a block scalar, quote delimiters are literal content and must be preserved.
+        "'" + singleQuoted + "'"
+    | None ->
+        "\"" + rawString + "\""
+
 let private restoreStringReplace (stringDict: Dictionary<int, string>) (v: string)  =
-    Regex.Replace(v, StringReplacementPattern, fun m ->
+    System.Text.RegularExpressions.Regex.Replace(v, StringReplacementPattern, fun m ->
         let index = m.Groups.["index"].Value |> int
         let rawString = stringDict.[index]
-        // Apply escape sequence processing to double-quoted strings
-        unescapeDoubleQuoted rawString
+        restoreScalarPlaceholderValue rawString
     )
+
+let private parseBlockScalarHeader (header: string) =
+    let m = System.Text.RegularExpressions.Regex.Match(header, "^([|>])([1-9])?([+-])?")
+    if m.Success then
+        let style = m.Groups.[1].Value
+        let indent = if m.Groups.[2].Success then Some (int m.Groups.[2].Value) else None
+        let chomp = if m.Groups.[3].Success then Some m.Groups.[3].Value else None
+        Some (style, indent, chomp)
+    else None
+
+let private applyChomping (chomp: string option) (content: string) =
+    match chomp with
+    | Some "-" -> content.TrimEnd([|'\r'; '\n'|])
+    | Some "+" -> content
+    | _ -> // Clip: keep one newline at end if present
+        let trimmed = content.TrimEnd([|'\r'; '\n'|])
+        if content.Length > trimmed.Length then trimmed + "\n" else trimmed
+
+let private foldLines (lines: string list) : string =
+    let rec fold (acc: string list) (currentLines: string list) =
+        match currentLines with
+        | [] -> System.String.Concat(List.rev acc)
+        | line::rest ->
+            if line.Trim() = "" then
+                // Empty line
+                fold ("\n"::acc) rest
+            elif line.StartsWith(" ") || line.StartsWith("\t") then
+                // Indented line
+                let acc' = 
+                    match acc with
+                    | prev::_ when not (prev.EndsWith("\n")) -> "\n"::acc
+                    | _ -> acc
+                fold ((line + "\n")::acc') rest
+            else
+                // Normal line
+                let sep = 
+                    match acc with
+                    | [] -> "" 
+                    | prev::_ when prev.EndsWith("\n") -> ""
+                    | _ -> " "
+                fold ((sep + line)::acc) rest
+    
+    fold [] lines
 
 let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commentId: int option) =
     commentId |> Option.map (fun id -> commentDict.[id])
@@ -58,7 +121,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 StringReplacementPattern,
                 (fun (m: Match) ->
                     let idx = m.Groups.["index"].Value |> int
-                    stringDict.[idx]
+                    restoreBlockScalarPlaceholderValue (stringDict.[idx])
                 )
             )
         Regex.Replace(
@@ -370,18 +433,32 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     YAMLElement.Object [seq]
                 )
             loopRead handles rest (current::acc)
-        // doc: |\n  <block>
-        | KeyValue v::Intendation block::rest when v.Value = "|" || v.Value = ">" ->
-            let lines = flattenBlockScalar block
-            // '|' keeps new lines, '>' folds them. Here we keep simple behavior: preserve new lines for both.
-            let blockValue = System.String.Join((string NewLineChar), lines)
-            let props = extractProperties handles v.Key
-            let current =
-                YAMLElement.Mapping (
-                    YAMLContent.create(props.Value, ?anchor=props.Anchor, ?tag=props.Tag),
-                    YAMLElement.Value (YAMLContent.create(blockValue))
-                )
-            loopRead handles rest (current::acc)
+        // doc: |2\n  <block>
+        | KeyValue v::Intendation block::rest when v.Value.StartsWith("|") || v.Value.StartsWith(">") ->
+            let header = parseBlockScalarHeader v.Value
+            match header with
+            | Some (style, indent, chomp) ->
+                let lines = flattenBlockScalar block
+                
+                let content = 
+                    if style = "|" then
+                        // Literal: join with newlines
+                        System.String.Join("\n", lines) + "\n" // Literal style implies keeping newlines + one at end usually
+                    else
+                        // Folded: fold lines
+                        foldLines lines + "\n"
+                         
+                // Now apply chomping to the result
+                let finalContent = applyChomping chomp content
+
+                let props = extractProperties handles v.Key
+                let current =
+                    YAMLElement.Mapping (
+                        YAMLContent.create(props.Value, ?anchor=props.Anchor, ?tag=props.Tag),
+                        YAMLElement.Value (YAMLContent.create(finalContent))
+                    )
+                loopRead handles rest (current::acc)
+            | None -> failwithf "Invalid block scalar header: %s" v.Value
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             let props = extractProperties handles v.Key
