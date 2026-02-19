@@ -920,5 +920,13 @@ trailing: ignored"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Reader.read should ignore content after explicit document end"
+
+    testCase "Reader.read keeps inline root after document start marker" <| fun _ ->
+        let yaml = "--- foo"
+        let expected = YAMLElement.Object [
+            YAMLElement.Value(YAMLContent.create("foo"))
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Reader.read should parse inline content after --- as the document root"
 ]
 

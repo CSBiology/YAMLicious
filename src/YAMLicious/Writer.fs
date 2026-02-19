@@ -44,8 +44,11 @@ module Formatting =
     let mkNodePrefix (content: YAMLContent) =
         mkTag content.Tag + mkAnchor content.Anchor
 
+    let appendOptionalComment (comment: string option) (s: string) =
+        s + (comment |> Option.map (fun c -> " " + mkComment c) |> Option.defaultValue "")
+
     let private appendComment (content: YAMLContent) (s: string) =
-        s + (content.Comment |> Option.map (fun c -> " " + mkComment c) |> Option.defaultValue "")
+        appendOptionalComment content.Comment s
 
     let private escapeSingleQuoted (s: string) = s.Replace("'", "''")
 
@@ -170,6 +173,14 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
             PreprocessorElement.Nil
         | YAMLElement.Mapping (key, v) ->
             match v with
+            | _ when key.Comment.IsSome ->
+                let header = Formatting.mkMappingKey options key |> Formatting.appendOptionalComment key.Comment
+                PreprocessorElement.Level [
+                    PreprocessorElement.Line header
+                    PreprocessorElement.Intendation [
+                        loop v
+                    ]
+                ]
             | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
                 Formatting.mkBlockScalarMapping options key value
             | YAMLElement.Value value ->

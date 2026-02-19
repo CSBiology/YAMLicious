@@ -5,6 +5,16 @@ open System.Text
 
 let unescapeDoubleQuoted (s: string) : string =
     let sb = new StringBuilder()
+    let rec consumeEscapedLineBreaks (index: int) (extraBreaks: int) =
+        let mutable j = index + 2
+        while j < s.Length && (s.[j] = ' ' || s.[j] = '\t') do
+            j <- j + 1
+
+        if j + 1 < s.Length && s.[j] = '\\' && s.[j + 1] = '\n' then
+            consumeEscapedLineBreaks j (extraBreaks + 1)
+        else
+            extraBreaks, j
+
     let rec loop i =
         if i >= s.Length then ()
         elif s.[i] = '\\' && i + 1 < s.Length then
@@ -68,7 +78,16 @@ let unescapeDoubleQuoted (s: string) : string =
                 with _ -> 
                     sb.Append('\\').Append('U').Append(hex) |> ignore
                     loop (i + 10)
-            | '\n' -> loop (i + 2)  // escaped line break (continuation) - skip it
+            | '\n' ->
+                // Escaped line break continuation:
+                // - first escaped break folds away
+                // - additional escaped empty continuation lines become '\n'
+                while sb.Length > 0 && sb.[sb.Length - 1] = '\t' do
+                    sb.Length <- sb.Length - 1
+                let extraBreaks, nextIndex = consumeEscapedLineBreaks i 0
+                if extraBreaks > 0 then
+                    sb.Append(String.replicate extraBreaks "\n") |> ignore
+                loop nextIndex
             | c -> 
                 // Unknown escape - keep the backslash and character
                 sb.Append('\\').Append(c) |> ignore

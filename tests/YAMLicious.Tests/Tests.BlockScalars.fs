@@ -6,6 +6,25 @@ open YAMLiciousTypes
 
 let Main =
   testList "Block Scalars" [
+    testCase "Explicit indentation preserves leading content spaces" <| fun _ ->
+        let yaml = """- |1
+  explicit
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            " explicit\n",
+                            style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 1)
+                        )
+                    )
+                ]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Explicit indent indicator should preserve leading content spaces"
+
     testCase "Explicit Indentation Indicator" <| fun _ ->
         let yaml = """doc: |2
   explicit

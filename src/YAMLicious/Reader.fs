@@ -221,6 +221,24 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let flattenBlockScalar (eles: PreprocessorElement list) : string list =
         flattenBlockScalarWithDepth 0 eles
 
+    let rec flattenBlockScalarContentWithDepth (depth: int) (eles: PreprocessorElement list) : string list =
+        eles
+        |> List.collect (function
+            | Line s ->
+                let prefix =
+                    if s = "" then ""
+                    // Preprocessing strips one structural indent level when building
+                    // Intendation children. Rehydrate that baseline so explicit-indicator
+                    // deindent math can preserve leading content spaces.
+                    else System.String(' ', (depth + 1) * 2)
+                [prefix + restoreInlinePlaceholders s]
+            | Intendation children ->
+                flattenBlockScalarContentWithDepth (depth + 1) children
+            | _ -> [])
+
+    let flattenBlockScalarContent (eles: PreprocessorElement list) : string list =
+        flattenBlockScalarContentWithDepth 0 eles
+
     let restoreScalarWithStyle (raw: string) =
         match tryParseExactPlaceholderIndex raw with
         | Some idx ->
@@ -292,7 +310,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         match parseBlockScalarHeader props.Value with
         | Some (style, indent, chomp) ->
-            let lines = flattenBlockScalar block
+            let lines = flattenBlockScalarContent block
             let value = buildBlockScalarContent style chomp headerIndent indent lines
             let comment = restoreCommentReplace commentDict commentId
             Some

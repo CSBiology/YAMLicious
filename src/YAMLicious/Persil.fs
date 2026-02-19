@@ -424,6 +424,17 @@ let private isDocumentMarker (marker: string) (line: string) =
         let next = trimmed.[marker.Length]
         Char.IsWhiteSpace(next)
 
+let private tryInlineContentAfterStartMarker (line: string) =
+    let trimmed = line.TrimStart()
+    if not (trimmed.StartsWith("---")) then
+        None
+    else
+        let rest = trimmed.Substring(3).TrimStart()
+        if String.IsNullOrWhiteSpace(rest) || rest.StartsWith("#") then
+            None
+        else
+            Some rest
+
 let pipeline (yamlString: string) =
     let stringMap = new Dictionary<int, StringMapEntry>()
     let commentMap = new Dictionary<int, string>()
@@ -474,7 +485,11 @@ let pipeline (yamlString: string) =
 
     let finalContentLines =
         if contentLines.Length > 0 && isDocumentMarker "---" contentLines.[0] then
-            contentLines.[1..]
+            match tryInlineContentAfterStartMarker contentLines.[0] with
+            | Some inlineContent ->
+                Array.append [| inlineContent |] contentLines.[1..]
+            | None ->
+                contentLines.[1..]
         else
             contentLines
     {|StringMap = stringMap; CommentMap = commentMap; Lines = finalContentLines; YAMLVersion = yamlVersion; TagHandles = tagHandles|}

@@ -189,6 +189,16 @@ let Main =
         | _ ->
             failwithf "Unexpected reparsed AST shape: %A" reparsed
 
+    testCase "Writer preserves mapping-key comments on non-inline mappings" <| fun _ ->
+        let yaml = """a: # key
+  b: c
+"""
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        Expect.equal (written.Contains("a: # key")) true "Writer should emit key comments on mapping header lines"
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Key comments should survive read-write-read"
+
     testCase "Non-specific tag round-trip remains '!'" <| fun _ ->
         let yaml = "- ! 12"
         let parsed = Reader.read yaml
