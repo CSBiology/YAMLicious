@@ -106,7 +106,7 @@ let private foldLines (lines: string list) : string =
         line.StartsWith(" ") || line.StartsWith("\t")
 
     let arr = lines |> List.toArray
-    let sb = System.Text.StringBuilder()
+    let sb = StringBuffer.StringBuffer()
 
     for i in 0 .. arr.Length - 1 do
         let line = arr.[i]

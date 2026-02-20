@@ -1,10 +1,10 @@
 module YAMLicious.Escapes
 
 open System
-open System.Text
+open YAMLicious.StringBuffer
 
 let unescapeDoubleQuoted (s: string) : string =
-    let sb = new StringBuilder()
+    let sb = StringBuffer()
     let rec consumeEscapedLineBreaks (index: int) (extraBreaks: int) =
         let mutable j = index + 2
         while j < s.Length && (s.[j] = ' ' || s.[j] = '\t') do
@@ -82,8 +82,7 @@ let unescapeDoubleQuoted (s: string) : string =
                 // Escaped line break continuation:
                 // - first escaped break folds away
                 // - additional escaped empty continuation lines become '\n'
-                while sb.Length > 0 && (sb.[sb.Length - 1] = '\t' || sb.[sb.Length - 1] = ' ') do
-                    sb.Length <- sb.Length - 1
+                sb.TrimEndWhitespace()
                 let extraBreaks, nextIndex = consumeEscapedLineBreaks i 0
                 if extraBreaks > 0 then
                     sb.Append(String.replicate extraBreaks "\n") |> ignore

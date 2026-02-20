@@ -51,7 +51,7 @@ let private nextStringIndex (dict: Dictionary<int, StringMapEntry>) =
 
 let private foldSingleQuoted (s: string) =
     let lines = s.Split([|NewLineChar|])
-    let sb = new System.Text.StringBuilder()
+    let sb = StringBuffer.StringBuffer()
     for i in 0 .. lines.Length - 1 do
         let mutable line = lines.[i]
         if i > 0 then line <- line.TrimStart()
@@ -66,7 +66,7 @@ let private foldSingleQuoted (s: string) =
     sb.ToString().Replace("''", "'")
 
 let private parseSingleQuotedSegment (s: string) (startIndex: int) =
-    let content = new System.Text.StringBuilder()
+    let content = StringBuffer.StringBuffer()
     let mutable i = startIndex + 1
     let mutable closed = false
     while i < s.Length && not closed do
@@ -84,7 +84,7 @@ let private parseSingleQuotedSegment (s: string) (startIndex: int) =
     closed, content.ToString(), i
 
 let private parseDoubleQuotedSegment (s: string) (startIndex: int) =
-    let content = new System.Text.StringBuilder()
+    let content = StringBuffer.StringBuffer()
     let mutable i = startIndex + 1
     let mutable closed = false
     let mutable escaped = false
@@ -167,7 +167,7 @@ let private isTokenBoundaryEnd (s: string) (nextIndex: int) =
         | _ -> false
 
 let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    let sb = new System.Text.StringBuilder(s.Length)
+    let sb = StringBuffer.StringBuffer()
     let mutable i = 0
     let mutable n = nextStringIndex dict
     let mutable inComment = false
@@ -340,7 +340,7 @@ let private tryDetectBlockScalarHeaderIndent (line: string) =
 let private detectBlockScalarContentLines (yamlString: string) =
     let normalized = yamlString.Replace("\r\n", "\n").Replace("\r", "\n")
     let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
-    let protectedLines = HashSet<int>()
+    let protectedLines = ResizeArray<int>()
     let mutable i = 0
     let mutable openBlockIndent: int option = None
 

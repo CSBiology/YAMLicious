@@ -1,6 +1,6 @@
 module YAMLicious.YAMLiciousTypes
 
-open System.Text
+open YAMLicious.StringBuffer
 open System.Collections.Generic
 
 type Config =
@@ -66,7 +66,7 @@ and PreprocessorElement =
     | Nil 
 
     override this.ToString() =
-        let sb = StringBuilder()
+        let sb = StringBuffer()
         let rec innerprint (next: PreprocessorElement) (level: int) =
             let indent = String.init (level*2) (fun _ -> " ")
             match next with

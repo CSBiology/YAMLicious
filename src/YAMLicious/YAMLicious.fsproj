@@ -20,6 +20,7 @@
   <ItemGroup>
     <Compile Include="Interop\PyInterop.fs" />
     <Compile Include="Interop\JsInterop.fs" />
+    <Compile Include="StringBuffer.fs" />
     <Compile Include="YAMLiciousTypes.fs" />
     <Compile Include="Persil.fs" />
     <Compile Include="Escapes.fs" />
