@@ -1,3 +1,6 @@
+### 1.0.0-alpha.5 (Released 2026-02-27)
+* Pin FSharp.Core to 10.0.101 to prevent mismatch with deleted FSharp.Core version
+
 ### 1.0.0-alpha.4 (Released 2026-02-24)
 * Add support for YAML directives and multi-document markers in reader and writer flows
 * Add block scalar and scalar-style parsing/writing with improved roundtrip preservation
