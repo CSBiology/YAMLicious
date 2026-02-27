@@ -119,14 +119,29 @@ My Key: # This is a comment
         let expected = Level [
             Line "My Key: <c f=0/>"
             Intendation [
-                Line "My Value1"
+                Line "My Value1 "
                 Line "<s f=0/>"
                 Line "My Value3 <c f=1/>"
             ]
         ]
         let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
-        let expectedStringDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, "# This is not a comment!"])
+        let expectedStringDict =
+            new System.Collections.Generic.Dictionary<int, StringMapEntry>(
+                Map [0, { Value = "# This is not a comment!"; Kind = QuotedStringKind.DoubleQuotedString }]
+            )
         Expect.equal actual.AST expected "ast"
         Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
         Expect.dictEqual actual.StringMap expectedStringDict "strings"
+
+    testCase "Preprocessing read/write keeps stable structural indentation" <| fun _ ->
+        let yaml = """a:
+  b:
+    c: d"""
+        let pre = read yaml
+        let written = write (pre.AST, None)
+        let expected = """a:
+    b:
+        c: d"""
+        let normalizeNewlines (s: string) = s.Replace("\r\n", "\n").Trim()
+        Expect.equal (normalizeNewlines written) (normalizeNewlines expected) "read -> write should not duplicate indentation from parsed line payloads"
 ]

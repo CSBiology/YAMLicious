@@ -9,7 +9,7 @@ open Regex
 type TransformContext = {
     BaseIndent: int           // Current indentation level (in spaces)
     IndentStep: int           // Spaces per indent level (default: 2)
-    StringDict: Dictionary<int, string>  // For string placeholder lookup
+    StringDict: Dictionary<int, StringMapEntry>  // For string placeholder lookup
 }
 
 let defaultContext stringDict = {
@@ -230,9 +230,10 @@ let transformFlowContent (ctx: TransformContext) (content: string) : Preprocesso
 let rec transformElement (ctx: TransformContext) (element: PreprocessorElement) : PreprocessorElement list =
     match element with
     | PreprocessorElement.Line s ->
+        let line = s.TrimStart()
         // Check for KeyValue pattern with flow-style value: key: {...} or key: [...]
         // KeyValuePattern: ^(?<key>[^\{\[]+):\s+(?<value>.*)$
-        let keyValueMatch = Regex.Match(s, Regex.KeyValuePattern)
+        let keyValueMatch = Regex.Match(line, Regex.KeyValuePattern)
         if keyValueMatch.Success then
             let key = keyValueMatch.Groups.["key"].Value
             let value = keyValueMatch.Groups.["value"].Value.Trim()
@@ -296,7 +297,7 @@ let rec transformElement (ctx: TransformContext) (element: PreprocessorElement) 
         else
             // Check if this line contains flow-style syntax
             // FlowStyleObject pattern: ^\{(?<inlineSequence>.*)\}\s*?(<c f=(?<comment>\d+)\/>)?$
-            let inlineJsonMatch = Regex.Match(s, FlowStyleObjectPattern)
+            let inlineJsonMatch = Regex.Match(line, FlowStyleObjectPattern)
             if inlineJsonMatch.Success then
                 let content = inlineJsonMatch.Groups.["inlineSequence"].Value
                 if content.Trim() = "" then
@@ -308,7 +309,7 @@ let rec transformElement (ctx: TransformContext) (element: PreprocessorElement) 
                     transformed
             else
                 // FlowStyleArray pattern: ^\[(?<inlineSequence>.+)\]\s*?(<c f=(?<comment>\d+)\/>)?$
-                let inlineSeqMatch = Regex.Match(s, FlowStyleArrayPattern)
+                let inlineSeqMatch = Regex.Match(line, FlowStyleArrayPattern)
                 if inlineSeqMatch.Success then
                     let content = inlineSeqMatch.Groups.["inlineSequence"].Value
                     let commentGroup = inlineSeqMatch.Groups.["comment"]
@@ -340,8 +341,8 @@ and transformElements (ctx: TransformContext) (elements: PreprocessorElement lis
         | [] -> List.rev acc
         | PreprocessorElement.Line opener::PreprocessorElement.Intendation iList::PreprocessorElement.Line closer::rest ->
             // Check if this matches FlowStyleObjectOpener pattern: ^(?<key>[^\{\[]+):\s+\{\s*(<c f=(?<comment>\d+)\/>)?$
-            let jsonOpenerMatch = Regex.Match(opener, FlowStyleObjectOpenerPattern)
-            let jsonCloserMatch = Regex.Match(closer, FlowStyleObjectCloserPattern)
+            let jsonOpenerMatch = Regex.Match(opener.TrimStart(), FlowStyleObjectOpenerPattern)
+            let jsonCloserMatch = Regex.Match(closer.TrimStart(), FlowStyleObjectCloserPattern)
             if jsonOpenerMatch.Success && jsonCloserMatch.Success then
                 // This is a multi-line flow object - transform it
                 let key = jsonOpenerMatch.Groups.["key"].Value
@@ -350,7 +351,9 @@ and transformElements (ctx: TransformContext) (elements: PreprocessorElement lis
                 let rec flattenLines (eles: PreprocessorElement list) : string list =
                     eles
                     |> List.collect (function
-                        | PreprocessorElement.Line s -> [s.TrimEnd(',')]
+                        | PreprocessorElement.Line s ->
+                            let trimmed = s.Trim()
+                            [trimmed.TrimEnd(',')]
                         | PreprocessorElement.Intendation children -> flattenLines children
                         | _ -> [])
                 

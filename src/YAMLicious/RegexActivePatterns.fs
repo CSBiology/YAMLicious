@@ -5,11 +5,17 @@ open YAMLiciousTypes
 open Preprocessing
 open Regex
 
+let private trimForPattern (s: string) = s.TrimStart()
+
+let private leadingIndent (s: string) =
+    s.Length - (s.TrimStart().Length)
+
 // Define the active pattern
 let (|Key|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
-        let m = Regex.Match(s, KeyPattern)
+        let line = trimForPattern s
+        let m = Regex.Match(line, KeyPattern)
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -23,11 +29,12 @@ let (|Key|_|) (input: PreprocessorElement) =
 let (|KeyValue|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
-        let m = Regex.Match(s, KeyValuePattern)
+        let line = trimForPattern s
+        let m = Regex.Match(line, KeyValuePattern)
         if m.Success then 
             let v: string =
                 m.Groups.["value"].Value.Trim() 
-            Some {| Value = v; Key = m.Groups.["key"].Value |}
+            Some {| Value = v; Key = m.Groups.["key"].Value; Indent = leadingIndent s |}
         else
             None
     | _ -> None
@@ -36,14 +43,15 @@ let (|KeyValue|_|) (input: PreprocessorElement) =
 let (|YamlValue|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
-        let m = Regex.Match(s, ValuePattern)
+        let line = trimForPattern s
+        let m = Regex.Match(line, ValuePattern)
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
                 if v = "" then None else Some (int v)
             let v: string =
                 m.Groups.["value"].Value.Trim()
-            Some {| Comment = comment; Value = v |}
+            Some {| Comment = comment; Value = v; Indent = leadingIndent s |}
         else
             None
     | _ -> None
@@ -52,7 +60,8 @@ let (|YamlValue|_|) (input: PreprocessorElement) =
 let (|YamlComment|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
-        let m = Regex.Match(s, LineCommentPattern)
+        let line = trimForPattern s
+        let m = Regex.Match(line, LineCommentPattern)
         if m.Success then 
             Some {| Comment = m.Groups.["comment"].Value |> int|}
         else
@@ -63,12 +72,13 @@ let (|YamlComment|_|) (input: PreprocessorElement) =
 let (|SequenceMinusOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, SequenceMinusPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, SequenceMinusPattern) 
         if m.Success then 
             let v: string option =
                 let v = m.Groups.["value"].Value.Trim()
                 if v = "" then None else Some v
-            Some {| Value = v |}
+            Some {| Value = v; Indent = leadingIndent s |}
         else
             None
     | _ -> None
@@ -76,7 +86,8 @@ let (|SequenceMinusOpener|_|) (input: PreprocessorElement) =
 let (|FlowStyleArray|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, FlowStyleArrayPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, FlowStyleArrayPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -94,7 +105,8 @@ let (|InlineSequence|_|) = (|FlowStyleArray|_|)
 let (|SequenceSquareOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, SequenceOpenerPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, SequenceOpenerPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -107,7 +119,8 @@ let (|SequenceSquareOpener|_|) (input: PreprocessorElement) =
 let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, SequenceCloserPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, SequenceCloserPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -120,7 +133,8 @@ let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
 let (|FlowStyleObject|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, FlowStyleObjectPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, FlowStyleObjectPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -138,7 +152,8 @@ let (|InlineJSON|_|) = (|FlowStyleObject|_|)
 let (|FlowStyleObjectOpener|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, FlowStyleObjectOpenerPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, FlowStyleObjectOpenerPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -154,7 +169,8 @@ let (|JSONKeyOpener|_|) = (|FlowStyleObjectOpener|_|)
 let (|FlowStyleObjectCloser|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, FlowStyleObjectCloserPattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, FlowStyleObjectCloserPattern) 
         if m.Success then 
             let comment: int option = 
                 let v = m.Groups.["comment"].Value
@@ -170,9 +186,55 @@ let (|JSONCloser|_|) = (|FlowStyleObjectCloser|_|)
 let (|SchemaNamespace|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
-        let m = Regex.Match(s, SchemaNamespacePattern) 
+        let line = trimForPattern s
+        let m = Regex.Match(line, SchemaNamespacePattern) 
         if m.Success then 
             Some {| Key = m.Groups.["key"].Value|}
+        else
+            None
+    | _ -> None
+
+let (|DocumentEnd|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s when isDocumentEnd s -> Some ()
+    | _ -> None
+
+let (|WithAnchor|_|) (input: string) =
+    let m = Regex.Match(input, AnchorPattern)
+    if m.Success then Some m.Groups.["anchor"].Value
+    else None
+
+let (|AliasNode|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s ->
+        let m = Regex.Match(s.Trim(), AliasPattern)
+        if m.Success then Some m.Groups.["alias"].Value
+        else None
+    | _ -> None
+
+let (|VerbatimTag|_|) (input: string) =
+    let m = Regex.Match(input, VerbatimTagPattern)
+    if m.Success then Some m.Groups.["tag"].Value
+    else None
+
+let (|ExplicitKey|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s ->
+        let line = trimForPattern s
+        if line.StartsWith("?") then
+            let value = line.Substring(1).Trim()
+            Some (if value = "" then None else Some value)
+        else
+            None
+    | _ -> None
+
+let (|ExplicitValue|_|) (input: PreprocessorElement) =
+    match input with
+    | Line s ->
+        let line = trimForPattern s
+        if line.StartsWith(":") then
+            let v = line.Substring(1).Trim()
+            Some v
         else
             None
     | _ -> None

@@ -1,3 +1,9 @@
+### 1.0.0-alpha.4 (Released 2026-02-24)
+* Add support for YAML directives and multi-document markers in reader and writer flows
+* Add block scalar and scalar-style parsing/writing with improved roundtrip preservation
+* Improve escape and scalar parsing robustness, including UTF-32 handling for Python target
+* Expand regression and edge-case test coverage, and replace StringBuilder with a Fable-friendly custom buffer
+
 ### 1.0.0-alpha.3 (Released 2026-01-26)
 * Add support for nested flow-style YAML syntax (JSON-like with braces and brackets)
 * Implement FlowStyleParser module with recursive parser for deeply nested structures

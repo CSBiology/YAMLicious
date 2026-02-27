@@ -79,6 +79,175 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Single-quoted string" <| fun _ ->
+        let yaml = "single: 'hello world'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("single"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("hello world", style=ScalarStyle.SingleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Single-quoted with escaped quote" <| fun _ ->
+        let yaml = "single: 'here''s to quotes'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("single"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("here's to quotes", style=ScalarStyle.SingleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Single-quoted preserves backslashes" <| fun _ ->
+        let yaml = "tie-fighter: '|\\-*-/|'"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("tie-fighter"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("|\\-*-/|", style=ScalarStyle.SingleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: newline" <| fun _ ->
+        let yaml = "key: \"line1\\nline2\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("line1\nline2", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: tab" <| fun _ ->
+        let yaml = "key: \"before\\tafter\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("before\tafter", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: backslash" <| fun _ ->
+        let yaml = "key: \"path\\\\to\\\\file\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("path\\to\\file", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: escaped quote" <| fun _ ->
+        let yaml = "key: \"a \\\"b\\\" c\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("a \"b\" c", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: hex unicode" <| fun _ ->
+        let yaml = "key: \"\\x41\\x42\\x43\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("ABC", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: unicode 16-bit" <| fun _ ->
+        let yaml = "key: \"\\u263A\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("☺", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted escape: null character" <| fun _ ->
+        let yaml = "key: \"before\\0after\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("before\u0000after", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Double-quoted string with embedded single quotes stays intact" <| fun _ ->
+        let yaml = "key: \"a 'b' c\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("a 'b' c", style=ScalarStyle.DoubleQuoted))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Single quotes inside double-quoted scalar should not be placeholder-leaked"
+
+    testCase "Plain scalar with embedded single quotes stays intact" <| fun _ ->
+        let yaml = "key: rock 'n' roll"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("rock 'n' roll"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Single quotes in plain scalars should remain literal content"
+
+    testCase "Plain scalar with embedded double quotes stays intact" <| fun _ ->
+        let yaml = "key: he said \"hi\""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("he said \"hi\""))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Double quotes in plain scalars should remain literal content"
+
     testCase "Sequence" <| fun _ ->
         let yaml = """
 - My Value 1
@@ -410,28 +579,32 @@ $namespaces:
   - R and combinations of library dependencies are available as multi-package containers from [BioContainers](https://github.com/BioContainers/multi-package-containers)
   - Searched for `repo:BioContainers/multi-package-containers deseq2 tximport rhdf5`
   - and found `quay.io/biocontainers/mulled-v2-05fd88b9ac812a9149da2f2d881d62f01cc49835:a10f0e3a7a70fc45494f8781d33901086d2214d0-0` :tada:"""
-        let block = System.String.Join("\n", [|
+        let blockLines = [|
             "DESeq2 example workflow for **differential gene expression analysis**";
             "";
             "This workflow runs DESeq2 on the output of the kallisto workflow";
             "and the metadata file.";
             "It runs an R script, deseq2.R, which ideally should be split into three sub scripts and accordingly three workflow steps";
-            "1. Read kallsito data";
-            "2. Prep / run deseq2";
-            "3. Plot results";
+            "  1. Read kallsito data";
+            "  2. Prep / run deseq2";
+            "  3. Plot results";
+            "";
             "## DESeq2 docs:";
-            "https://bioconductor.org/packages/release/bioc/html/DESeq2.html";
+            "  https://bioconductor.org/packages/release/bioc/html/DESeq2.html";
+            "";
             "## Importing kallisto output with tximport";
-            "https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html#kallisto";
+            "  https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html#kallisto";
+            "";
             "## Multi-package containers";
             "- R and combinations of library dependencies are available as multi-package containers from [BioContainers](https://github.com/BioContainers/multi-package-containers)";
             "- Searched for `repo:BioContainers/multi-package-containers deseq2 tximport rhdf5`";
             "- and found `quay.io/biocontainers/mulled-v2-05fd88b9ac812a9149da2f2d881d62f01cc49835:a10f0e3a7a70fc45494f8781d33901086d2214d0-0` :tada:";
-        |])
+        |]
+        let block = System.String.Join("\n", blockLines) + "\n"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("doc"),
-                YAMLElement.Value (YAMLContent.create(block))
+                YAMLElement.Value (YAMLContent.create(block, style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
             )
         ]
         let actual = Reader.read yaml
@@ -518,14 +691,14 @@ Sammy Sosa: {
                         YAMLElement.Object [
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerImageId"),
-                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer", style=ScalarStyle.DoubleQuoted)) ]
                             );
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerFile"),
                                 YAMLElement.Object [
                                     YAMLElement.Mapping(
                                         YAMLContent.create("$include"),
-                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile", style=ScalarStyle.DoubleQuoted)) ]
                                     )
                                 ]
                             )
@@ -576,14 +749,14 @@ Sammy Sosa: {
                         YAMLElement.Object [
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerImageId"),
-                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer")) ]
+                                YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("devcontainer", style=ScalarStyle.DoubleQuoted)) ]
                             );
                             YAMLElement.Mapping(
                                 YAMLContent.create("dockerFile"),
                                 YAMLElement.Object [
                                     YAMLElement.Mapping(
                                         YAMLContent.create("$include"),
-                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile")) ]
+                                        YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("FSharpArcCapsule/Dockerfile", style=ScalarStyle.DoubleQuoted)) ]
                                     )
                                 ]
                             )
@@ -644,12 +817,12 @@ Sammy Sosa: {
                                 YAMLElement.Object [
                                     YAMLElement.Sequence [
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entryname"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("arc", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.arcDirectory)", style=ScalarStyle.DoubleQuoted)) ]);
                                             YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
                                         ];
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)")) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("entry"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("$(inputs.outputDirectory)", style=ScalarStyle.DoubleQuoted)) ]);
                                             YAMLElement.Mapping(YAMLContent.create("writable"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
                                         ]
                                     ]
@@ -665,12 +838,12 @@ Sammy Sosa: {
                                 YAMLElement.Object [
                                     YAMLElement.Sequence [
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("DOTNET_NOLOGO")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true")) ])
+                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("DOTNET_NOLOGO", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("true", style=ScalarStyle.DoubleQuoted)) ])
                                         ];
                                         YAMLElement.Object [
-                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("TEST")) ]);
-                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("false")) ])
+                                            YAMLElement.Mapping(YAMLContent.create("envName"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("TEST", style=ScalarStyle.DoubleQuoted)) ]);
+                                            YAMLElement.Mapping(YAMLContent.create("envValue"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("false", style=ScalarStyle.DoubleQuoted)) ])
                                         ]
                                     ]
                                 ]
@@ -686,5 +859,100 @@ Sammy Sosa: {
         ]
         Expect.equal actualFlowstyle expected "Flowstyle"
         Expect.equal actual expected "Blockstyle"
+
+    testCase "Multi-document: Two documents separated by ---" <| fun _ ->
+        let yaml = """---
+document1: value1
+---
+document2: value2"""
+        let actual = Reader.readDocuments yaml
+        Expect.equal (List.length actual) 2 "Should parse two documents"
+        
+        // Check first document
+        let doc1 = actual.[0]
+        match doc1 with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "First document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "document1" "First document key should be document1"
+            | _ -> failwith "Expected mapping in first document"
+        | _ -> failwith "Expected object in first document"
+        
+        // Check second document
+        let doc2 = actual.[1]
+        match doc2 with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "Second document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "document2" "Second document key should be document2"
+            | _ -> failwith "Expected mapping in second document"
+        | _ -> failwith "Expected object in second document"
+
+    testCase "Multi-document: Document with end marker" <| fun _ ->
+        let yaml = """---
+key: value
+..."""
+        let actual = Reader.readDocuments yaml
+        Expect.equal (List.length actual) 1 "Should parse one document"
+        
+        let doc = actual.[0]
+        match doc with
+        | YAMLElement.Object elems ->
+            Expect.equal (List.length elems) 1 "Document should have one mapping"
+            match elems.[0] with
+            | YAMLElement.Mapping(key, value) ->
+                Expect.equal key.Value "key" "Document key should be key"
+            | _ -> failwith "Expected mapping in document"
+        | _ -> failwith "Expected object in document"
+
+    testCase "Reader.read stops at document end marker" <| fun _ ->
+        let yaml = """---
+key: value
+...
+trailing: ignored"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Reader.read should ignore content after explicit document end"
+
+    testCase "Reader.read keeps inline root after document start marker" <| fun _ ->
+        let yaml = "--- foo"
+        let expected = YAMLElement.Object [
+            YAMLElement.Value(YAMLContent.create("foo"))
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Reader.read should parse inline content after --- as the document root"
+
+    testCase "Bare dash sequence element" <| fun _ ->
+        let yaml = """- 
+- value"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object []
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Bare dash with no value should not crash"
+
+    testCase "Multiple bare dash sequence elements" <| fun _ ->
+        let yaml = """- 
+- 
+- end"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object []
+                YAMLElement.Object []
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("end"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Multiple bare dashes should be parsed as empty sequence elements"
 ]
 

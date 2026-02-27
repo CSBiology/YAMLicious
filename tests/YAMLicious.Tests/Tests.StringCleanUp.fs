@@ -3,6 +3,7 @@
 open Fable.Pyxpecto
 open System.Collections.Generic
 open YAMLicious
+open YAMLicious.YAMLiciousTypes
 
 module private Examples =
 
@@ -21,17 +22,21 @@ My Key2: "Ehhhhh makarena" ### A # in string is allowed!
 
 let Main = testList "StringCleanUp" [
     testCase "single special char" <| fun () ->
-        let stringMap = new Dictionary<int, string>()
+        let stringMap = new Dictionary<int, StringMapEntry>()
         let actual = Persil.stringCleanUp stringMap Examples.StringReplace
         let expected = """
 My Key: <s f=0/> # A # in string is allowed!
 """
-        let expectedDict = Dictionary(Map[|0, "[{Special character place # |}"|])
-        Expect.equal expected actual "content"
+        let expectedDict =
+            Dictionary(Map[|
+                0, { Value = "[{Special character place # |}"; Kind = QuotedStringKind.DoubleQuotedString }
+            |])
+        let normalizeNewlines (s: string) = s.Replace("\r\n", "\n")
+        Expect.equal (normalizeNewlines actual) (normalizeNewlines expected) "content"
         Expect.dictEqual stringMap expectedDict "map"
 
     testCase "multiple comments" <| fun () ->
-        let stringMap = new Dictionary<int, string>()
+        let stringMap = new Dictionary<int, StringMapEntry>()
         let actual = Persil.stringCleanUp stringMap Examples.StringsReplace
         let expected = """
 My Key: <s f=0/> ### A # in string is allowed!
@@ -39,12 +44,24 @@ My Key2: <s f=1/> ### A # in string is allowed!
 My Key2: <s f=2/> ### A # in string is allowed!
 My Key2: <s f=3/> ### A # in string is allowed!
 """
-        let expectedDict = Dictionary(Map [|
-            0, "[{Special character place # |}"; 
-            1, "3"; 
-            2, "Lorem ipsum dolor et"; 
-            3, "Ehhhhh makarena"
-        |])
-        Expect.equal actual expected "content"
+        let expectedDict =
+            Dictionary(Map [|
+                0, { Value = "[{Special character place # |}"; Kind = QuotedStringKind.DoubleQuotedString }
+                1, { Value = "3"; Kind = QuotedStringKind.DoubleQuotedString }
+                2, { Value = "Lorem ipsum dolor et"; Kind = QuotedStringKind.DoubleQuotedString }
+                3, { Value = "Ehhhhh makarena"; Kind = QuotedStringKind.DoubleQuotedString }
+            |])
+        let normalizeNewlines (s: string) = s.Replace("\r\n", "\n")
+        Expect.equal (normalizeNewlines actual) (normalizeNewlines expected) "content"
         Expect.dictEqual stringMap expectedDict "map"
+
+    testCase "mixed single and double quoted placeholders use unique indices" <| fun () ->
+        let stringMap = new Dictionary<int, StringMapEntry>()
+        let input = """mixed: ['a', "b"]"""
+        let withSingles = Persil.singleQuotedStringCleanUp stringMap input
+        let actual = Persil.stringCleanUp stringMap withSingles
+        let expected = """mixed: [<s f=0/>, <s f=1/>]"""
+        Expect.equal actual expected "content"
+        Expect.equal stringMap.[0] { Value = "a"; Kind = QuotedStringKind.SingleQuotedString } "single quoted entry should be typed"
+        Expect.equal stringMap.[1] { Value = "b"; Kind = QuotedStringKind.DoubleQuotedString } "double quoted entry should keep typed kind"
 ]

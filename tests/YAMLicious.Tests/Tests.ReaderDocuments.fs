@@ -1,0 +1,272 @@
+module Tests.ReaderDocuments
+
+open Fable.Pyxpecto
+open YAMLicious
+open YAMLiciousTypes
+
+let Main = testList "Reader.readDocuments" [
+    // --- Comparable Single Document Tests ---
+    testCase "Single document: Scalar" <| fun _ ->
+        let yaml = "value"
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+        ]
+        Expect.equal actual expected "Should return list with one scalar document"
+
+    testCase "Single document: Mapping" <| fun _ ->
+        let yaml = "key: value"
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Should return list with one mapping document"
+
+    testCase "Single document: Sequence" <| fun _ ->
+        let yaml = """- a
+- b"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Sequence [
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                ]
+            ]
+        ]
+        Expect.equal actual expected "Should return list with one sequence document"
+
+    testCase "Single document: Explicit Start" <| fun _ ->
+        let yaml = """---
+key: value"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Should handle explicit start marker"
+
+    testCase "Single document: Explicit Start with comment" <| fun _ ->
+        let yaml = """--- # start
+key: value"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Start marker with inline comment should be recognized"
+
+    testCase "Single document: Explicit Start with inline root node" <| fun _ ->
+        let yaml = "--- foo"
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("foo"))]
+        ]
+        Expect.equal actual expected "Inline content after start marker should become document content"
+
+    testCase "Single document: Expect End" <| fun _ ->
+        let yaml = """key: value
+..."""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Should handle explicit end marker"
+
+    // --- Multi-Document Tests ---
+
+    testCase "Two scalars" <| fun _ ->
+        let yaml = """---
+doc1
+---
+doc2"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc1"))]
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc2"))]
+        ]
+        Expect.equal actual expected "Should return two scalar documents"
+
+    testCase "Mapping and Sequence" <| fun _ ->
+        let yaml = """---
+key: value
+---
+- item1
+- item2"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("key"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Sequence [
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("item1"))]
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("item2"))]
+                ]
+            ]
+        ]
+        Expect.equal actual expected "Should return mapping doc and sequence doc"
+
+    testCase "Three documents with directives" <| fun _ ->
+        let yaml = """%YAML 1.2
+---
+doc1: v1
+---
+%TAG ! t!
+---
+!foo "doc2"
+...
+---
+doc3"""
+        let actual = Reader.readDocuments yaml
+        
+        // This test specifically verifies three behaviors:
+        // 1. Directives (e.g. %YAML, %TAG) are correctly associated with the document they precede.
+        // 2. The parser handles tag resolution (e.g. !foo becoming t!foo or remaining !foo depending on context).
+        // 3. Reader.readDocuments correctly identifies document boundaries even when directives are involved,
+        //    ensuring directives don't get split into their own "empty" documents.
+
+        // Document 1: Simple mapping
+        let doc1 = YAMLElement.Object [
+             YAMLElement.Mapping(YAMLContent.create("doc1"), YAMLElement.Object[YAMLElement.Value(YAMLContent.create("v1"))])
+        ]
+        
+        // Document 2: Uses a custom tag !foo. 
+        // The directive `%TAG ! t!` maps the primary handle `!` to the prefix `t!`.
+        // Therefore, `!foo` (which uses the `!` handle) resolves to `t!` + `foo` = `t!foo`.
+        // We verify that the parser correctly performs this expansion.
+        let doc2 = YAMLElement.Object [
+            YAMLElement.Value(YAMLContent.create("doc2", tag="t!foo", style=ScalarStyle.DoubleQuoted))
+        ]
+        
+        // Document 3: Simple scalar
+        let doc3 = YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc3"))]
+        
+        Expect.equal actual.Length 3 "Should have 3 docs"
+        match actual with
+        | [d1; d2; d3] ->
+             Expect.equal d1 doc1 "Doc 1 mismatch"
+             Expect.equal d2 doc2 "Doc 2 mismatch - verifying correct tag parsing"
+             Expect.equal d3 doc3 "Doc 3 mismatch"
+        | _ -> failwith "Structure mismatch - expected 3 documents"
+
+    testCase "Empty documents skipped" <| fun _ ->
+        let yaml = """---
+doc1
+---
+# Just a comment
+---
+doc2"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc1"))]
+            YAMLElement.Object [YAMLElement.Comment(" Just a comment")]
+            YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc2"))]
+        ]
+        Expect.equal actual expected "Comment-only documents should be preserved as document content"
+        
+        // Test ignoring truly empty documents:
+        let yaml2 = """---
+doc1
+---
+---
+doc2"""
+        let actual2 = Reader.readDocuments yaml2
+        // Usage of empty document markers (e.g. adjacent ---) is valid YAML.
+        // Reader.readDocuments is designed to filter out these truly empty documents.
+        Expect.equal actual2.Length 2 "Should skip empty document"
+
+    testCase "Directive prelude comments are kept with the same document" <| fun _ ->
+        let yaml = """%YAML 1.2
+# prelude
+---
+foo: bar
+---
+baz: qux"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("foo"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar"))]
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("baz"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("qux"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Comments in directive prelude must not create an extra pseudo-document"
+
+    testCase "Document markers inside block scalar content do not split documents" <| fun _ ->
+        let yaml = """---
+text: |
+  line1
+  ---
+  ...
+  line2
+---
+next: ok"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("text"),
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            "line1\n---\n...\nline2\n",
+                            style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                        )
+                    )
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("next"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("ok"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Indented marker-like content in block scalars must remain scalar content"
+
+    testCase "End-marker prefix is not treated as document end" <| fun _ ->
+        let yaml = """...foo: bar
+next: v"""
+        let actual = Reader.readDocuments yaml
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("...foo"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar"))]
+                )
+                YAMLElement.Mapping(
+                    YAMLContent.create("next"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("v"))]
+                )
+            ]
+        ]
+        Expect.equal actual expected "Only standalone ... markers should terminate a document"
+]

@@ -4,6 +4,7 @@ module Util
 module Expect =
     open Fable.Pyxpecto
     open System.Collections.Generic
+    open YAMLicious.YAMLiciousTypes
 
     /// Trims whitespace and normalizes lineendings to "\n"
     let trimEqual (actual: string) (expected: string) message =
@@ -39,3 +40,8 @@ module Expect =
             let v2 = Seq.item i expected
 
             Expect.equal v1 v2 $"Item at index {i} is not equal."
+
+    let yamlSemanticEqual (actual: YAMLElement) (expected: YAMLElement) message =
+        let normalizedActual = YAMLElementNormalization.withoutScalarStyle actual
+        let normalizedExpected = YAMLElementNormalization.withoutScalarStyle expected
+        Expect.equal normalizedActual normalizedExpected message
