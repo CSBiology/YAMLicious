@@ -451,13 +451,16 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
             let c1 = opener.Comment |> restoreCommentReplace commentDict
             let c2 = closer.Comment |> restoreCommentReplace commentDict
+            let sequenceItems =
+                iList
+                |> List.choose (function
+                    | Line s when s.Trim() = "" -> None
+                    | Line s -> Some (s.TrimEnd(',') |> Line)
+                    | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
+                )
             let current = 
                 YAMLElement.Sequence [
-                    for i in iList do
-                        let i' =
-                            match i with
-                            | Line s -> s.TrimEnd(',') |> Line
-                            | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
+                    for i' in sequenceItems do
                         loopRead handles [i'] []
                 ]
             let nextAcc =

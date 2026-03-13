@@ -1,3 +1,6 @@
+### 1.0.0-alpha.6 (Released 2026-03-13)
+* Preprocessing now treats blank lines immediately before a more-indented block as part of that child block instead of siblings at the parent level
+
 ### 1.0.0-alpha.5 (Released 2026-02-27)
 * Pin FSharp.Core to 10.0.101 to prevent mismatch with deleted FSharp.Core version
 

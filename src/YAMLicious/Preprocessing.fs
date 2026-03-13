@@ -58,37 +58,61 @@ let read (yamlStr: string) =
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
-            // Empty lines belong to the current indentation context.
-            let nextIntendation =
-                if isEmptyLine then currentIntendation
-                else ReadHelpers.indentLevel line
 
-            if nextIntendation = currentIntendation then
-                let lineText =
-                    if isEmptyLine then "" else stripIndent currentIntendation line
-                let lineEle = Line(lineText)
-                loop rest currentIntendation (lineEle :: acc)
+            if isEmptyLine then
+                let nextIndentedLine =
+                    rest
+                    |> List.tryFind (fun l -> l.Trim() <> "")
+
+                match nextIndentedLine with
+                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation ->
+                    let nextIntendation = ReadHelpers.indentLevel nextLine
+                    let nextLevelLines =
+                        line :: rest
+                        |> List.takeWhile (fun l ->
+                            let isEmpty = l.Trim() = ""
+                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                        )
+
+                    let currentLevelLines =
+                        rest
+                        |> List.skipWhile (fun l ->
+                            let isEmpty = l.Trim() = ""
+                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                        )
+
+                    let children = loop nextLevelLines nextIntendation [] |> List.rev
+                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                | _ ->
+                    loop rest currentIntendation (Line("") :: acc)
             else
-                let lineText =
-                    if isEmptyLine then "" else stripIndent nextIntendation line
-                let lineEle = Line(lineText)
-                let nextLevelLines =
-                    rest
-                    |> List.takeWhile (fun l ->
-                        let isEmpty = l.Trim() = ""
-                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                    )
+                let nextIntendation = ReadHelpers.indentLevel line
 
-                let currentLevelLines =
-                    rest
-                    |> List.skipWhile (fun l ->
-                        let isEmpty = l.Trim() = ""
-                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                    )
+                if nextIntendation = currentIntendation then
+                    let lineText = stripIndent currentIntendation line
+                    let lineEle = Line(lineText)
+                    loop rest currentIntendation (lineEle :: acc)
+                else
+                    let lineText =
+                        stripIndent nextIntendation line
+                    let lineEle = Line(lineText)
+                    let nextLevelLines =
+                        rest
+                        |> List.takeWhile (fun l ->
+                            let isEmpty = l.Trim() = ""
+                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                        )
 
-                let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
-                let children = lineEle :: otherChildren
-                loop currentLevelLines currentIntendation (Intendation children :: acc)
+                    let currentLevelLines =
+                        rest
+                        |> List.skipWhile (fun l ->
+                            let isEmpty = l.Trim() = ""
+                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                        )
+
+                    let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
+                    let children = lineEle :: otherChildren
+                    loop currentLevelLines currentIntendation (Intendation children :: acc)
 
     let ast = loop (List.ofArray content.Lines) 0 [] |> List.rev |> Level
 

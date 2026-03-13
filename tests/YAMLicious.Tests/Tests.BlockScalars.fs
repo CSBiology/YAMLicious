@@ -166,6 +166,25 @@ let Main =
         let actual = Reader.read yaml
         Expect.equal actual expected "Root block scalar should parse as value node"
 
+    testCase "Block scalar preserves leading blank content line" <| fun _ ->
+        let yaml = """doc: |
+
+  hello
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "\nhello\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Leading blank lines after a block scalar header should stay as scalar content"
+
     testCase "Sequence item supports literal block scalar" <| fun _ ->
         let yaml = """- |
   text

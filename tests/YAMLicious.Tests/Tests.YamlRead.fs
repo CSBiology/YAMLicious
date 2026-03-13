@@ -310,6 +310,97 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Nested mapping accepts structural blank line before child block" <| fun _ ->
+        let yaml = """inputs:
+
+  a:
+    type: string
+  b:
+    type: string
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("type"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("string"))
+                                ]
+                            )
+                        ]
+                    )
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("type"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("string"))
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines before a nested mapping should stay inside the child block"
+
+    testCase "Nested mapping accepts structural blank line and comment before child block" <| fun _ ->
+        let yaml = """inputs:
+
+  # comment
+  a: 1
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" comment")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("1"))
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines and comments before a nested mapping should be accepted"
+
+    testCase "Nested mapping keeps blank lines between sibling entries" <| fun _ ->
+        let yaml = """inputs:
+  a: 1
+
+  b: 2
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("1"))
+                        ]
+                    )
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("2"))
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank sibling separators inside an open child mapping should remain harmless"
+
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
 My Key:
@@ -395,6 +486,32 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
+
+    testCase "Sequence item accepts structural blank line before nested mapping" <| fun _ ->
+        let yaml = """items:
+  -
+
+    a: 1
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("items"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("a"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("1"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines before nested sequence-item content should stay with that item"
 
     testCase "NextLineSequenceObjects" <| fun _ ->
         let yaml = """
@@ -530,6 +647,32 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "MultilineSequenceSquare accepts blank line after opener" <| fun _ ->
+        let yaml = """arr:
+  [
+
+    a,
+    b
+  ]
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("arr"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("a"))
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("b"))
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines after a multiline flow sequence opener should be ignored structurally"
+
     testCase "Namespaces" <| fun _ ->
         let yaml = """
 $namespaces:
@@ -661,6 +804,34 @@ Sammy Sosa: {
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
+
+    testCase "JSONMappingsMultiline accepts blank line after opener" <| fun _ ->
+        let yaml = """obj:
+  k: {
+
+    a: 1
+  }
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("obj"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("k"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("a"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("1"))
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines after a multiline flow object opener should be ignored structurally"
 
     testCase "NestedFlowStyleComplex" <| fun _ ->
         let yamlFlowstyle = """requirements: {
