@@ -1,3 +1,7 @@
+### 1.0.0-alpha.7 (Released 2026-03-18)
+* Parse multiline plain scalars in mappings, sequences, and root values according to the YAML spec instead of treating them as multiple sibling values
+* Re-emit multiline plain scalars in compact YAML form and keep decoder semantics aligned with YAML line folding
+
 ### 1.0.0-alpha.6 (Released 2026-03-13)
 * Preprocessing now treats blank lines immediately before a more-indented block as part of that child block instead of siblings at the parent level
 
