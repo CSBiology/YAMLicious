@@ -279,8 +279,7 @@ let Main = testList "YamlRead" [
         let expected = YAMLElement.Object [
             YAMLElement.Sequence[
                 YAMLElement.Object [
-                    YAMLElement.Value (YAMLContent.create("My Value 1"))
-                    YAMLElement.Value (YAMLContent.create("My Value 2"))
+                    YAMLElement.Value (YAMLContent.create("My Value 1\nMy Value 2", style=ScalarStyle.Plain))
                 ];
                 YAMLElement.Object [
                     YAMLElement.Value(YAMLContent.create("My Value 3"))
@@ -301,12 +300,38 @@ My Key:
             YAMLElement.Mapping(
                 YAMLContent.create("My Key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("My Value1"));
-                    YAMLElement.Value(YAMLContent.create("My Value2"));
-                    YAMLElement.Value(YAMLContent.create("My Value3"))
+                    YAMLElement.Value(YAMLContent.create("My Value1\nMy Value2\nMy Value3", style=ScalarStyle.Plain))
                 ]
             )
         ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "KeyValue plain continuation folds into one scalar" <| fun _ ->
+        let yaml = """
+My Key: My Value1
+  My Value2
+"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("My Key"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("My Value1\nMy Value2", style=ScalarStyle.Plain))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected ""
+
+    testCase "Root plain continuation folds into one scalar" <| fun _ ->
+        let yaml = """
+My Value1
+  My Value2
+"""
+        let expected =
+            YAMLElement.Object [
+                YAMLElement.Value(YAMLContent.create("My Value1\nMy Value2", style=ScalarStyle.Plain))
+            ]
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 

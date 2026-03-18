@@ -28,6 +28,7 @@ module Formatting =
     let mkComment (comment: string) = "#" + comment
     let mkKey (key: string) = key + ":"
     let mkMinusLine (c: string) = "- " + c
+    let private continuationPrefix = "  "
 
     let private mkTag (tag: string option) =
         match tag with
@@ -99,8 +100,17 @@ module Formatting =
     let shouldEmitBlockScalar (options: WriterOptions) (content: YAMLContent) =
         let hasMultiline = content.Value.Contains("\n")
         match options.PreserveScalarStyle, content.Style with
+        | true, Some ScalarStyle.Plain -> false
         | true, Some (ScalarStyle.Block _) -> true
         | _ -> hasMultiline
+
+    let shouldEmitPlainMultilineScalar (options: WriterOptions) (content: YAMLContent) =
+        options.PreserveScalarStyle
+        && content.Value.Contains("\n")
+        &&
+        match content.Style with
+        | Some ScalarStyle.Plain -> true
+        | _ -> false
 
     let mkInlineContent (options: WriterOptions) (content: YAMLContent) =
         let inlineScalar = scalarToInlineText options content
@@ -142,6 +152,77 @@ module Formatting =
 
     let private splitPreservingEmpty (s: string) =
         s.Split([| '\n' |], System.StringSplitOptions.None) |> Array.toList
+
+    let private plainMultilineLines (content: YAMLContent) =
+        normalizeNewlines content.Value |> splitPreservingEmpty
+
+    let private mkPlainMultilineNode (mkHeader: string -> string) (lines: string list) =
+        let firstLine, remainingLines =
+            match lines with
+            | firstLine :: rest -> firstLine, rest
+            | [] -> "", []
+
+        let continuationLines =
+            remainingLines
+            |> List.map (fun line -> PreprocessorElement.Line (continuationPrefix + line))
+
+        PreprocessorElement.Level (
+            PreprocessorElement.Line (mkHeader firstLine) :: continuationLines
+        )
+
+    let mkPlainMultilineMapping (options: WriterOptions) (key: YAMLContent) (content: YAMLContent) =
+        let lines = plainMultilineLines content
+        let mkHeader firstLine =
+            mkMappingKey options key + " " + mkNodePrefix content + firstLine |> appendComment content
+        mkPlainMultilineNode mkHeader lines
+
+    let mkPlainMultilineSequenceItem (options: WriterOptions) (content: YAMLContent) =
+        let lines = plainMultilineLines content
+        let mkHeader firstLine =
+            "- " + mkNodePrefix content + firstLine |> appendComment content
+        mkPlainMultilineNode mkHeader lines
+
+    let mkPlainMultilineRoot (options: WriterOptions) (content: YAMLContent) =
+        let lines = plainMultilineLines content
+        let mkHeader firstLine =
+            mkNodePrefix content + firstLine |> appendComment content
+        mkPlainMultilineNode mkHeader lines
+
+    let tryLegacyPlainMultilineContent (items: YAMLElement list) =
+        let isAllowedSegment (allowMetadata: bool) (content: YAMLContent) =
+            let hasPlainCompatibleStyle =
+                match content.Style with
+                | None
+                | Some ScalarStyle.Plain -> true
+                | _ -> false
+
+            let hasOnlyContinuationContent =
+                content.Comment.IsNone
+                && content.Anchor.IsNone
+                && content.Tag.IsNone
+
+            hasPlainCompatibleStyle
+            && (allowMetadata || hasOnlyContinuationContent)
+
+        let rec loop (allowMetadata: bool) (remaining: YAMLElement list) (acc: YAMLContent list) =
+            match remaining with
+            | [] ->
+                acc |> List.rev |> Some
+            | YAMLElement.Value content :: rest when isAllowedSegment allowMetadata content ->
+                loop false rest (content :: acc)
+            | _ ->
+                None
+
+        match loop true items [] with
+        | Some (firstSegment :: _ :: _ as segments) ->
+            let rawValue =
+                segments
+                |> List.map (fun segment -> segment.Value)
+                |> String.concat "\n"
+
+            Some { firstSegment with Value = rawValue; Style = Some ScalarStyle.Plain }
+        | _ ->
+            None
 
     let mkBlockScalarMapping (options: WriterOptions) (key: YAMLContent) (content: YAMLContent) =
         let style, chomp, indent = resolveBlockStyle options content
@@ -191,8 +272,22 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                         loop v
                     ]
                 ]
+            | YAMLElement.Object [YAMLElement.Value value] when Formatting.shouldEmitPlainMultilineScalar options value ->
+                Formatting.mkPlainMultilineMapping options key value
+            | YAMLElement.Object [YAMLElement.Value value] when Formatting.shouldEmitBlockScalar options value ->
+                Formatting.mkBlockScalarMapping options key value
+            | YAMLElement.Object [YAMLElement.Value value] ->
+                let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineContent options value
+                PreprocessorElement.Line s
+            | YAMLElement.Object [YAMLElement.Alias a] ->
+                PreprocessorElement.Line (Formatting.mkMappingKey options key + " *" + a)
+            | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
+                let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
+                Formatting.mkPlainMultilineMapping options key value
             | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
                 Formatting.mkBlockScalarMapping options key value
+            | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
+                Formatting.mkPlainMultilineMapping options key value
             | YAMLElement.Value value ->
                 let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineContent options value
                 PreprocessorElement.Line s
@@ -206,6 +301,11 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                         loop anyElse
                     ]
                 ]
+        | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
+            let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
+            Formatting.mkPlainMultilineRoot options value
+        | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
+            Formatting.mkPlainMultilineRoot options value
         | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
             Formatting.mkBlockScalarRoot options value
         | YAMLElement.Value value ->
@@ -219,6 +319,20 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
             PreprocessorElement.Level [
                 for element in seq do
                     match element with
+                    | YAMLElement.Object [YAMLElement.Value value] when Formatting.shouldEmitPlainMultilineScalar options value ->
+                        Formatting.mkPlainMultilineSequenceItem options value
+                    | YAMLElement.Object [YAMLElement.Value value] when Formatting.shouldEmitBlockScalar options value ->
+                        Formatting.mkBlockScalarSequenceItem options value
+                    | YAMLElement.Object [YAMLElement.Value value] ->
+                        let s = Formatting.mkMinusLine (Formatting.mkInlineContent options value)
+                        PreprocessorElement.Line s
+                    | YAMLElement.Object [YAMLElement.Alias a] ->
+                        PreprocessorElement.Line ("- *" + a)
+                    | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
+                        let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
+                        Formatting.mkPlainMultilineSequenceItem options value
+                    | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
+                        Formatting.mkPlainMultilineSequenceItem options value
                     | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
                         Formatting.mkBlockScalarSequenceItem options value
                     | YAMLElement.Value value ->

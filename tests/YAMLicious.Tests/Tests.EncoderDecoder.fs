@@ -232,9 +232,9 @@ Hello World: 42"""
         Expect.equal actual.Field3 expected.Field3 "field3"
     testCase "values string" <| fun _ ->
         let ele = """MyKey: 
-    test1
-    test2
-    test3"""
+  - test1
+  - test2
+  - test3"""
         let actual = ele |> Decode.read |> Decode.object (fun get ->
             get.Required.Field "MyKey" (Decode.values Decode.string)
         )
@@ -242,9 +242,9 @@ Hello World: 42"""
         Expect.equal actual expected ""
     testCase "values bool" <| fun _ ->
         let ele = """MyKey: 
-    true
-    true
-    false"""
+  - true
+  - true
+  - false"""
         let actual = ele |> Decode.read |> Decode.object (fun get ->
             get.Required.Field "MyKey" (Decode.values Decode.bool)
         )
@@ -369,13 +369,10 @@ validation_packages:
     version: 2.0.0
   -
     name: package3
-author:
-  TestAuthor
+author: TestAuthor
 author_emails:
-  -
-    test1@email.com
-  -
-    test2@email.com"
+  - test1@email.com
+  - test2@email.com"
         Expect.trimEqual actual expected ""
 ]
 

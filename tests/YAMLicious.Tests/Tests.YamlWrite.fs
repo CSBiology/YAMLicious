@@ -89,9 +89,8 @@ let Main = testList "YamlWrite" [
             ]
         ]
         let actual = write ele None
-        let expected = "-
-    My Value 1
-    My Value 2
+        let expected = "- My Value 1
+  My Value 2
 - My Value 3"
         Expect.trimEqual actual expected ""
 
@@ -107,10 +106,9 @@ let Main = testList "YamlWrite" [
             )
         ]
         let actual = write ele None
-        let expected = "My Key:
-    My Value1
-    My Value2
-    My Value3"
+        let expected = "My Key: My Value1
+  My Value2
+  My Value3"
         Expect.trimEqual actual expected ""
 
     testCase "NextLineSequenceObjects" <| fun _ ->
@@ -227,7 +225,7 @@ let Main = testList "YamlWrite" [
             )
         ]
         let actual = write ele None
-        let expected = "first:\n    &a1 val\nsecond:\n    *a1"
+        let expected = "first: &a1 val\nsecond: *a1"
         Expect.trimEqual actual expected "Alias should be written as *name"
 
     testCase "Double-quoted escapes control characters" <| fun _ ->

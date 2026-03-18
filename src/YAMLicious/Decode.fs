@@ -67,42 +67,82 @@ module Helper =
         | false, _ -> false
         #endif
 
+    let private foldPlainScalarLines (value: string) =
+        let lines = value.Replace("\r\n", "\n").Split([| '\n' |], StringSplitOptions.None)
+
+        let isMoreIndented (line: string) =
+            line.StartsWith(" ") || line.StartsWith("\t")
+
+        let sb = System.Text.StringBuilder()
+
+        for i in 0 .. lines.Length - 1 do
+            let line = lines.[i]
+            let isEmpty = String.IsNullOrWhiteSpace line
+
+            if isEmpty then
+                sb.Append('\n') |> ignore
+            else
+                sb.Append(line) |> ignore
+                if i < lines.Length - 1 then
+                    let next = lines.[i + 1]
+                    let nextIsEmpty = String.IsNullOrWhiteSpace next
+
+                    if nextIsEmpty then
+                        sb.Append('\n') |> ignore
+                    elif isMoreIndented line || isMoreIndented next then
+                        sb.Append('\n') |> ignore
+                    else
+                        sb.Append(' ') |> ignore
+
+        sb.ToString()
+
+    let scalarValue (content: YAMLContent) =
+        match content.Style with
+        | Some ScalarStyle.Plain when content.Value.Contains("\n") ->
+            foldPlainScalarLines content.Value
+        | _ ->
+            content.Value
+
 open Helper
 let int (value: YAMLElement) : int =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match System.Int32.TryParse v.Value with
+        let scalar = scalarValue v
+        match System.Int32.TryParse scalar with
         | true, v -> v
-        | false, _ -> raiseInvalidArg "value" "Expected an int" v.Value
+        | false, _ -> raiseInvalidArg "value" "Expected an int" scalar
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let float (value: YAMLElement) : float =
     let Culture = System.Globalization.CultureInfo.InvariantCulture
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
+        let scalar = scalarValue v
         #if FABLE_COMPILER
-        match System.Double.TryParse(v.Value) with // numberstyle and culture return not implemented warning
+        match System.Double.TryParse(scalar) with // numberstyle and culture return not implemented warning
         #else
-        match System.Double.TryParse(v.Value, System.Globalization.NumberStyles.Float, Culture) with
+        match System.Double.TryParse(scalar, System.Globalization.NumberStyles.Float, Culture) with
         #endif
         | true, v -> float v
-        | false, _ -> raiseInvalidArg "value" "Expected an int" v.Value
+        | false, _ -> raiseInvalidArg "value" "Expected an int" scalar
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let char (value: YAMLElement) : char =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match isString v.Value with
-        | true -> v.Value.[0]
-        | _ -> Helper.raiseInvalidArg "value" "Expected a char" v.Value
+        let scalar = scalarValue v
+        match isString scalar with
+        | true -> scalar.[0]
+        | _ -> Helper.raiseInvalidArg "value" "Expected a char" scalar
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a char" anyElse
 
 let bool (value: YAMLElement) : bool =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match System.Boolean.TryParse v.Value with
+        let scalar = scalarValue v
+        match System.Boolean.TryParse scalar with
         | true, bool -> bool
-        | false, _ -> Helper.raiseInvalidArg "value" "Expected a bool" v.Value
+        | false, _ -> Helper.raiseInvalidArg "value" "Expected a bool" scalar
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a bool" anyElse
 
 let map (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YAMLElement) : Map<'a, 'b> =
@@ -128,17 +168,19 @@ let dict (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YA
 let datetime (value: YAMLElement) : DateTime =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match System.DateTime.TryParse(v.Value) with
+        let scalar = scalarValue v
+        match System.DateTime.TryParse(scalar) with
         | true, dateTime -> dateTime
-        | false, _ -> Helper.raiseInvalidArg "value" "Expected a DateTime" v.Value
+        | false, _ -> Helper.raiseInvalidArg "value" "Expected a DateTime" scalar
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a DateTime" anyElse
 
 let datetimeOffset (value: YAMLElement) : DateTimeOffset =
     match value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match System.DateTimeOffset.TryParse(v.Value) with
+        let scalar = scalarValue v
+        match System.DateTimeOffset.TryParse(scalar) with
         | true, dateTimeOffset -> dateTimeOffset
-        | false, _ -> Helper.raiseInvalidArg "value" "Expected a DateTimeOffset" v.Value
+        | false, _ -> Helper.raiseInvalidArg "value" "Expected a DateTimeOffset" scalar
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a DateTimeOffset" anyElse
 
 let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
@@ -151,7 +193,7 @@ let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
 
 let string (value: YAMLElement) : string =
     match value with
-    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> v.Value
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> scalarValue v
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a string" anyElse
 
 let tuple2 (decoderA: YAMLElement -> 'a) (decoderB: YAMLElement -> 'b) (value: YAMLElement) : 'a * 'b =
@@ -269,7 +311,8 @@ let values (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a list =
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] | YAMLElement.Object v -> 
         v 
         |> List.map (function 
-            | YAMLElement.Value _ as v -> decoder v 
+            | YAMLElement.Value _ as element -> decoder element
+            | YAMLElement.Object [YAMLElement.Value _] as element -> decoder element
             | anyElse -> Helper.raiseInvalidArg "value" "Expected a values" anyElse
         )
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a values" anyElse

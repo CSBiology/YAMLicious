@@ -71,6 +71,82 @@ let Main =
         | _ ->
             failwithf "Unexpected AST after fallback round-trip: %A" parsed
 
+    testCase "Reader preserves plain multiline sequence style and Decode folds semantics" <| fun _ ->
+        let yaml = """- My Value 1
+  My Value 2
+"""
+
+        let parsed = Reader.read yaml
+        match parsed with
+        | YAMLElement.Object [YAMLElement.Sequence [firstItem]] ->
+            Expect.equal (Decode.string firstItem) "My Value 1 My Value 2" "Decode should fold plain multiline sequence content"
+            match firstItem with
+            | YAMLElement.Object [YAMLElement.Value value] ->
+                Expect.equal value.Value "My Value 1\nMy Value 2" "Reader should retain physical line breaks for write-back"
+                Expect.equal value.Style (Some ScalarStyle.Plain) "Reader should preserve plain multiline style"
+            | _ ->
+                failwithf "Unexpected sequence item shape: %A" firstItem
+        | _ ->
+            failwithf "Unexpected AST: %A" parsed
+
+    testCase "Writer preserves plain multiline sequence style on read-write-read" <| fun _ ->
+        let yaml = """- My Value 1
+  My Value 2
+- My Value 3
+"""
+
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        Expect.trimEqual written yaml "Writer should re-emit multiline plain sequence scalars in compact form"
+
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Plain multiline sequence read-write-read should preserve AST"
+
+    testCase "Writer preserves plain multiline mapping style on read-write-read" <| fun _ ->
+        let yaml = """note: line1
+  line2
+"""
+
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        Expect.trimEqual written yaml "Writer should keep mapping plain multiline continuation form"
+
+        let reparsed = Reader.read written
+        Expect.equal reparsed parsed "Plain multiline mapping read-write-read should preserve AST"
+
+    testCase "Indented mapping values remain a plain multiline scalar" <| fun _ ->
+        let yaml = """MyKey:
+  test1
+  test2
+  test3
+"""
+
+        let parsed = Reader.read yaml
+        match parsed with
+        | YAMLElement.Object [YAMLElement.Mapping(key, YAMLElement.Object [YAMLElement.Value value])] ->
+            Expect.equal key.Value "MyKey" "Key should parse normally"
+            Expect.equal value.Value "test1\ntest2\ntest3" "Reader should preserve physical line breaks"
+            Expect.equal value.Style (Some ScalarStyle.Plain) "Reader should mark the scalar as multiline plain style"
+            Expect.equal (Decode.string (YAMLElement.Object [YAMLElement.Value value])) "test1 test2 test3" "Decode.string should return the folded YAML scalar value"
+        | _ ->
+            failwithf "Unexpected AST: %A" parsed
+
+    testCase "Indented boolean-looking mapping values remain a plain multiline scalar" <| fun _ ->
+        let yaml = """MyKey:
+  true
+  true
+  false
+"""
+
+        let parsed = Reader.read yaml
+        match parsed with
+        | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Object [YAMLElement.Value value])] ->
+            Expect.equal value.Value "true\ntrue\nfalse" "Reader should preserve physical line breaks"
+            Expect.equal value.Style (Some ScalarStyle.Plain) "Reader should mark the scalar as multiline plain style"
+            Expect.equal (Decode.string (YAMLElement.Object [YAMLElement.Value value])) "true true false" "Decode.string should fold the plain scalar"
+        | _ ->
+            failwithf "Unexpected AST: %A" parsed
+
     testCase "Chomping matrix round-trip preserves style and semantic value" <| fun _ ->
         let cases = [
             ("|-", """k: |-
