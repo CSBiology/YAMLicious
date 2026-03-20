@@ -1,3 +1,7 @@
+### 1.0.0-alpha.8 (Released 2026-03-20)
+* Restore quoted mapping keys after placeholder preprocessing so keys like `"@id"` and `"@type"` parse correctly instead of leaking internal `<s f=.../>` markers
+* Preserve quoted-key scalar style in mapping and explicit-key reader paths, with regression coverage for quoted mapping keys
+
 ### 1.0.0-alpha.7 (Released 2026-03-18)
 * Parse multiline plain scalars in mappings, sequences, and root values according to the YAML spec instead of treating them as multiple sibling values
 * Re-emit multiline plain scalars in compact YAML form and keep decoder semantics aligned with YAML line folding
