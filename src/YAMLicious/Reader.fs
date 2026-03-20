@@ -298,6 +298,11 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         {| Value = current; Tag = tag; Anchor = anchor |}
 
+    let createScalarContent (raw: string) (comment: string option) =
+        let props = extractProperties handles raw
+        let finalValue, finalStyle = restoreScalarWithStyle props.Value
+        YAMLContent.create(finalValue, ?comment = comment, ?anchor = props.Anchor, ?tag = props.Tag, ?style = finalStyle)
+
     let isBlockScalarHeaderCandidate (rawHeader: string) =
         let headerWithoutComment, _ = splitTrailingCommentPlaceholder rawHeader
         let props = extractProperties handles headerWithoutComment
@@ -584,7 +589,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
              | Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
                 let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
                 let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let kp = extractProperties handles fullKey
+                let keyContent = createScalarContent fullKey None
                 
                 let separator = if v.TrimStart().StartsWith("[") || v.TrimStart().StartsWith("{") then " " else "\n"
                 let fullValue = v + separator + (flattenBlockScalar iList |> String.concat separator)
@@ -592,58 +597,67 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
                 let current =
                     YAMLElement.Mapping (
-                        YAMLContent.create(kp.Value, ?anchor=kp.Anchor, ?tag=kp.Tag),
+                        keyContent,
                         valueElement
                     )
                 loopRead handles tail (current::acc)
              | Intendation keyBody::ExplicitValue v::tail ->
                 let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
                 let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let kp = extractProperties handles fullKey
+                let keyContent = createScalarContent fullKey None
                 
                 let valueElement = parseValue v
 
                 let current =
                     YAMLElement.Mapping (
-                        YAMLContent.create(kp.Value, ?anchor=kp.Anchor, ?tag=kp.Tag),
+                        keyContent,
                         valueElement
                     )
                 loopRead handles tail (current::acc)
              | ExplicitValue v::Intendation iList::tail ->
-                let kp = match k with Some s -> extractProperties handles s | None -> {| Value = ""; Anchor = None; Tag = None |}
+                let keyContent =
+                    match k with
+                    | Some s -> createScalarContent s None
+                    | None -> YAMLContent.create("")
                 
                 let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
                 let valueElement = parseValue fullValue
 
                 let current =
                     YAMLElement.Mapping (
-                        YAMLContent.create(kp.Value, ?anchor=kp.Anchor, ?tag=kp.Tag),
+                        keyContent,
                         valueElement
                     )
                 loopRead handles tail (current::acc)
              | ExplicitValue v::tail ->
-                let kp = match k with Some s -> extractProperties handles s | None -> {| Value = ""; Anchor = None; Tag = None |}
+                let keyContent =
+                    match k with
+                    | Some s -> createScalarContent s None
+                    | None -> YAMLContent.create("")
                 
                 let valueElement = parseValue v
 
                 let current =
                     YAMLElement.Mapping (
-                        YAMLContent.create(kp.Value, ?anchor=kp.Anchor, ?tag=kp.Tag),
+                        keyContent,
                         valueElement
                     )
                 loopRead handles tail (current::acc)
              | _ ->
                 // Orphan explicit key or unexpected sequence
-                let kp = match k with Some s -> extractProperties handles s | None -> {| Value = ""; Anchor = None; Tag = None |}
+                let keyContent =
+                    match k with
+                    | Some s -> createScalarContent s None
+                    | None -> YAMLContent.create("")
                 let current = 
                     YAMLElement.Mapping (
-                        YAMLContent.create(kp.Value, ?anchor=kp.Anchor, ?tag=kp.Tag),
+                        keyContent,
                         YAMLElement.Nil
                     )
                 loopRead handles rest (current::acc)
         | Key v::Intendation yamlAstList::rest -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
-            let props = extractProperties handles v.Key
+            let keyContent = createScalarContent v.Key c
             let parsedValue = loopRead handles yamlAstList []
             let valueElement =
                 match tryCollapsePlainScalarContent false yamlAstList parsedValue with
@@ -651,13 +665,13 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | None -> parsedValue
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent.create(props.Value, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag),
+                    keyContent,
                     valueElement
                 )
             loopRead handles rest (current::acc)
         | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let c = restoreCommentReplace commentDict v.Comment
-            let props = extractProperties handles v.Key
+            let keyContent = createScalarContent v.Key c
             let objectList = 
                 if w.Value.IsSome then
                     PreprocessorElement.Line w.Value.Value::yamlAstList
@@ -673,13 +687,13 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent.create(props.Value, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag),
+                    keyContent,
                     YAMLElement.Object [seq]
                 )
             loopRead handles rest (current::acc)
         | Key v::SequenceMinusOpener w::rest0 -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
-            let props = extractProperties handles v.Key
+            let keyContent = createScalarContent v.Key c
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
             let seq =
@@ -690,7 +704,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent.create(props.Value, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag),
+                    keyContent,
                     YAMLElement.Object [seq]
                 )
             loopRead handles rest (current::acc)
@@ -698,10 +712,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
             match tryReadBlockScalar v.Value v.Indent None block with
             | Some blockScalar ->
-                let keyProps = extractProperties handles v.Key
+                let keyContent = createScalarContent v.Key None
                 let current =
                     YAMLElement.Mapping(
-                        YAMLContent.create(keyProps.Value, ?anchor=keyProps.Anchor, ?tag=keyProps.Tag),
+                        keyContent,
                         YAMLElement.Value(
                             YAMLContent.create(
                                 blockScalar.Value,
@@ -716,7 +730,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | None ->
                 failwithf "Invalid block scalar header: %s" v.Value
         | KeyValue v::Intendation block::rest ->
-            let keyProps = extractProperties handles v.Key
+            let keyContent = createScalarContent v.Key None
             let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
             let valueElement =
                 match tryCollapsePlainScalarContent true block parsedValue with
@@ -724,16 +738,16 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | None -> parsedValue
             let current =
                 YAMLElement.Mapping(
-                    YAMLContent.create(keyProps.Value, ?anchor=keyProps.Anchor, ?tag=keyProps.Tag),
+                    keyContent,
                     valueElement
                 )
             loopRead handles rest (current::acc)
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
-            let props = extractProperties handles v.Key
+            let keyContent = createScalarContent v.Key None
             let current = 
                 YAMLElement.Mapping (
-                    YAMLContent.create(props.Value, ?anchor=props.Anchor, ?tag=props.Tag),
+                    keyContent,
                     //reuse default parsing into SequenceElements
                     loopRead handles [PreprocessorElement.Line v.Value] []
                 )

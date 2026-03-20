@@ -209,6 +209,19 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Double-quoted mapping key" <| fun _ ->
+        let yaml = "\"@id\": MyIdentifier"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("@id", style=ScalarStyle.DoubleQuoted),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("MyIdentifier"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Quoted mapping keys should restore placeholder content and preserve style"
+
     testCase "Double-quoted string with embedded single quotes stays intact" <| fun _ ->
         let yaml = "key: \"a 'b' c\""
         let expected = YAMLElement.Object [

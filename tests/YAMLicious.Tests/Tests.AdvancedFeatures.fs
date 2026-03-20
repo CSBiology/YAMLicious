@@ -151,6 +151,18 @@ rbi:
         let actual = Reader.read yaml
         Expect.equal actual expected "Explicit keys should support anchors and tags"
 
+    testCase "5.1.5 Explicit quoted key preserves style" <| fun _ ->
+        let yaml = """? &a1 "@id"
+: value"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("@id", anchor="a1", style=ScalarStyle.DoubleQuoted),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Explicit quoted keys should restore placeholder content and preserve style"
+
     testCase "5.1.2 Sequence as mapping key" <| fun _ ->
         let yaml = """? - Detroit Tigers
   - Chicago cubs
