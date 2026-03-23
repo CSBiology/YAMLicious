@@ -89,30 +89,93 @@ let read (yamlStr: string) =
                 let nextIntendation = ReadHelpers.indentLevel line
 
                 if nextIntendation = currentIntendation then
-                    let lineText = stripIndent currentIntendation line
-                    let lineEle = Line(lineText)
-                    loop rest currentIntendation (lineEle :: acc)
+                    // Batch process same-level lines iteratively
+                    let mutable remainingLines = lines
+                    let mutable currentAcc = acc
+                    let mutable continueSameLevel = true
+
+                    while continueSameLevel && not (List.isEmpty remainingLines) do
+                        match remainingLines with
+                        | currentLine :: remaining ->
+                            let currentIndent = ReadHelpers.indentLevel currentLine
+                            let isEmpty = currentLine.Trim() = ""
+
+                            if isEmpty then
+                                let nextNonEmpty = remaining |> List.tryFind (fun l -> l.Trim() <> "")
+                                match nextNonEmpty with
+                                | Some nextLine when ReadHelpers.indentLevel nextLine = currentIntendation ->
+                                    currentAcc <- Line("") :: currentAcc
+                                    remainingLines <- remaining
+                                | _ ->
+                                    continueSameLevel <- false
+                            elif currentIndent = currentIntendation then
+                                let lineText = stripIndent currentIntendation currentLine
+                                let lineEle = Line(lineText)
+                                currentAcc <- lineEle :: currentAcc
+                                remainingLines <- remaining
+                            else
+                                continueSameLevel <- false
+                        | [] ->
+                            continueSameLevel <- false
+
+                    if List.isEmpty remainingLines then
+                        currentAcc
+                    else
+                        loop remainingLines currentIntendation currentAcc
                 else
-                    let lineText =
-                        stripIndent nextIntendation line
-                    let lineEle = Line(lineText)
-                    let nextLevelLines =
-                        rest
-                        |> List.takeWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
+                    // Different indentation - need to process item and its nested content
+                    // Optimization: batch process multiple such items iteratively
+                    let mutable currentRemainingLines = lines
+                    let mutable currentBatchAcc = acc
+                    let mutable shouldContinueBatch = true
 
-                    let currentLevelLines =
-                        rest
-                        |> List.skipWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
+                    while shouldContinueBatch && not (List.isEmpty currentRemainingLines) do
+                        match currentRemainingLines with
+                        | currentLine :: currentRest ->
+                            let currentLineIndent = ReadHelpers.indentLevel currentLine
+                            let isCurrentEmpty = currentLine.Trim() = ""
 
-                    let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
-                    let children = lineEle :: otherChildren
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                            // Check if this line should be processed in this batch
+                            // We only batch lines that start at currentIntendation level
+                            if isCurrentEmpty || currentLineIndent < currentIntendation then
+                                // Empty line or shallower - stop batching
+                                shouldContinueBatch <- false
+                            elif currentLineIndent = currentIntendation then
+                                // This is at our level - should not happen in else branch initially
+                                // but can happen after we've processed some items
+                                shouldContinueBatch <- false
+                            else
+                                // currentLineIndent > currentIntendation
+                                // Process this item and its nested content
+                                let lineText = stripIndent currentLineIndent currentLine
+                                let lineEle = Line(lineText)
+
+                                let nextLevelLines =
+                                    currentRest
+                                    |> List.takeWhile (fun l ->
+                                        let isEmpty = l.Trim() = ""
+                                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                                    )
+
+                                let afterThisItem =
+                                    currentRest
+                                    |> List.skipWhile (fun l ->
+                                        let isEmpty = l.Trim() = ""
+                                        isEmpty || ReadHelpers.indentLevel l > currentIntendation
+                                    )
+
+                                let otherChildren = loop nextLevelLines currentLineIndent [] |> List.rev
+                                let children = lineEle :: otherChildren
+                                currentBatchAcc <- Intendation children :: currentBatchAcc
+                                currentRemainingLines <- afterThisItem
+                        | [] ->
+                            shouldContinueBatch <- false
+
+                    // Continue processing any remaining lines
+                    if List.isEmpty currentRemainingLines then
+                        currentBatchAcc
+                    else
+                        loop currentRemainingLines currentIntendation currentBatchAcc
 
     let ast = loop (List.ofArray content.Lines) 0 [] |> List.rev |> Level
 

@@ -1163,5 +1163,37 @@ trailing: ignored"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Multiple bare dashes should be parsed as empty sequence elements"
+
+    // https://github.com/CSBiology/YAMLicious/issues/17
+    testCase "Long Object List Does Not Fail" <| fun _ ->
+        let yamlItem = 
+            try
+                List.init 150 (fun i -> 
+                    Encode.object [
+                        "name", Encode.string (sprintf "Item %d" i)
+                        "value", Encode.int i
+                    ]
+                )
+                |> Encode.list id
+            with 
+            | err -> failwithf $"Creating YAML-item failed: {err.Message}"
+
+        let yamlString = 
+            try Encode.write 2 yamlItem 
+            with
+            | err -> failwithf $"Serializing YAML-item failed: {err.Message}"
+
+        let ast = 
+            try Preprocessing.read yamlString
+            with
+            | err -> failwithf $"Preprocessing YAML-item failed: {err.Message}"
+
+        match ast.AST with
+        | Level lvl ->
+            try Reader.tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles |> ignore with
+            | err -> failwithf $"Tokenizing YAML-item failed: {err.Message}"
+        | _ -> failwith "Not a root!"
+
+
 ]
 

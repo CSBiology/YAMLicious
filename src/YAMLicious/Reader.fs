@@ -185,7 +185,7 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
     
 let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
 
-let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
+let tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     // First pass: transform any flow-style elements to block-style
     let ctx = defaultContext stringDict
     let blockStyleList = transformElements ctx yamlList
