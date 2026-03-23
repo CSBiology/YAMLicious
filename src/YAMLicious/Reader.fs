@@ -156,36 +156,39 @@ let private buildBlockScalarContent (style: BlockScalarStyle) (chomp: ChompingMo
 let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commentId: int option) =
     commentId |> Option.map (fun id -> commentDict.[id])
 
-let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorElement list list =
-    match eles with
-    | SequenceMinusOpener v::Intendation yamlAstList::rest ->
-        [
-            if v.Value.IsSome then
-                PreprocessorElement.Line v.Value.Value::yamlAstList
-            else
-                yamlAstList
-            yield! collectSequenceElements rest            
-        ]
-    | SequenceMinusOpener v::rest ->
-        [
-            if v.Value.IsSome then
-                [PreprocessorElement.Line v.Value.Value]
-            else
-                []
-            yield! collectSequenceElements rest
-        ]
-    | YamlComment _ as v::rest ->
-        [
-            [v]
-            yield! collectSequenceElements rest
-        ]
-    | [] ->
-        []
-    | anyElse -> failwithf "Unknown pattern for sequence elements: %A" anyElse
+let collectSequenceElements (eles: PreprocessorElement list) : PreprocessorElement list list =
+    let mutable result : PreprocessorElement list list = []
+    let mutable remaining = eles
+    let mutable cont = true
+    while cont do
+        match remaining with
+        | SequenceMinusOpener v::Intendation yamlAstList::rest ->
+            let item =
+                if v.Value.IsSome then
+                    PreprocessorElement.Line v.Value.Value::yamlAstList
+                else
+                    yamlAstList
+            result <- item :: result
+            remaining <- rest
+        | SequenceMinusOpener v::rest ->
+            let item =
+                if v.Value.IsSome then
+                    [PreprocessorElement.Line v.Value.Value]
+                else
+                    []
+            result <- item :: result
+            remaining <- rest
+        | YamlComment _ as v::rest ->
+            result <- [v] :: result
+            remaining <- rest
+        | [] ->
+            cont <- false
+        | anyElse -> failwithf "Unknown pattern for sequence elements: %A" anyElse
+    List.rev result
     
 let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
 
-let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
+let tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     // First pass: transform any flow-style elements to block-style
     let ctx = defaultContext stringDict
     let blockStyleList = transformElements ctx yamlList
@@ -404,318 +407,391 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | _ ->
             None
 
-    let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
-        match restlist with
-        | AliasNode alias::rest ->
-            loopRead handles rest (YAMLElement.Alias alias::acc)
-        | DocumentEnd::_ ->
-            acc
-            |> List.rev
-            |> YAMLElement.Object
-        | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let objectList = 
-                PreprocessorElement.Line v.Key::yamlAstList
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            loopRead handles rest (current::acc)
-        | SchemaNamespace v::rest0 -> //create/appendSequenceElement
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles [PreprocessorElement.Line v.Key] []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            loopRead handles rest (current::acc)
-        // Example1: 
-        // - My Value 1 <c f=1/>
-        //   My Value 2
-        // - My Value 3
-        // Example2:
-        // -
-        //   My Key1: My Value1
-        //   My Key2: My Value2
-        //   My Key3: My Value3
-        | SequenceMinusOpener v::Intendation yamlAstList::rest0 when v.Value.IsSome && isBlockScalarHeaderCandidate v.Value.Value ->
-            match tryReadBlockScalar v.Value.Value v.Indent None yamlAstList with
-            | Some blockScalar ->
+    let rec loopRead (handles: Map<string, string>) (initialRestlist: PreprocessorElement list) (initialAcc: YAMLElement list) : YAMLElement =
+        let mutable currentRestlist = initialRestlist
+        let mutable currentAcc = initialAcc
+        let mutable continueLoop = true
+        let mutable loopResult = YAMLElement.Object []
+
+        while continueLoop do
+            match currentRestlist with
+            | AliasNode alias::rest ->
+                currentAcc <- YAMLElement.Alias alias::currentAcc
+                currentRestlist <- rest
+            | DocumentEnd::_ ->
+                loopResult <- currentAcc |> List.rev |> YAMLElement.Object
+                continueLoop <- false
+            | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
+                let objectList = 
+                    PreprocessorElement.Line v.Key::yamlAstList
                 let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
                 let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-                let firstItem =
-                    YAMLElement.Object [
-                        YAMLElement.Value(
-                            YAMLContent.create(
-                                blockScalar.Value,
-                                ?comment = blockScalar.Comment,
-                                ?anchor = blockScalar.Props.Anchor,
-                                ?tag = blockScalar.Props.Tag,
-                                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
-                            )
-                        )
+                let current =
+                    YAMLElement.Sequence [
+                        loopRead handles objectList []
+                        for i in sequenceElements do
+                            loopRead handles i []
                     ]
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | SchemaNamespace v::rest0 -> //create/appendSequenceElement
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let current =
+                    YAMLElement.Sequence [
+                        loopRead handles [PreprocessorElement.Line v.Key] []
+                        for i in sequenceElements do
+                            loopRead handles i []
+                    ]
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // Example1: 
+            // - My Value 1 <c f=1/>
+            //   My Value 2
+            // - My Value 3
+            // Example2:
+            // -
+            //   My Key1: My Value1
+            //   My Key2: My Value2
+            //   My Key3: My Value3
+            | SequenceMinusOpener v::Intendation yamlAstList::rest0 when v.Value.IsSome && isBlockScalarHeaderCandidate v.Value.Value ->
+                match tryReadBlockScalar v.Value.Value v.Indent None yamlAstList with
+                | Some blockScalar ->
+                    let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                    let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                    let firstItem =
+                        YAMLElement.Object [
+                            YAMLElement.Value(
+                                YAMLContent.create(
+                                    blockScalar.Value,
+                                    ?comment = blockScalar.Comment,
+                                    ?anchor = blockScalar.Props.Anchor,
+                                    ?tag = blockScalar.Props.Tag,
+                                    style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
+                                )
+                            )
+                        ]
+                    let current =
+                        YAMLElement.Sequence [
+                            firstItem
+                            for i in sequenceElements do
+                                loopRead handles i []
+                        ]
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- rest
+                | None ->
+                    failwithf "Invalid sequence block scalar header: %s" v.Value.Value
+            | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
+                let objectList = 
+                    if v.Value.IsSome then
+                        PreprocessorElement.Line v.Value.Value::yamlAstList
+                    else
+                        yamlAstList
+                let parsedFirstItem = loopRead handles objectList []
+                let firstItem =
+                    match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
+                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
+                    | None -> parsedFirstItem
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
                 let current =
                     YAMLElement.Sequence [
                         firstItem
                         for i in sequenceElements do
                             loopRead handles i []
                     ]
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid sequence block scalar header: %s" v.Value.Value
-        | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let objectList = 
-                if v.Value.IsSome then
-                    PreprocessorElement.Line v.Value.Value::yamlAstList
-                else
-                    yamlAstList
-            let parsedFirstItem = loopRead handles objectList []
-            let firstItem =
-                match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedFirstItem
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let current =
-                YAMLElement.Sequence [
-                    firstItem
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            loopRead handles rest (current::acc)
-        | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let objectList =
-                if v.Value.IsSome then
-                    [PreprocessorElement.Line v.Value.Value]
-                else
-                    []
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            loopRead handles rest (current::acc)
-        // [test1, test2, test] <c f=1/>
-        // NOTE: This handler processes flow-style arrays within block-style context (e.g., "- [v1, v2, v3]").
-        // FlowToBlock.transformElements only processes top-level flow patterns, not those embedded in Line elements.
-        // This handler splits simple comma-delimited sequences; nested structures are transformed by FlowToBlock.
-        | InlineSequence v::rest -> // create sequence
-            // ensure inline comment is added on top of the sequence
-            let c = restoreCommentReplace commentDict v.Comment
-            
-            // Simple case: split by delimiter (nested structures already transformed)
-            let split = v.Value.Split([|SequenceSquareDelimiter|], System.StringSplitOptions.RemoveEmptyEntries)
-            let current =
-                YAMLElement.Sequence [
-                    for value in split do
-                        loopRead handles [PreprocessorElement.Line (value.Trim())] []
-                ]
-            
-            let nextAcc =
-                if c.IsSome then 
-                    current::YAMLElement.Comment c.Value::acc
-                else 
-                    current::acc
-            loopRead handles rest nextAcc
-        // [ #c1
-        //   v1,
-        //   v2,
-        //   v3
-        // ] #c2
-        | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
-            let c1 = opener.Comment |> restoreCommentReplace commentDict
-            let c2 = closer.Comment |> restoreCommentReplace commentDict
-            let sequenceItems =
-                iList
-                |> List.choose (function
-                    | Line s when s.Trim() = "" -> None
-                    | Line s -> Some (s.TrimEnd(',') |> Line)
-                    | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
-                )
-            let current = 
-                YAMLElement.Sequence [
-                    for i' in sequenceItems do
-                        loopRead handles [i'] []
-                ]
-            let nextAcc =
-                match c1, c2 with
-                | Some c1, Some c2 -> 
-                    YAMLElement.Comment c2::current::YAMLElement.Comment c1::acc
-                | Some c1, None ->
-                    current::YAMLElement.Comment c1::acc
-                | None, Some c2 ->
-                    YAMLElement.Comment c2::current::acc
-                | None, None ->
-                    current::acc
-            loopRead handles rest nextAcc
-        // These patterns should no longer be reached after FlowToBlock transformation
-        // Keeping them for backward compatibility with simple cases
-        | InlineJSON v::rest when v.Value.Trim() = "" -> // create empty object
-            let c = restoreCommentReplace commentDict v.Comment
-            let current = []
-            let nextAcc =
-                if c.IsSome then 
-                    current@(YAMLElement.Comment c.Value::acc)
-                else 
-                    current@acc
-            loopRead handles rest nextAcc
-        // Defensive check: Flow-style patterns should have been transformed by FlowToBlock.
-        // If we reach here, it indicates a bug in the transformation logic or an edge case.
-        | JSONKeyOpener opener::Intendation _::JSONCloser _::_ ->
-            failwithf "Untransformed flow-style object detected. This is a bug in FlowToBlock transformation. Pattern: %A" opener
-        | InlineJSON v::_ when v.Value.Trim() <> "" ->
-            failwithf "Untransformed non-empty flow-style object detected: {%s}. This is a bug in FlowToBlock transformation." v.Value
-        // Explicit key with indented content (complex key), mapped to string for AST compatibility
-        | ExplicitKey k::rest -> 
-             let parseValue (vStr: string) =
-                 let subPrep = Preprocessing.read vStr
-                 let subLvl = match subPrep.AST with Level l -> l | _ -> []
-                 // Reuse context but reset base indent to 0 for the sub-parse
-                 let subCtx = { ctx with BaseIndent = 0 }
-                 let transformed = transformElements subCtx subLvl
-                 let result = loopRead handles transformed []
-                 result
-
-             match rest with
-             | Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
-                let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
-                let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let keyContent = createScalarContent fullKey None
-                
-                let separator = if v.TrimStart().StartsWith("[") || v.TrimStart().StartsWith("{") then " " else "\n"
-                let fullValue = v + separator + (flattenBlockScalar iList |> String.concat separator)
-                let valueElement = parseValue fullValue
-
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let objectList =
+                    if v.Value.IsSome then
+                        [PreprocessorElement.Line v.Value.Value]
+                    else
+                        []
                 let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | Intendation keyBody::ExplicitValue v::tail ->
-                let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
-                let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let keyContent = createScalarContent fullKey None
-                
-                let valueElement = parseValue v
+                    YAMLElement.Sequence [
+                        loopRead handles objectList []
+                        for i in sequenceElements do
+                            loopRead handles i []
+                    ]
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // [test1, test2, test] <c f=1/>
+            // NOTE: This handler processes flow-style arrays within block-style context (e.g., "- [v1, v2, v3]").
+            // FlowToBlock.transformElements only processes top-level flow patterns, not those embedded in Line elements.
+            // This handler splits simple comma-delimited sequences; nested structures are transformed by FlowToBlock.
+            | InlineSequence v::rest -> // create sequence
+                // ensure inline comment is added on top of the sequence
+                let c = restoreCommentReplace commentDict v.Comment
 
+                // Simple case: split by delimiter (nested structures already transformed)
+                let split = v.Value.Split([|SequenceSquareDelimiter|], System.StringSplitOptions.RemoveEmptyEntries)
                 let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | ExplicitValue v::Intendation iList::tail ->
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
-                
-                let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
-                let valueElement = parseValue fullValue
+                    YAMLElement.Sequence [
+                        for value in split do
+                            loopRead handles [PreprocessorElement.Line (value.Trim())] []
+                    ]
 
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
+                let nextAcc =
+                    if c.IsSome then 
+                        current::YAMLElement.Comment c.Value::currentAcc
+                    else 
+                        current::currentAcc
+                currentAcc <- nextAcc
+                currentRestlist <- rest
+            // [ #c1
+            //   v1,
+            //   v2,
+            //   v3
+            // ] #c2
+            | SequenceSquareOpener opener::Intendation iList::SequenceSquareCloser closer::rest ->
+                let c1 = opener.Comment |> restoreCommentReplace commentDict
+                let c2 = closer.Comment |> restoreCommentReplace commentDict
+                let sequenceItems =
+                    iList
+                    |> List.choose (function
+                        | Line s when s.Trim() = "" -> None
+                        | Line s -> Some (s.TrimEnd(',') |> Line)
+                        | anyElse -> failwithf "Unexpected element in MultiLineSquareBrackets: %A" anyElse
                     )
-                loopRead handles tail (current::acc)
-             | ExplicitValue v::tail ->
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
-                
-                let valueElement = parseValue v
+                let current = 
+                    YAMLElement.Sequence [
+                        for i' in sequenceItems do
+                            loopRead handles [i'] []
+                    ]
+                let nextAcc =
+                    match c1, c2 with
+                    | Some c1, Some c2 -> 
+                        YAMLElement.Comment c2::current::YAMLElement.Comment c1::currentAcc
+                    | Some c1, None ->
+                        current::YAMLElement.Comment c1::currentAcc
+                    | None, Some c2 ->
+                        YAMLElement.Comment c2::current::currentAcc
+                    | None, None ->
+                        current::currentAcc
+                currentAcc <- nextAcc
+                currentRestlist <- rest
+            // These patterns should no longer be reached after FlowToBlock transformation
+            // Keeping them for backward compatibility with simple cases
+            | InlineJSON v::rest when v.Value.Trim() = "" -> // create empty object
+                let c = restoreCommentReplace commentDict v.Comment
+                let current = []
+                let nextAcc =
+                    if c.IsSome then 
+                        current@(YAMLElement.Comment c.Value::currentAcc)
+                    else 
+                        current@currentAcc
+                currentAcc <- nextAcc
+                currentRestlist <- rest
+            // Defensive check: Flow-style patterns should have been transformed by FlowToBlock.
+            // If we reach here, it indicates a bug in the transformation logic or an edge case.
+            | JSONKeyOpener opener::Intendation _::JSONCloser _::_ ->
+                failwithf "Untransformed flow-style object detected. This is a bug in FlowToBlock transformation. Pattern: %A" opener
+            | InlineJSON v::_ when v.Value.Trim() <> "" ->
+                failwithf "Untransformed non-empty flow-style object detected: {%s}. This is a bug in FlowToBlock transformation." v.Value
+            // Explicit key with indented content (complex key), mapped to string for AST compatibility
+            | ExplicitKey k::rest -> 
+                 let parseValue (vStr: string) =
+                     let subPrep = Preprocessing.read vStr
+                     let subLvl = match subPrep.AST with Level l -> l | _ -> []
+                     // Reuse context but reset base indent to 0 for the sub-parse
+                     let subCtx = { ctx with BaseIndent = 0 }
+                     let transformed = transformElements subCtx subLvl
+                     let result = loopRead handles transformed []
+                     result
 
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | _ ->
-                // Orphan explicit key or unexpected sequence
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
+                 match rest with
+                 | Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
+                    let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
+                    let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
+                    let keyContent = createScalarContent fullKey None
+
+                    let separator = if v.TrimStart().StartsWith("[") || v.TrimStart().StartsWith("{") then " " else "\n"
+                    let fullValue = v + separator + (flattenBlockScalar iList |> String.concat separator)
+                    let valueElement = parseValue fullValue
+
+                    let current =
+                        YAMLElement.Mapping (
+                            keyContent,
+                            valueElement
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- tail
+                 | Intendation keyBody::ExplicitValue v::tail ->
+                    let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
+                    let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
+                    let keyContent = createScalarContent fullKey None
+
+                    let valueElement = parseValue v
+
+                    let current =
+                        YAMLElement.Mapping (
+                            keyContent,
+                            valueElement
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- tail
+                 | ExplicitValue v::Intendation iList::tail ->
+                    let keyContent =
+                        match k with
+                        | Some s -> createScalarContent s None
+                        | None -> YAMLContent.create("")
+
+                    let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
+                    let valueElement = parseValue fullValue
+
+                    let current =
+                        YAMLElement.Mapping (
+                            keyContent,
+                            valueElement
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- tail
+                 | ExplicitValue v::tail ->
+                    let keyContent =
+                        match k with
+                        | Some s -> createScalarContent s None
+                        | None -> YAMLContent.create("")
+
+                    let valueElement = parseValue v
+
+                    let current =
+                        YAMLElement.Mapping (
+                            keyContent,
+                            valueElement
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- tail
+                 | _ ->
+                    // Orphan explicit key or unexpected sequence
+                    let keyContent =
+                        match k with
+                        | Some s -> createScalarContent s None
+                        | None -> YAMLContent.create("")
+                    let current = 
+                        YAMLElement.Mapping (
+                            keyContent,
+                            YAMLElement.Nil
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- rest
+            | Key v::Intendation yamlAstList::rest -> //createObject
+                let c = restoreCommentReplace commentDict v.Comment
+                let keyContent = createScalarContent v.Key c
+                let parsedValue = loopRead handles yamlAstList []
+                let valueElement =
+                    match tryCollapsePlainScalarContent false yamlAstList parsedValue with
+                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
+                    | None -> parsedValue
                 let current = 
                     YAMLElement.Mapping (
                         keyContent,
-                        YAMLElement.Nil
+                        valueElement
                     )
-                loopRead handles rest (current::acc)
-        | Key v::Intendation yamlAstList::rest -> //createObject
-            let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
-            let parsedValue = loopRead handles yamlAstList []
-            let valueElement =
-                match tryCollapsePlainScalarContent false yamlAstList parsedValue with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedValue
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    valueElement
-                )
-            loopRead handles rest (current::acc)
-        | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
-            let objectList = 
-                if w.Value.IsSome then
-                    PreprocessorElement.Line w.Value.Value::yamlAstList
-                else
-                    yamlAstList
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let seq =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    YAMLElement.Object [seq]
-                )
-            loopRead handles rest (current::acc)
-        | Key v::SequenceMinusOpener w::rest0 -> //createObject
-            let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let seq =
-                YAMLElement.Sequence [
-                    loopRead handles [PreprocessorElement.Line w.Value.Value] []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    YAMLElement.Object [seq]
-                )
-            loopRead handles rest (current::acc)
-        // doc: |2\n  <block>
-        | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
-            match tryReadBlockScalar v.Value v.Indent None block with
-            | Some blockScalar ->
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
+                let c = restoreCommentReplace commentDict v.Comment
+                let keyContent = createScalarContent v.Key c
+                let objectList = 
+                    if w.Value.IsSome then
+                        PreprocessorElement.Line w.Value.Value::yamlAstList
+                    else
+                        yamlAstList
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let seq =
+                    YAMLElement.Sequence [
+                        loopRead handles objectList []
+                        for i in sequenceElements do
+                            loopRead handles i []
+                    ]
+                let current = 
+                    YAMLElement.Mapping (
+                        keyContent,
+                        YAMLElement.Object [seq]
+                    )
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | Key v::SequenceMinusOpener w::rest0 -> //createObject
+                let c = restoreCommentReplace commentDict v.Comment
+                let keyContent = createScalarContent v.Key c
+                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let seq =
+                    YAMLElement.Sequence [
+                        loopRead handles [PreprocessorElement.Line w.Value.Value] []
+                        for i in sequenceElements do
+                            loopRead handles i []
+                    ]
+                let current = 
+                    YAMLElement.Mapping (
+                        keyContent,
+                        YAMLElement.Object [seq]
+                    )
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // doc: |2\n  <block>
+            | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+                match tryReadBlockScalar v.Value v.Indent None block with
+                | Some blockScalar ->
+                    let keyContent = createScalarContent v.Key None
+                    let current =
+                        YAMLElement.Mapping(
+                            keyContent,
+                            YAMLElement.Value(
+                                YAMLContent.create(
+                                    blockScalar.Value,
+                                    ?comment = blockScalar.Comment,
+                                    ?anchor = blockScalar.Props.Anchor,
+                                    ?tag = blockScalar.Props.Tag,
+                                    style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
+                                )
+                            )
+                        )
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- rest
+                | None ->
+                    failwithf "Invalid block scalar header: %s" v.Value
+            | KeyValue v::Intendation block::rest ->
                 let keyContent = createScalarContent v.Key None
+                let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
+                let valueElement =
+                    match tryCollapsePlainScalarContent true block parsedValue with
+                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
+                    | None -> parsedValue
                 let current =
                     YAMLElement.Mapping(
                         keyContent,
+                        valueElement
+                    )
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // My Key: [My Value, Test2]
+            | KeyValue v::rest -> // createKeyValue
+                let keyContent = createScalarContent v.Key None
+                let current = 
+                    YAMLElement.Mapping (
+                        keyContent,
+                        //reuse default parsing into SequenceElements
+                        loopRead handles [PreprocessorElement.Line v.Value] []
+                    )
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // <c f=1/>
+            | YamlComment v::rest -> // createComment
+                let c = commentDict.[v.Comment]
+                let current = 
+                    YAMLElement.Comment (c)
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            // Root-level block scalar
+            | YamlValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+                match tryReadBlockScalar v.Value v.Indent v.Comment block with
+                | Some blockScalar ->
+                    let current =
                         YAMLElement.Value(
                             YAMLContent.create(
                                 blockScalar.Value,
@@ -725,85 +801,42 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                                 style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
                             )
                         )
-                    )
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid block scalar header: %s" v.Value
-        | KeyValue v::Intendation block::rest ->
-            let keyContent = createScalarContent v.Key None
-            let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
-            let valueElement =
-                match tryCollapsePlainScalarContent true block parsedValue with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedValue
-            let current =
-                YAMLElement.Mapping(
-                    keyContent,
-                    valueElement
-                )
-            loopRead handles rest (current::acc)
-        // My Key: [My Value, Test2]
-        | KeyValue v::rest -> // createKeyValue
-            let keyContent = createScalarContent v.Key None
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    //reuse default parsing into SequenceElements
-                    loopRead handles [PreprocessorElement.Line v.Value] []
-                )
-            loopRead handles rest (current::acc)
-        // <c f=1/>
-        | YamlComment v::rest -> // createComment
-            let c = commentDict.[v.Comment]
-            let current = 
-                YAMLElement.Comment (c)
-            loopRead handles rest (current::acc)
-        // Root-level block scalar
-        | YamlValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
-            match tryReadBlockScalar v.Value v.Indent v.Comment block with
-            | Some blockScalar ->
-                let current =
-                    YAMLElement.Value(
-                        YAMLContent.create(
-                            blockScalar.Value,
-                            ?comment = blockScalar.Comment,
-                            ?anchor = blockScalar.Props.Anchor,
-                            ?tag = blockScalar.Props.Tag,
-                            style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
-                        )
-                    )
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid block scalar header: %s" v.Value
-        | YamlValue v::Intendation block::rest ->
-            let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
-            let current =
-                match tryCollapsePlainScalarContent true block parsedValue with
-                | Some content ->
-                    YAMLElement.Value content
+                    currentAcc <- current::currentAcc
+                    currentRestlist <- rest
                 | None ->
-                    match parsedValue with
-                    | YAMLElement.Object [single] -> single
-                    | _ -> failwithf "Unknown pattern: %A" (PreprocessorElement.Line v.Value :: block)
-            loopRead handles rest (current::acc)
-        | YamlValue v::rest when v.Value = "" && v.Comment.IsNone ->
-            // Ignore structural blank lines outside explicit scalar contexts.
-            loopRead handles rest acc
-        // My Value <c f=1/>
-        | YamlValue v::rest -> // createValue
-            let c = restoreCommentReplace commentDict v.Comment
-            let props = extractProperties handles v.Value
-            let finalValue, finalStyle = restoreScalarWithStyle props.Value
-            let current = 
-                YAMLElement.Value (
-                    YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
-                )
-            loopRead handles rest (current::acc)
-        | [] ->
-            acc
-            |> List.rev
-            |> YAMLElement.Object
-        | anyElse -> failwithf "Unknown pattern: %A" anyElse
+                    failwithf "Invalid block scalar header: %s" v.Value
+            | YamlValue v::Intendation block::rest ->
+                let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
+                let current =
+                    match tryCollapsePlainScalarContent true block parsedValue with
+                    | Some content ->
+                        YAMLElement.Value content
+                    | None ->
+                        match parsedValue with
+                        | YAMLElement.Object [single] -> single
+                        | _ -> failwithf "Unknown pattern: %A" (PreprocessorElement.Line v.Value :: block)
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | YamlValue v::rest when v.Value = "" && v.Comment.IsNone ->
+                // Ignore structural blank lines outside explicit scalar contexts.
+                currentRestlist <- rest
+            // My Value <c f=1/>
+            | YamlValue v::rest -> // createValue
+                let c = restoreCommentReplace commentDict v.Comment
+                let props = extractProperties handles v.Value
+                let finalValue, finalStyle = restoreScalarWithStyle props.Value
+                let current = 
+                    YAMLElement.Value (
+                        YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
+                    )
+                currentAcc <- current::currentAcc
+                currentRestlist <- rest
+            | [] ->
+                loopResult <- currentAcc |> List.rev |> YAMLElement.Object
+                continueLoop <- false
+            | anyElse -> failwithf "Unknown pattern: %A" anyElse
+
+        loopResult
     loopRead handles blockStyleList []
 
 let read (yaml: string) =
