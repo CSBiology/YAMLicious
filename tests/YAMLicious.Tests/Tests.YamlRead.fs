@@ -1188,11 +1188,18 @@ trailing: ignored"""
             with
             | err -> failwithf $"Preprocessing YAML-item failed: {err.Message}"
 
-        match ast.AST with
-        | Level lvl ->
-            try Reader.tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles |> ignore with
-            | err -> failwithf $"Tokenizing YAML-item failed: {err.Message}"
-        | _ -> failwith "Not a root!"
+        let parsedYamlItem = 
+            match ast.AST with
+            | Level lvl ->
+                try Reader.tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles with
+                | err -> failwithf $"Tokenizing YAML-item failed: {err.Message}"
+            | _ -> failwith "Not a root!"
+
+        let decodedList = 
+            try Decode.list id parsedYamlItem with
+            | err -> failwithf $"Decoding YAML-item failed: {err.Message}"
+
+        Expect.equal (List.length decodedList) 150 "Decoded list should have 150 items"
 
 
 ]
