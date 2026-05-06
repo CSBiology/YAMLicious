@@ -1,3 +1,6 @@
+### 1.0.0-alpha.9 (Released 2026-05-06)
+* Fix parsing for mapping keys followed by full-line comments and block sequence values.
+
 ### 1.0.0-alpha.8 (Released 2026-03-20)
 * Restore quoted mapping keys after placeholder preprocessing so keys like `"@id"` and `"@type"` parse correctly instead of leaking internal `<s f=.../>` markers
 * Preserve quoted-key scalar style in mapping and explicit-key reader paths, with regression coverage for quoted mapping keys

@@ -525,6 +525,86 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Key followed by full-line comment and unindented sequence" <| fun _ ->
+        let yaml = "inputs:\n# comment\n- id: x"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" comment")
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("x"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Comment between key and sequence should not detach the sequence from the key."
+
+    testCase "Key followed by multiple full-line comments and unindented sequence" <| fun _ ->
+        let yaml = "inputs:\n# first\n# second\n- id: x\n- id: y"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" first")
+                    YAMLElement.Comment(" second")
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x"))]
+                            )
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("y"))]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Multiple comments between key and sequence should be preserved and sequence should stay mapped."
+
+    testCase "Comment between sequence items stays inside mapped sequence" <| fun _ ->
+        let yaml = "inputs:\n- id: x\n# between\n- id: y"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x"))]
+                            )
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Comment(" between")
+                        ]
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("y"))]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Comments between sequence items should not terminate the mapped sequence."
+
     testCase "Sequence item accepts structural blank line before nested mapping" <| fun _ ->
         let yaml = """items:
   -

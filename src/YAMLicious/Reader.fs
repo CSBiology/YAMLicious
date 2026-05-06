@@ -404,6 +404,21 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | _ ->
             None
 
+    let rec takeLeadingComments (elements: PreprocessorElement list) =
+        match elements with
+        | (YamlComment _ as commentElement) :: rest ->
+            let comments, tail = takeLeadingComments rest
+            commentElement :: comments, tail
+        | _ ->
+            [], elements
+
+    let commentTokensToYaml (comments: PreprocessorElement list) =
+        comments
+        |> List.map (function
+            | YamlComment comment -> YAMLElement.Comment(commentDict.[comment.Comment])
+            | anyElse -> failwithf "Expected leading comment token, got: %A" anyElse
+        )
+
     let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
         | AliasNode alias::rest ->
@@ -669,45 +684,57 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     valueElement
                 )
             loopRead handles rest (current::acc)
-        | Key v::SequenceMinusOpener w::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
-            let objectList = 
-                if w.Value.IsSome then
-                    PreprocessorElement.Line w.Value.Value::yamlAstList
-                else
-                    yamlAstList
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let seq =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    YAMLElement.Object [seq]
-                )
-            loopRead handles rest (current::acc)
-        | Key v::SequenceMinusOpener w::rest0 -> //createObject
-            let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let seq =
-                YAMLElement.Sequence [
-                    loopRead handles [PreprocessorElement.Line w.Value.Value] []
-                    for i in sequenceElements do
-                        loopRead handles i []
-                ]
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    YAMLElement.Object [seq]
-                )
-            loopRead handles rest (current::acc)
+        | Key v::rest0 ->
+            let leadingComments, afterComments = takeLeadingComments rest0
+            match afterComments with
+            | SequenceMinusOpener w::Intendation yamlAstList::tail ->
+                let c = restoreCommentReplace commentDict v.Comment
+                let keyContent = createScalarContent v.Key c
+                let objectList =
+                    if w.Value.IsSome then
+                        PreprocessorElement.Line w.Value.Value :: yamlAstList
+                    else
+                        yamlAstList
+                let sequenceElements = tail |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = tail |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let seq =
+                    YAMLElement.Sequence [
+                        loopRead handles objectList []
+                        for element in sequenceElements do
+                            loopRead handles element []
+                    ]
+                let current =
+                    YAMLElement.Mapping(
+                        keyContent,
+                        YAMLElement.Object ((commentTokensToYaml leadingComments) @ [seq])
+                    )
+                loopRead handles rest (current::acc)
+            | SequenceMinusOpener w::tail ->
+                let c = restoreCommentReplace commentDict v.Comment
+                let keyContent = createScalarContent v.Key c
+                let objectList =
+                    match w.Value with
+                    | Some value -> [PreprocessorElement.Line value]
+                    | None -> []
+                let sequenceElements = tail |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = tail |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let seq =
+                    YAMLElement.Sequence [
+                        loopRead handles objectList []
+                        for element in sequenceElements do
+                            loopRead handles element []
+                    ]
+                let current =
+                    YAMLElement.Mapping(
+                        keyContent,
+                        YAMLElement.Object ((commentTokensToYaml leadingComments) @ [seq])
+                    )
+                loopRead handles rest (current::acc)
+            | _ ->
+                let c = restoreCommentReplace commentDict v.Comment
+                let current = YAMLElement.Value(YAMLContent.create(v.Key + ":", ?comment = c))
+                let restoredComments = commentTokensToYaml leadingComments
+                loopRead handles afterComments ((List.rev restoredComments) @ (current::acc))
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
             match tryReadBlockScalar v.Value v.Indent None block with
