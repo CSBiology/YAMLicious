@@ -2,11 +2,47 @@ module YAMLicious.Preprocessing
 
 open YAMLicious.StringBuffer
 open System.Collections.Generic
+open System.Text.RegularExpressions
 open YAMLiciousTypes
 
 module ReadHelpers =
     let indentLevel (line: string) =
         line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
+
+let private isCommentOnlyLine (line: string) =
+    Regex.IsMatch(line.Trim(), "^<c f=\d+/>$")
+
+let private isPresentationOnlyLine (line: string) =
+    line.Trim() = "" || isCommentOnlyLine line
+
+let private isBlockScalarHeaderLine (line: string) =
+    Regex.IsMatch(line.TrimEnd(), @":\s*[|>](?:[1-9][-+]?|[-+]?[1-9]?)?$")
+
+let private tryFindContentLine (lines: string list) =
+    lines
+    |> List.tryFind (isPresentationOnlyLine >> not)
+
+let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (rest: string list) =
+    if line.Trim() = "" then
+        match rest |> List.tryFind (fun l -> l.Trim() <> "") with
+        | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+        | None -> true
+    elif isCommentOnlyLine line then
+        match tryFindContentLine rest with
+        | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+        | None -> true
+    else
+        ReadHelpers.indentLevel line > currentIntendation
+
+let private splitNestedBlock (currentIntendation: int) (lines: string list) =
+    let rec loop acc remaining =
+        match remaining with
+        | line :: rest when shouldStayInNestedBlock currentIntendation line rest ->
+            loop (line :: acc) rest
+        | _ ->
+            List.rev acc, remaining
+
+    loop [] lines
 
 let private isDocumentMarker (marker: string) (line: string) =
     let trimmed = line.TrimStart()
@@ -50,14 +86,29 @@ let read (yamlStr: string) =
 
     let stripIndent (indent: int) (line: string) =
         if indent <= 0 then line
-        elif line.Length >= indent then line.Substring(indent)
-        else line.TrimStart()
+        else
+            let availableIndent = ReadHelpers.indentLevel line
+            if availableIndent >= indent then line.Substring(indent)
+            else line.TrimStart()
 
     let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
+        let canStartNestedBlockAfterPresentation () =
+            acc
+            |> List.tryFind (function
+                | Line line -> line.Trim() <> ""
+                | _ -> true
+            )
+            |> function
+                | Some (Line line) ->
+                    let trimmed = line.TrimEnd()
+                    trimmed.EndsWith(":") || isBlockScalarHeaderLine trimmed
+                | _ -> false
+
         match lines with
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
+            let isCommentLine = isCommentOnlyLine line
 
             if isEmptyLine then
                 let nextIndentedLine =
@@ -67,24 +118,27 @@ let read (yamlStr: string) =
                 match nextIndentedLine with
                 | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation ->
                     let nextIntendation = ReadHelpers.indentLevel nextLine
-                    let nextLevelLines =
-                        line :: rest
-                        |> List.takeWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
-
-                    let currentLevelLines =
-                        rest
-                        |> List.skipWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
 
                     let children = loop nextLevelLines nextIntendation [] |> List.rev
                     loop currentLevelLines currentIntendation (Intendation children :: acc)
                 | _ ->
                     loop rest currentIntendation (Line("") :: acc)
+            elif isCommentLine then
+                let nextIndentedLine =
+                    rest |> tryFindContentLine
+
+                match nextIndentedLine with
+                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation && canStartNestedBlockAfterPresentation () ->
+                    let nextIntendation = ReadHelpers.indentLevel nextLine
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
+
+                    let children = loop nextLevelLines nextIntendation [] |> List.rev
+                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                | _ ->
+                    let lineText = stripIndent currentIntendation line
+                    let lineEle = Line(lineText)
+                    loop rest currentIntendation (lineEle :: acc)
             else
                 let nextIntendation = ReadHelpers.indentLevel line
 
@@ -96,19 +150,7 @@ let read (yamlStr: string) =
                     let lineText =
                         stripIndent nextIntendation line
                     let lineEle = Line(lineText)
-                    let nextLevelLines =
-                        rest
-                        |> List.takeWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
-
-                    let currentLevelLines =
-                        rest
-                        |> List.skipWhile (fun l ->
-                            let isEmpty = l.Trim() = ""
-                            isEmpty || ReadHelpers.indentLevel l > currentIntendation
-                        )
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation rest
 
                     let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
                     let children = lineEle :: otherChildren

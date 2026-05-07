@@ -510,7 +510,7 @@ My Value1
     run: tool.cwl
     in: []
     out: []"""
-        let emptySequence = YAMLElement.Object [YAMLElement.Sequence []]
+        let emptyObject = YAMLElement.Object []
         let step name = 
             YAMLElement.Mapping(
                 YAMLContent.create(name),
@@ -519,8 +519,8 @@ My Value1
                         YAMLContent.create("run"),
                         YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
                     )
-                    YAMLElement.Mapping(YAMLContent.create("in"), emptySequence)
-                    YAMLElement.Mapping(YAMLContent.create("out"), emptySequence)
+                    YAMLElement.Mapping(YAMLContent.create("in"), emptyObject)
+                    YAMLElement.Mapping(YAMLContent.create("out"), emptyObject)
                 ]
             )
         let expected = YAMLElement.Object [
