@@ -1,3 +1,6 @@
+### 1.0.0-alpha.10 (Released 2026-05-07)
+* Enable blank line handling
+
 ### 1.0.0-alpha.9 (Released 2026-05-06)
 * Fix parsing for mapping keys followed by full-line comments and block sequence values.
 
