@@ -336,6 +336,38 @@ My Key: My Value1
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Indented multiline plain scalar expression decodes as one string" <| fun _ ->
+        let yaml = """valueFrom:
+  ${
+    var reads = null;
+    if (self !== null) { reads = [self]; }
+    return reads;
+  }"""
+        let decoded =
+            YAMLicious.Decode.read yaml
+            |> YAMLicious.Decode.object (fun get ->
+                get.Required.Field "valueFrom" YAMLicious.Decode.string
+            )
+
+        Expect.isTrue (decoded.Contains("${")) "The opening expression marker should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("return reads;")) "The return statement should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("}")) "The closing brace should be part of the scalar string."
+
+    testCase "Inline-start multiline plain scalar expression decodes as one string" <| fun _ ->
+        let yaml = """valueFrom: ${
+  var reads = null;
+  return reads;
+}"""
+        let decoded =
+            YAMLicious.Decode.read yaml
+            |> YAMLicious.Decode.object (fun get ->
+                get.Required.Field "valueFrom" YAMLicious.Decode.string
+            )
+
+        Expect.isTrue (decoded.Contains("${")) "The opening expression marker should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("return reads;")) "The return statement should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("}")) "The closing brace should be part of the scalar string."
+
     testCase "Root plain continuation folds into one scalar" <| fun _ ->
         let yaml = """
 My Value1
