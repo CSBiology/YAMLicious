@@ -156,8 +156,14 @@ let private buildBlockScalarContent (style: BlockScalarStyle) (chomp: ChompingMo
 let private restoreCommentReplace (commentDict: Dictionary<int, string>) (commentId: int option) =
     commentId |> Option.map (fun id -> commentDict.[id])
 
+let private isBlankLineElement = function
+    | PreprocessorElement.Line line when line.Trim() = "" -> true
+    | _ -> false
+
 let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorElement list list =
     match eles with
+    | line::rest when isBlankLineElement line ->
+        collectSequenceElements rest
     | SequenceMinusOpener v::Intendation yamlAstList::rest ->
         [
             if v.Value.IsSome then
@@ -183,7 +189,7 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
         []
     | anyElse -> failwithf "Unknown pattern for sequence elements: %A" anyElse
     
-let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ -> false
+let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ when isBlankLineElement e -> true | _ -> false
 
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     // First pass: transform any flow-style elements to block-style
@@ -406,6 +412,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
     let rec takeLeadingComments (elements: PreprocessorElement list) =
         match elements with
+        | line :: rest when isBlankLineElement line ->
+            takeLeadingComments rest
         | (YamlComment _ as commentElement) :: rest ->
             let comments, tail = takeLeadingComments rest
             commentElement :: comments, tail

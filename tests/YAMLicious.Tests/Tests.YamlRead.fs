@@ -1243,5 +1243,66 @@ trailing: ignored"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Multiple bare dashes should be parsed as empty sequence elements"
+
+    testCase "Key followed by blank lines and unindented sequence" <| fun _ ->
+        let yaml = """root:
+
+
+- a
+- b"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("root"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank separation lines between a key and an indentless sequence should not split the mapping."
+
+    testCase "Key followed by blank lines, comments, and unindented sequence" <| fun _ ->
+        let yaml = """root:
+
+# keep
+
+- a
+- b"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("root"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" keep")
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank separation lines around comments should not prevent a following indentless sequence from staying mapped."
+
+    testCase "Blank lines between sequence items do not split the sequence" <| fun _ ->
+        let yaml = """root:
+- a
+
+- b"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("root"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank separation lines between sequence items should not split one sequence into sibling sequences."
 ]
 
