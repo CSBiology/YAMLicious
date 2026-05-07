@@ -439,6 +439,103 @@ My Value1
         let actual = Reader.read yaml
         Expect.equal actual expected "Blank sibling separators inside an open child mapping should remain harmless"
 
+    testCase "Lower-indented comment between nested mapping entries stays in open block" <| fun _ ->
+        let yaml = """inputs:
+  a: string
+# group comment
+  b: string"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("string"))
+                        ]
+                    )
+                    YAMLElement.Comment(" group comment")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("string"))
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not close the inputs mapping."
+
+    testCase "Lower-indented comment before nested sequence stays in open block" <| fun _ ->
+        let yaml = """inputs:
+# group comment
+  - id: a
+    type: string"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" group comment")
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("a"))
+                                ]
+                            )
+                            YAMLElement.Mapping(
+                                YAMLContent.create("type"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("string"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not detach the sequence value from inputs."
+
+    testCase "Lower-indented comment between nested workflow steps stays in open block" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+    in: []
+    out: []
+# separator
+  second:
+    run: tool.cwl
+    in: []
+    out: []"""
+        let emptySequence = YAMLElement.Object [YAMLElement.Sequence []]
+        let step name = 
+            YAMLElement.Mapping(
+                YAMLContent.create(name),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("run"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
+                    )
+                    YAMLElement.Mapping(YAMLContent.create("in"), emptySequence)
+                    YAMLElement.Mapping(YAMLContent.create("out"), emptySequence)
+                ]
+            )
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("steps"),
+                YAMLElement.Object [
+                    step "first"
+                    YAMLElement.Comment(" separator")
+                    step "second"
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not close the steps mapping."
+
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
 My Key:
