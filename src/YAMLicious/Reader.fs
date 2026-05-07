@@ -380,35 +380,65 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 |> List.filter (fun line -> line.Trim() <> "")
                 |> List.length
 
-            if expectedSegmentCount <> actualNonEmptyBlockLineCount then
-                None
-            else
-                let values =
-                    if hasInlineFirstLine then segments |> List.tail else segments
-                    |> Queue
+            let rawLines =
+                if expectedSegmentCount = actualNonEmptyBlockLineCount then
+                    let values =
+                        if hasInlineFirstLine then segments |> List.tail else segments
+                        |> Queue
 
-                let renderedBlockLines =
-                    rawBlockLines
-                    |> List.map (fun rawLine ->
-                        if rawLine.Trim() = "" then
-                            ""
-                        else
-                            values.Dequeue().Value
-                    )
+                    let renderedBlockLines =
+                        rawBlockLines
+                        |> List.map (fun rawLine ->
+                            if rawLine.Trim() = "" then
+                                ""
+                            else
+                                values.Dequeue().Value
+                        )
 
-                let rawLines =
                     if hasInlineFirstLine then
                         firstSegment.Value :: renderedBlockLines
                     else
                         renderedBlockLines
+                else
+                    segments |> List.map (fun segment -> segment.Value)
 
-                let rawValue = System.String.Join("\n", rawLines)
-                let style =
-                    if rawValue.Contains("\n") then Some ScalarStyle.Plain else firstSegment.Style
+            let rawValue = System.String.Join("\n", rawLines)
+            let style =
+                if rawValue.Contains("\n") then Some ScalarStyle.Plain else firstSegment.Style
 
-                Some { firstSegment with Value = rawValue; Style = style }
+            Some { firstSegment with Value = rawValue; Style = style }
         | _ ->
             None
+
+    let rec takePlainScalarContinuationContents (elements: PreprocessorElement list) (acc: YAMLContent list) =
+        match elements with
+        | Key _ :: _
+        | KeyValue _ :: _
+        | SequenceMinusOpener _ :: _
+        | YamlComment _ :: _
+        | DocumentEnd _ :: _
+        | [] ->
+            List.rev acc, elements
+        | YamlValue v :: rest when v.Value <> "" && v.Comment.IsNone ->
+            let content = createScalarContent v.Value None
+            match content.Style, content.Comment, content.Anchor, content.Tag with
+            | (None | Some ScalarStyle.Plain), None, None, None ->
+                takePlainScalarContinuationContents rest (content :: acc)
+            | _ ->
+                List.rev acc, elements
+        | _ ->
+            List.rev acc, elements
+
+    let appendPlainScalarContinuations (content: YAMLContent) (continuations: YAMLContent list) =
+        match continuations with
+        | [] -> content
+        | _ ->
+            let rawValue =
+                content :: continuations
+                |> List.map (fun segment -> segment.Value)
+                |> String.concat "\n"
+
+            { content with Value = rawValue; Style = Some ScalarStyle.Plain }
 
     let rec takeLeadingComments (elements: PreprocessorElement list) =
         match elements with
@@ -767,16 +797,19 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | KeyValue v::Intendation block::rest ->
             let keyContent = createScalarContent v.Key None
             let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
-            let valueElement =
+            let valueElement, restAfterValue =
                 match tryCollapsePlainScalarContent true block parsedValue with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedValue
+                | Some content ->
+                    let continuations, restAfterContinuations = takePlainScalarContinuationContents rest []
+                    let content = appendPlainScalarContinuations content continuations
+                    YAMLElement.Object [YAMLElement.Value content], restAfterContinuations
+                | None -> parsedValue, rest
             let current =
                 YAMLElement.Mapping(
                     keyContent,
                     valueElement
                 )
-            loopRead handles rest (current::acc)
+            loopRead handles restAfterValue (current::acc)
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             let keyContent = createScalarContent v.Key None
