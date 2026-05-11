@@ -620,6 +620,29 @@ My Value1
         let actual = Reader.read yaml
         Expect.equal actual expected "Blank lines before lower-indented comments should not close an open block."
 
+    testCase "Blank line before indented commented block does not create orphan indentation" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+# disabled section
+
+  # disabled:
+  #   run: disabled.cwl
+# end
+
+meta: value"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object elements ->
+            let hasMapping key =
+                elements
+                |> List.exists (function
+                    | YAMLElement.Mapping(k, _) -> k.Value = key
+                    | _ -> false)
+            Expect.isTrue (hasMapping "steps") "steps mapping should decode."
+            Expect.isTrue (hasMapping "meta") "meta mapping should decode after commented-out block."
+        | other -> failwithf "Expected object, got %A" other
+
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
 My Key:

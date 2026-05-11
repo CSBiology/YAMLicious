@@ -118,7 +118,10 @@ let read (yamlStr: string) =
             |> function
                 | Some (Line line) ->
                     let trimmed = line.TrimEnd()
-                    trimmed.EndsWith(":") || isBlockScalarHeaderLine trimmed
+                    trimmed.EndsWith(":")
+                    || trimmed.EndsWith("[")
+                    || trimmed.EndsWith("{")
+                    || isBlockScalarHeaderLine trimmed
                 | _ -> false
 
         let nestedBlockScalarAfterPresentation () =
@@ -138,7 +141,7 @@ let read (yamlStr: string) =
                     |> List.tryFind (fun l -> l.Trim() <> "")
 
                 match nextIndentedLine with
-                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation ->
+                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation && (List.isEmpty acc || inBlockScalar || canStartNestedBlockAfterPresentation ()) ->
                     let nextIntendation = ReadHelpers.indentLevel nextLine
                     let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
                     let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
