@@ -22,24 +22,36 @@ let private tryFindContentLine (lines: string list) =
     lines
     |> List.tryFind (isPresentationOnlyLine >> not)
 
-let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (rest: string list) =
+let private shouldStayInNestedBlock (currentIntendation: int) (inBlockScalar: bool) (line: string) (rest: string list) =
     if line.Trim() = "" then
-        match rest |> List.tryFind (fun l -> l.Trim() <> "") with
-        | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
-        | None -> true
+        if inBlockScalar then
+            match rest |> List.tryFind (fun l -> l.Trim() <> "") with
+            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | None -> true
+        else
+            match rest |> List.tryFind (fun l -> l.Trim() <> "") with
+            | Some nextLine when isCommentOnlyLine nextLine && ReadHelpers.indentLevel nextLine <= currentIntendation ->
+                match tryFindContentLine rest with
+                | Some nextContentLine -> ReadHelpers.indentLevel nextContentLine > currentIntendation
+                | None -> true
+            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | None -> true
     elif isCommentOnlyLine line then
-        ReadHelpers.indentLevel line > currentIntendation
-        ||
-        match tryFindContentLine rest with
-        | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
-        | None -> true
+        if inBlockScalar then
+            ReadHelpers.indentLevel line > currentIntendation
+        else
+            ReadHelpers.indentLevel line > currentIntendation
+            ||
+            match tryFindContentLine rest with
+            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | None -> true
     else
         ReadHelpers.indentLevel line > currentIntendation
 
-let private splitNestedBlock (currentIntendation: int) (lines: string list) =
+let private splitNestedBlock (currentIntendation: int) (inBlockScalar: bool) (lines: string list) =
     let rec loop acc remaining =
         match remaining with
-        | line :: rest when shouldStayInNestedBlock currentIntendation line rest ->
+        | line :: rest when shouldStayInNestedBlock currentIntendation inBlockScalar line rest ->
             loop (line :: acc) rest
         | _ ->
             List.rev acc, remaining
@@ -93,18 +105,26 @@ let read (yamlStr: string) =
             if availableIndent >= indent then line.Substring(indent)
             else line.TrimStart()
 
-    let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
-        let canStartNestedBlockAfterPresentation () =
+    let rec loop (lines: string list) (currentIntendation: int) (inBlockScalar: bool) (acc: PreprocessorElement list) =
+        let previousContentLine () =
             acc
             |> List.tryFind (function
                 | Line line -> line.Trim() <> ""
                 | _ -> true
             )
+
+        let canStartNestedBlockAfterPresentation () =
+            previousContentLine ()
             |> function
                 | Some (Line line) ->
                     let trimmed = line.TrimEnd()
                     trimmed.EndsWith(":") || isBlockScalarHeaderLine trimmed
                 | _ -> false
+
+        let nestedBlockScalarAfterPresentation () =
+            match previousContentLine () with
+            | Some (Line line) -> isBlockScalarHeaderLine (line.TrimEnd())
+            | _ -> false
 
         match lines with
         | [] -> acc
@@ -120,12 +140,13 @@ let read (yamlStr: string) =
                 match nextIndentedLine with
                 | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation ->
                     let nextIntendation = ReadHelpers.indentLevel nextLine
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
+                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
 
-                    let children = loop nextLevelLines nextIntendation [] |> List.rev
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                    let children = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
+                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
                 | _ ->
-                    loop rest currentIntendation (Line("") :: acc)
+                    loop rest currentIntendation inBlockScalar (Line("") :: acc)
             elif isCommentLine then
                 let nextIndentedLine =
                     rest |> tryFindContentLine
@@ -133,32 +154,34 @@ let read (yamlStr: string) =
                 match nextIndentedLine with
                 | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation && canStartNestedBlockAfterPresentation () ->
                     let nextIntendation = ReadHelpers.indentLevel nextLine
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
+                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
 
-                    let children = loop nextLevelLines nextIntendation [] |> List.rev
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                    let children = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
+                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
                 | _ ->
                     let lineText = stripIndent currentIntendation line
                     let lineEle = Line(lineText)
-                    loop rest currentIntendation (lineEle :: acc)
+                    loop rest currentIntendation inBlockScalar (lineEle :: acc)
             else
                 let nextIntendation = ReadHelpers.indentLevel line
 
                 if nextIntendation = currentIntendation then
                     let lineText = stripIndent currentIntendation line
                     let lineEle = Line(lineText)
-                    loop rest currentIntendation (lineEle :: acc)
+                    loop rest currentIntendation inBlockScalar (lineEle :: acc)
                 else
                     let lineText =
                         stripIndent nextIntendation line
                     let lineEle = Line(lineText)
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation rest
+                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar rest
 
-                    let otherChildren = loop nextLevelLines nextIntendation [] |> List.rev
+                    let otherChildren = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
                     let children = lineEle :: otherChildren
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
 
-    let ast = loop (List.ofArray content.Lines) 0 [] |> List.rev |> Level
+    let ast = loop (List.ofArray content.Lines) 0 false [] |> List.rev |> Level
 
     { AST = ast
       StringMap = content.StringMap

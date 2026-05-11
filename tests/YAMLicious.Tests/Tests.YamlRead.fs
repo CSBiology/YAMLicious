@@ -589,6 +589,37 @@ My Value1
         let actual = Reader.read yaml
         Expect.equal actual expected "A lower-indented full-line comment should not close the steps mapping."
 
+    testCase "Blank line before lower-indented comment keeps following entry in open block" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+
+# separator
+  second:
+    run: tool.cwl"""
+        let step name =
+            YAMLElement.Mapping(
+                YAMLContent.create(name),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("run"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
+                    )
+                ]
+            )
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("steps"),
+                YAMLElement.Object [
+                    step "first"
+                    YAMLElement.Comment(" separator")
+                    step "second"
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines before lower-indented comments should not close an open block."
+
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
 My Key:
