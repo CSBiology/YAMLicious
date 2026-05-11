@@ -18,6 +18,23 @@ let defaultContext stringDict = {
     StringDict = stringDict
 }
 
+let private isEmptyFlowArray (value: string) =
+    let trimmed = value.Trim()
+    trimmed.StartsWith("[")
+    && trimmed.EndsWith("]")
+    && trimmed.Substring(1, trimmed.Length - 2).Trim() = ""
+
+let private leadingWhitespace (value: string) =
+    value.Substring(0, value.Length - value.TrimStart().Length)
+
+let private mkEmptyFlowArrayLine (indent: string) (key: string) (commentGroup: Group) =
+    let comment =
+        if commentGroup.Success then
+            sprintf " <c f=%s/>" commentGroup.Value
+        else
+            ""
+    PreprocessorElement.Line (sprintf "%s%s: []%s" indent key comment)
+
 // Token types for flow-style parsing
 type Token =
     | OpenBrace
@@ -113,8 +130,12 @@ let rec tokensToBlockElements (ctx: TransformContext) (tokens: Token list) : Pre
         | Token.OpenBracket::_ ->
             // This is an array value - always treat as complex nested structure  
             let (valueElements, remaining) = tokensToBlockElements childCtx rest
-            let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
-            let result = [keyLine; PreprocessorElement.Intendation valueElements]
+            let result =
+                match valueElements with
+                | [] -> [PreprocessorElement.Line (sprintf "%s: []" key)]
+                | _ ->
+                    let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
+                    [keyLine; PreprocessorElement.Intendation valueElements]
             (result, remaining)
         | _ ->
             // Other value types - use normal simple/complex logic
@@ -161,8 +182,12 @@ and objectToBlockElements (ctx: TransformContext) (tokens: Token list) : Preproc
             | Token.OpenBracket::_ ->
                 // Array value - always treat as complex nested structure
                 let (valueElements, remaining) = tokensToBlockElements childCtx rest
-                let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
-                let keyValueElements = [keyLine; PreprocessorElement.Intendation valueElements]
+                let keyValueElements =
+                    match valueElements with
+                    | [] -> [PreprocessorElement.Line (sprintf "%s: []" key)]
+                    | _ ->
+                        let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
+                        [keyLine; PreprocessorElement.Intendation valueElements]
                 parseKeyValues remaining (List.rev keyValueElements @ acc)
             | _ ->
                 // Other value types - use normal simple/complex logic
@@ -275,19 +300,22 @@ let rec transformElement (ctx: TransformContext) (element: PreprocessorElement) 
                 if arrCommentMatch.Success then
                     let arrContent = arrCommentMatch.Groups.[1].Value
                     let commentGroup = arrCommentMatch.Groups.[3]
-                    
-                    // Transform the flow-style value
-                    let transformedValue = transformFlowContent childCtx arrContent
-                    
-                    // Create key line and indented value
-                    let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
-                    
-                    // If there's a comment, add it before the transformed content
-                    if commentGroup.Success then
-                        let commentElement = PreprocessorElement.Line (sprintf "<c f=%s/>" commentGroup.Value)
-                        [keyLine; PreprocessorElement.Intendation (commentElement :: transformedValue)]
+
+                    if isEmptyFlowArray arrContent then
+                        [mkEmptyFlowArrayLine (leadingWhitespace s) key commentGroup]
                     else
-                        [keyLine; PreprocessorElement.Intendation transformedValue]
+                        // Transform the flow-style value
+                        let transformedValue = transformFlowContent childCtx arrContent
+
+                        // Create key line and indented value
+                        let keyLine = PreprocessorElement.Line (sprintf "%s:" key)
+
+                        // If there's a comment, add it before the transformed content
+                        if commentGroup.Success then
+                            let commentElement = PreprocessorElement.Line (sprintf "<c f=%s/>" commentGroup.Value)
+                            [keyLine; PreprocessorElement.Intendation (commentElement :: transformedValue)]
+                        else
+                            [keyLine; PreprocessorElement.Intendation transformedValue]
                 else
                     // Fallback: transform the entire value
                     let transformedValue = transformFlowContent childCtx value
@@ -313,17 +341,20 @@ let rec transformElement (ctx: TransformContext) (element: PreprocessorElement) 
                 if inlineSeqMatch.Success then
                     let content = inlineSeqMatch.Groups.["inlineSequence"].Value
                     let commentGroup = inlineSeqMatch.Groups.["comment"]
-                    
-                    // Transform flow-style array to block-style
-                    let transformed = transformFlowContent ctx ("[" + content + "]")
-                    
-                    // If there's a comment, add it as a comment element before the transformed content
-                    if commentGroup.Success then
-                        let commentId = int commentGroup.Value
-                        let commentElement = PreprocessorElement.Line (sprintf "<c f=%d/>" commentId)
-                        commentElement :: transformed
+
+                    if content.Trim() = "" then
+                        [element]
                     else
-                        transformed
+                        // Transform flow-style array to block-style
+                        let transformed = transformFlowContent ctx ("[" + content + "]")
+
+                        // If there's a comment, add it as a comment element before the transformed content
+                        if commentGroup.Success then
+                            let commentId = int commentGroup.Value
+                            let commentElement = PreprocessorElement.Line (sprintf "<c f=%d/>" commentId)
+                            commentElement :: transformed
+                        else
+                            transformed
                 else
                     [element]  // No flow-style detected, keep as-is
                 

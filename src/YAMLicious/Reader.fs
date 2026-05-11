@@ -160,6 +160,25 @@ let private isBlankLineElement = function
     | PreprocessorElement.Line line when line.Trim() = "" -> true
     | _ -> false
 
+let rec private takeLeadingSequenceItemPrefix (eles: PreprocessorElement list) =
+    match eles with
+    | line :: rest when isBlankLineElement line ->
+        let comments, tail, _ = takeLeadingSequenceItemPrefix rest
+        comments, tail, true
+    | (YamlComment _ as commentElement) :: rest ->
+        let comments, tail, _ = takeLeadingSequenceItemPrefix rest
+        commentElement :: comments, tail, true
+    | _ ->
+        [], eles, false
+
+let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list) =
+    let leadingComments, afterPrefix, hadPrefix = takeLeadingSequenceItemPrefix eles
+    match hadPrefix, afterPrefix with
+    | true, Intendation yamlAstList :: tail ->
+        Some (leadingComments @ yamlAstList, tail)
+    | _ ->
+        None
+
 let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorElement list list =
     match eles with
     | line::rest when isBlankLineElement line ->
@@ -173,13 +192,24 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
             yield! collectSequenceElements rest            
         ]
     | SequenceMinusOpener v::rest ->
-        [
-            if v.Value.IsSome then
-                [PreprocessorElement.Line v.Value.Value]
-            else
-                []
-            yield! collectSequenceElements rest
-        ]
+        match splitLeadingSequenceItemContinuation rest with
+        | Some (continuation, tail) ->
+            [
+                [
+                    if v.Value.IsSome then
+                        PreprocessorElement.Line v.Value.Value
+                    yield! continuation
+                ]
+                yield! collectSequenceElements tail
+            ]
+        | _ ->
+            [
+                if v.Value.IsSome then
+                    [PreprocessorElement.Line v.Value.Value]
+                else
+                    []
+                yield! collectSequenceElements rest
+            ]
     | YamlComment _ as v::rest ->
         [
             [v]
@@ -543,13 +573,19 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 ]
             loopRead handles rest (current::acc)
         | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
-            let objectList =
+            let initialObjectList =
                 if v.Value.IsSome then
                     [PreprocessorElement.Line v.Value.Value]
                 else
                     []
+            let objectList, sequenceSource =
+                match splitLeadingSequenceItemContinuation rest0 with
+                | Some (continuation, tail) ->
+                    initialObjectList @ continuation, tail
+                | None ->
+                    initialObjectList, rest0
+            let sequenceElements = sequenceSource |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+            let rest = sequenceSource |> Seq.skipWhile isSequenceElement |> Seq.toList
             let current =
                 YAMLElement.Sequence [
                     loopRead handles objectList []
@@ -750,12 +786,18 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | SequenceMinusOpener w::tail ->
                 let c = restoreCommentReplace commentDict v.Comment
                 let keyContent = createScalarContent v.Key c
-                let objectList =
+                let initialObjectList =
                     match w.Value with
                     | Some value -> [PreprocessorElement.Line value]
                     | None -> []
-                let sequenceElements = tail |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-                let rest = tail |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let objectList, sequenceSource =
+                    match splitLeadingSequenceItemContinuation tail with
+                    | Some (continuation, remaining) ->
+                        initialObjectList @ continuation, remaining
+                    | None ->
+                        initialObjectList, tail
+                let sequenceElements = sequenceSource |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
+                let rest = sequenceSource |> Seq.skipWhile isSequenceElement |> Seq.toList
                 let seq =
                     YAMLElement.Sequence [
                         loopRead handles objectList []

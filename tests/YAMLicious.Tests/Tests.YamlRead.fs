@@ -79,6 +79,27 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "KeyValue empty inline sequence stays empty sequence" <| fun _ ->
+        let yaml = "value: []"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("value"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence []
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Empty inline sequence should not decode as an empty object."
+
+    testCase "KeyValue empty inline sequence roundtrips as brackets" <| fun _ ->
+        let yaml = "value: []"
+        let actual =
+            yaml
+            |> Reader.read
+            |> fun element -> Writer.write element None
+        Expect.equal (actual.Trim()) yaml "Empty inline sequence should be preserved for roundtrip YAML output."
+
     testCase "Single-quoted string" <| fun _ ->
         let yaml = "single: 'hello world'"
         let expected = YAMLElement.Object [
@@ -542,7 +563,7 @@ My Value1
     run: tool.cwl
     in: []
     out: []"""
-        let emptyObject = YAMLElement.Object []
+        let emptySequence = YAMLElement.Object [YAMLElement.Sequence []]
         let step name = 
             YAMLElement.Mapping(
                 YAMLContent.create(name),
@@ -551,8 +572,8 @@ My Value1
                         YAMLContent.create("run"),
                         YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
                     )
-                    YAMLElement.Mapping(YAMLContent.create("in"), emptyObject)
-                    YAMLElement.Mapping(YAMLContent.create("out"), emptyObject)
+                    YAMLElement.Mapping(YAMLContent.create("in"), emptySequence)
+                    YAMLElement.Mapping(YAMLContent.create("out"), emptySequence)
                 ]
             )
         let expected = YAMLElement.Object [
@@ -733,6 +754,45 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Comments between sequence items should not terminate the mapped sequence."
+
+    testCase "Comment between inline sequence mapping and nested fields stays in same item" <| fun _ ->
+        let yaml = """listing:
+  - entryname: arc
+    # disabled entry example
+    entry: $(inputs.rootDir)
+    writable: true"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("listing"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("entryname"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("arc"))
+                                ]
+                            )
+                            YAMLElement.Comment(" disabled entry example")
+                            YAMLElement.Mapping(
+                                YAMLContent.create("entry"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("$(inputs.rootDir)"))
+                                ]
+                            )
+                            YAMLElement.Mapping(
+                                YAMLContent.create("writable"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("true"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A sequence item comment should not split following nested fields into another item."
 
     testCase "Sequence item accepts structural blank line before nested mapping" <| fun _ ->
         let yaml = """items:

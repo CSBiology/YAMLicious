@@ -291,6 +291,9 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
             | YAMLElement.Value value ->
                 let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineContent options value
                 PreprocessorElement.Line s
+            | YAMLElement.Object [YAMLElement.Sequence seq] when StyleVerifier.checkInlineSequence seq ->
+                let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineSequence options seq
+                PreprocessorElement.Line s
             | YAMLElement.Sequence seq when StyleVerifier.checkInlineSequence seq ->
                 let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineSequence options seq
                 PreprocessorElement.Line s
