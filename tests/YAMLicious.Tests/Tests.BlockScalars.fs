@@ -272,6 +272,26 @@ let Main =
         let actual = Reader.read yaml
         Expect.equal actual expected "Hash inside block scalar should be treated as content, not a comment"
 
+    testCase "Block scalar preserves final hash content before dedent" <| fun _ ->
+        let yaml = """doc: |
+  Workflow doc line.
+  # This line is doc text, not a YAML comment.
+next: value"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("doc"),
+                YAMLElement.Value(YAMLContent.create("Workflow doc line.\n# This line is doc text, not a YAML comment.\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+            )
+            YAMLElement.Mapping(
+                YAMLContent.create("next"),
+                YAMLElement.Object [
+                    YAMLElement.Value(YAMLContent.create("value"))
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Indented hash content should stay in the block scalar even when the following line dedents."
+
     testCase "Combined explicit indent and strip chomping" <| fun _ ->
         let yaml = """data: |2-
   text

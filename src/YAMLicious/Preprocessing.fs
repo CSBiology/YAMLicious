@@ -28,6 +28,8 @@ let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (re
         | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
         | None -> true
     elif isCommentOnlyLine line then
+        ReadHelpers.indentLevel line > currentIntendation
+        ||
         match tryFindContentLine rest with
         | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
         | None -> true
