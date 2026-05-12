@@ -118,9 +118,6 @@ type YAMLElement =
     | Nil
 
 [<Literal>]
-let SequenceSquareDelimiter = ","
-
-[<Literal>]
 let NewLineChar = '\n'
 
 [<Literal>]

@@ -2,21 +2,11 @@ module YAMLicious.Preprocessing
 
 open YAMLicious.StringBuffer
 open System.Collections.Generic
-open System.Text.RegularExpressions
+open Syntax
 open YAMLiciousTypes
 
-module ReadHelpers =
-    let indentLevel (line: string) =
-        line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
-
-let private isCommentOnlyLine (line: string) =
-    Regex.IsMatch(line.Trim(), "^<c f=\d+/>$")
-
 let private isPresentationOnlyLine (line: string) =
-    line.Trim() = "" || isCommentOnlyLine line
-
-let private isBlockScalarHeaderLine (line: string) =
-    Regex.IsMatch(line.TrimEnd(), @":\s*[|>](?:[1-9][-+]?|[-+]?[1-9]?)?$")
+    line.Trim() = "" || Placeholder.isCommentOnlyLine line
 
 let private tryFindContentLine (lines: string list) =
     lines
@@ -26,27 +16,27 @@ let private shouldStayInNestedBlock (currentIntendation: int) (inBlockScalar: bo
     if line.Trim() = "" then
         if inBlockScalar then
             match rest |> List.tryFind (fun l -> l.Trim() <> "") with
-            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
             | None -> true
         else
             match rest |> List.tryFind (fun l -> l.Trim() <> "") with
-            | Some nextLine when isCommentOnlyLine nextLine && ReadHelpers.indentLevel nextLine <= currentIntendation ->
+            | Some nextLine when Placeholder.isCommentOnlyLine nextLine && Line.countLeadingSpaces nextLine <= currentIntendation ->
                 match tryFindContentLine rest with
-                | Some nextContentLine -> ReadHelpers.indentLevel nextContentLine > currentIntendation
+                | Some nextContentLine -> Line.countLeadingSpaces nextContentLine > currentIntendation
                 | None -> true
-            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
             | None -> true
-    elif isCommentOnlyLine line then
+    elif Placeholder.isCommentOnlyLine line then
         if inBlockScalar then
-            ReadHelpers.indentLevel line > currentIntendation
+            Line.countLeadingSpaces line > currentIntendation
         else
-            ReadHelpers.indentLevel line > currentIntendation
+            Line.countLeadingSpaces line > currentIntendation
             ||
             match tryFindContentLine rest with
-            | Some nextLine -> ReadHelpers.indentLevel nextLine > currentIntendation
+            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
             | None -> true
     else
-        ReadHelpers.indentLevel line > currentIntendation
+        Line.countLeadingSpaces line > currentIntendation
 
 let private splitNestedBlock (currentIntendation: int) (inBlockScalar: bool) (lines: string list) =
     let rec loop acc remaining =
@@ -58,19 +48,6 @@ let private splitNestedBlock (currentIntendation: int) (inBlockScalar: bool) (li
 
     loop [] lines
 
-let private isDocumentMarker (marker: string) (line: string) =
-    let trimmed = line.TrimStart()
-    if not (trimmed.StartsWith(marker)) then
-        false
-    elif trimmed.Length = marker.Length then
-        true
-    else
-        let next = trimmed.[marker.Length]
-        System.Char.IsWhiteSpace(next)
-
-let isDocumentStart (line: string) = isDocumentMarker "---" line
-
-let isDocumentEnd (line: string) = isDocumentMarker "..." line
 
 let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option) =
     let config =
@@ -101,7 +78,7 @@ let read (yamlStr: string) =
     let stripIndent (indent: int) (line: string) =
         if indent <= 0 then line
         else
-            let availableIndent = ReadHelpers.indentLevel line
+            let availableIndent = Line.countLeadingSpaces line
             if availableIndent >= indent then line.Substring(indent)
             else line.TrimStart()
 
@@ -121,19 +98,19 @@ let read (yamlStr: string) =
                     trimmed.EndsWith(":")
                     || trimmed.EndsWith("[")
                     || trimmed.EndsWith("{")
-                    || isBlockScalarHeaderLine trimmed
+                    || BlockScalar.isHeaderLine trimmed
                 | _ -> false
 
         let nestedBlockScalarAfterPresentation () =
             match previousContentLine () with
-            | Some (Line line) -> isBlockScalarHeaderLine (line.TrimEnd())
+            | Some (Line line) -> BlockScalar.isHeaderLine (line.TrimEnd())
             | _ -> false
 
         match lines with
         | [] -> acc
         | line :: rest ->
             let isEmptyLine = line.Trim() = ""
-            let isCommentLine = isCommentOnlyLine line
+            let isCommentLine = Placeholder.isCommentOnlyLine line
 
             if isEmptyLine then
                 let nextIndentedLine =
@@ -141,8 +118,8 @@ let read (yamlStr: string) =
                     |> List.tryFind (fun l -> l.Trim() <> "")
 
                 match nextIndentedLine with
-                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation && (List.isEmpty acc || inBlockScalar || canStartNestedBlockAfterPresentation ()) ->
-                    let nextIntendation = ReadHelpers.indentLevel nextLine
+                | Some nextLine when Line.countLeadingSpaces nextLine > currentIntendation && (List.isEmpty acc || inBlockScalar || canStartNestedBlockAfterPresentation ()) ->
+                    let nextIntendation = Line.countLeadingSpaces nextLine
                     let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
                     let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
 
@@ -155,8 +132,8 @@ let read (yamlStr: string) =
                     rest |> tryFindContentLine
 
                 match nextIndentedLine with
-                | Some nextLine when ReadHelpers.indentLevel nextLine > currentIntendation && canStartNestedBlockAfterPresentation () ->
-                    let nextIntendation = ReadHelpers.indentLevel nextLine
+                | Some nextLine when Line.countLeadingSpaces nextLine > currentIntendation && canStartNestedBlockAfterPresentation () ->
+                    let nextIntendation = Line.countLeadingSpaces nextLine
                     let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
                     let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
 
@@ -167,7 +144,7 @@ let read (yamlStr: string) =
                     let lineEle = Line(lineText)
                     loop rest currentIntendation inBlockScalar (lineEle :: acc)
             else
-                let nextIntendation = ReadHelpers.indentLevel line
+                let nextIntendation = Line.countLeadingSpaces line
 
                 if nextIntendation = currentIntendation then
                     let lineText = stripIndent currentIntendation line

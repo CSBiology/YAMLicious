@@ -1,6 +1,7 @@
 module YAMLicious.Writer
 
 open YAMLicious.YAMLiciousTypes
+open Syntax
 
 module StyleVerifier =
 
@@ -71,9 +72,6 @@ module Formatting =
             .Replace("\u2029", "\\P")
             .Replace("\n", "\\n")
 
-    let private normalizeNewlines (s: string) =
-        s.Replace("\r\n", "\n")
-
     let resolveBlockStyle (options: WriterOptions) (content: YAMLContent) =
         match options.PreserveScalarStyle, content.Style with
         | true, Some (ScalarStyle.Block (style, chomp, indent)) ->
@@ -142,7 +140,7 @@ module Formatting =
         styleChar + indentPart + chompPart
 
     let private bodyTextForChomping (chomp: ChompingMode) (value: string) =
-        let normalized = normalizeNewlines value
+        let normalized = Line.normalizeNewlines value
         match chomp with
         | ChompingMode.Strip ->
             normalized.TrimEnd([| '\n' |])
@@ -154,7 +152,7 @@ module Formatting =
         s.Split([| '\n' |], System.StringSplitOptions.None) |> Array.toList
 
     let private plainMultilineLines (content: YAMLContent) =
-        normalizeNewlines content.Value |> splitPreservingEmpty
+        Line.normalizeNewlines content.Value |> splitPreservingEmpty
 
     let private mkPlainMultilineNode (mkHeader: string -> string) (lines: string list) =
         let firstLine, remainingLines =
@@ -297,6 +295,8 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
             | YAMLElement.Sequence seq when StyleVerifier.checkInlineSequence seq ->
                 let s = Formatting.mkMappingKey options key + " " + Formatting.mkInlineSequence options seq
                 PreprocessorElement.Line s
+            | YAMLElement.Object [] ->
+                PreprocessorElement.Line (Formatting.mkMappingKey options key + " {}")
             | anyElse ->
                 PreprocessorElement.Level [
                     PreprocessorElement.Line (Formatting.mkMappingKey options key)
@@ -313,6 +313,8 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
             Formatting.mkBlockScalarRoot options value
         | YAMLElement.Value value ->
             PreprocessorElement.Line (Formatting.mkInlineContent options value)
+        | YAMLElement.Object [] ->
+            PreprocessorElement.Line "{}"
         | YAMLElement.Object seq ->
             PreprocessorElement.Level [
                 for element in seq do
@@ -344,6 +346,8 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                     | YAMLElement.Sequence nested when StyleVerifier.checkInlineSequence nested ->
                         let s = Formatting.mkMinusLine (Formatting.mkInlineSequence options nested)
                         PreprocessorElement.Line s
+                    | YAMLElement.Object [] ->
+                        PreprocessorElement.Line "- {}"
                     | anyElse ->
                         PreprocessorElement.Level [
                             PreprocessorElement.Line "-"

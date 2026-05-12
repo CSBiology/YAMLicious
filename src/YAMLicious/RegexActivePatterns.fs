@@ -3,6 +3,7 @@ module YAMLicious.RegexActivePatterns
 open System.Text.RegularExpressions
 open YAMLiciousTypes
 open Preprocessing
+open Syntax
 open Regex
 
 let private trimForPattern (s: string) = s.TrimStart()
@@ -196,7 +197,7 @@ let (|SchemaNamespace|_|) (input: PreprocessorElement) =
 
 let (|DocumentEnd|_|) (input: PreprocessorElement) =
     match input with
-    | Line s when isDocumentEnd s -> Some ()
+    | Line s when Document.isEnd s -> Some ()
     | _ -> None
 
 let (|WithAnchor|_|) (input: string) =
