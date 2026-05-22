@@ -30,11 +30,14 @@ module Formatting =
     let mkMinusLine (c: string) = "- " + c
     let private continuationPrefix = "  "
 
+    let private mkTagHelper (s : string) : bool =
+        s.StartsWith("!") && not (s.StartsWith("!!"))
+
     let private mkTag (tag: string option) =
         match tag with
         | None -> ""
         | Some "!" -> "! "
-        | Some s when s.StartsWith("!") && not (s.StartsWith("!!")) -> s + " "
+        | Some s when mkTagHelper s -> s + " "
         | Some s -> "!<" + s + "> "
 
     let private mkAnchor (anchor: string option) =
