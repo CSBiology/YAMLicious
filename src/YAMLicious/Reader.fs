@@ -374,9 +374,31 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         match tokens with
         | FlowTokens.Token.OpenBrace :: rest -> parseFlowObject rest
         | FlowTokens.Token.OpenBracket :: rest -> parseFlowArray rest
-        | FlowTokens.Token.String value :: rest -> YAMLElement.Value(createScalarContent value None), rest
+        | FlowTokens.Token.String _ :: _ -> parseFlowScalar tokens []
+        | FlowTokens.Token.Colon :: _ -> parseFlowScalar tokens []
         | FlowTokens.Token.EOF :: _ -> YAMLElement.Nil, tokens
         | _ -> failwithf "Unexpected flow token: %A" tokens
+
+    and tryCommentElementFromFlowString (value: string) =
+        Placeholder.tryParseComment value
+        |> Option.map (fun id -> YAMLElement.Comment(commentDict.[id]))
+
+    and parseFlowScalar (tokens: FlowTokens.Token list) (acc: string list) : YAMLElement * FlowTokens.Token list =
+        match tokens with
+        | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
+            match List.rev acc with
+            | [] ->
+                (tryCommentElementFromFlowString value |> Option.get), rest
+            | parts ->
+                YAMLElement.Value(createScalarContent (String.concat "" parts) None), tokens
+        | FlowTokens.Token.String value :: rest ->
+            parseFlowScalar rest (value :: acc)
+        | FlowTokens.Token.Colon :: rest ->
+            parseFlowScalar rest (":" :: acc)
+        | _ ->
+            match List.rev acc with
+            | [] -> YAMLElement.Nil, tokens
+            | parts -> YAMLElement.Value(createScalarContent (String.concat "" parts) None), tokens
 
     and parseFlowObject (tokens: FlowTokens.Token list) : YAMLElement * FlowTokens.Token list =
         let rec loop remaining acc =
@@ -387,6 +409,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loop rest acc
             | FlowTokens.Token.EOF :: _ ->
                 YAMLElement.Object(List.rev acc), remaining
+            | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
+                loop rest ((tryCommentElementFromFlowString value |> Option.get) :: acc)
             | FlowTokens.Token.String key :: FlowTokens.Token.Colon :: rest ->
                 let keyContent = createScalarContent key None
                 let value, afterValue = parseFlowNode rest
@@ -411,6 +435,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loop rest acc
             | FlowTokens.Token.EOF :: _ ->
                 YAMLElement.Sequence(List.rev acc), remaining
+            | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
+                let comment = tryCommentElementFromFlowString value |> Option.get
+                loop rest (YAMLElement.Object [comment] :: acc)
             | _ ->
                 let item, afterItem = parseFlowNode remaining
                 let sequenceItem =
@@ -426,6 +453,57 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         let tokens = Syntax.FlowTokens.tokenize source
         let node, _ = parseFlowNode tokens
         node
+
+    let tryFlowOpeningValue (raw: string) =
+        let withoutComment, commentId = Placeholder.splitTrailingComment raw
+        match withoutComment.Trim() with
+        | "[" -> Some ("[", "]", commentId)
+        | "{" -> Some ("{", "}", commentId)
+        | _ -> None
+
+    let tryNormalizeClosingLine (closing: string) (lines: string list) =
+        let rec loop (suffix: string list) (remainingReversed: string list) =
+            match remainingReversed with
+            | [] -> None
+            | line :: rest when line.Trim() = "" ->
+                loop (line :: suffix) rest
+            | line :: rest ->
+                let withoutComment, commentId = Placeholder.splitTrailingComment line
+                if withoutComment.Trim() = closing then
+                    Some (List.rev rest @ [closing] @ suffix, commentId)
+                else
+                    None
+
+        loop [] (List.rev lines)
+
+    let tryParseMultilineFlowFromSequenceItem (rawOpener: string) (children: PreprocessorElement list) =
+        match tryFlowOpeningValue rawOpener with
+        | Some (opening, closing, openerCommentId) ->
+            let flattened = flattenFlowContent children
+            match tryNormalizeClosingLine closing flattened with
+            | Some (flowLines, closerCommentId) ->
+                let source = String.concat "\n" (opening :: flowLines)
+                Some (parseFlowSource source, openerCommentId, closerCommentId)
+            | None ->
+                None
+        | None ->
+            None
+
+    let wrapFlowSequenceItem openerCommentId closerCommentId node =
+        let commentsBefore =
+            match openerCommentId |> restoreCommentReplace commentDict with
+            | Some c -> [YAMLElement.Comment c]
+            | None -> []
+
+        let commentsAfter =
+            match closerCommentId |> restoreCommentReplace commentDict with
+            | Some c -> [YAMLElement.Comment c]
+            | None -> []
+
+        match node with
+        | YAMLElement.Object items -> YAMLElement.Object (commentsBefore @ items @ commentsAfter)
+        | YAMLElement.Nil -> YAMLElement.Object (commentsBefore @ commentsAfter)
+        | other -> YAMLElement.Object (commentsBefore @ [other] @ commentsAfter)
 
     let prependRootFlow (comment: string option) (node: YAMLElement) (acc: YAMLElement list) =
         let elements =
@@ -508,16 +586,20 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | None ->
                 failwithf "Invalid sequence block scalar header: %s" v.Value.Value
         | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let objectList = 
-                if v.Value.IsSome then
-                    PreprocessorElement.Line v.Value.Value::yamlAstList
-                else
-                    yamlAstList
-            let parsedFirstItem = loopRead handles objectList []
             let firstItem =
-                match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedFirstItem
+                match v.Value |> Option.bind (fun value -> tryParseMultilineFlowFromSequenceItem value yamlAstList) with
+                | Some (node, openerCommentId, closerCommentId) ->
+                    wrapFlowSequenceItem openerCommentId closerCommentId node
+                | None ->
+                    let objectList = 
+                        if v.Value.IsSome then
+                            PreprocessorElement.Line v.Value.Value::yamlAstList
+                        else
+                            yamlAstList
+                    let parsedFirstItem = loopRead handles objectList []
+                    match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
+                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
+                    | None -> parsedFirstItem
             let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
             let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
             let current =
@@ -591,6 +673,27 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | Some c -> YAMLElement.Comment c::current::acc
                 | None -> current::acc
             loopRead handles rest nextAcc
+        | YamlValue opener::Intendation iList::JSONCloser closer::rest when opener.Value = "{" ->
+            let c1 = opener.Comment |> restoreCommentReplace commentDict
+            let c2 = closer.Comment |> restoreCommentReplace commentDict
+            let items = flattenFlowContent iList |> String.concat "\n"
+            let current = parseFlowSource ("{" + items + "}")
+            let elements =
+                [
+                    match c1 with
+                    | Some c -> yield YAMLElement.Comment c
+                    | None -> ()
+
+                    match current with
+                    | YAMLElement.Object items -> yield! items
+                    | YAMLElement.Nil -> ()
+                    | other -> yield other
+
+                    match c2 with
+                    | Some c -> yield YAMLElement.Comment c
+                    | None -> ()
+                ]
+            loopRead handles rest ((List.rev elements) @ acc)
         // Explicit key with indented content (complex key), mapped to string for AST compatibility
         | ExplicitKey k::rest -> 
              let parseValue (vStr: string) =

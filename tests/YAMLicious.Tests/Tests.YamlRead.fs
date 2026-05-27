@@ -1588,6 +1588,88 @@ trailing: ignored"""
             | _ -> Expect.isTrue false "Expected Object wrapping sequence"
         | _ -> Expect.isTrue false "Expected mapping for data"
 
+    testCase "Multiline flow sequence as block sequence item parses structurally" <| fun _ ->
+        let yaml = "items:\n  - [\n      a,\n      b\n    ]"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("items"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Sequence [
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                            ]
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A multiline flow sequence used as a block sequence item should go through the flow parser"
+
+    testCase "Multiline flow object as block sequence item parses structurally" <| fun _ ->
+        let yaml = "items:\n  - {\n      a: b\n    }"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("items"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("a"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A multiline flow object used as a block sequence item should go through the flow parser"
+
+    testCase "Root multiline flow object parses structurally" <| fun _ ->
+        let yaml = "{\n  a: b\n}"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A root multiline flow object should parse like an inline root flow object"
+
+    testCase "Flow plain scalar value may contain colon" <| fun _ ->
+        let yaml = "data: {url: http://example.com, time: 12:45}"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("data"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("url"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("http://example.com"))]
+                    )
+                    YAMLElement.Mapping(
+                        YAMLContent.create("time"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("12:45"))]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Colon characters inside plain flow scalar values should remain scalar content"
+
+    testCase "Comment inside multiline flow sequence stays a comment node" <| fun _ ->
+        let yaml = "data:\n  [\n    a, # one\n    b\n  ]"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, YAMLElement.Object [YAMLElement.Sequence items])] when k.Value = "data" ->
+            Expect.equal (List.length items) 3 "The comment should be preserved as a sequence entry between values"
+            match items.[1] with
+            | YAMLElement.Object [YAMLElement.Comment c] -> Expect.equal c " one" "Flow comment placeholder should restore to a comment"
+            | other -> failwithf "Expected flow comment sequence entry, got: %A" other
+        | other -> failwithf "Unexpected structure: %A" other
+
     testCase "Multiline flow object with closer inside mapping" <| fun _ ->
         let yaml = """data:
   k: {
