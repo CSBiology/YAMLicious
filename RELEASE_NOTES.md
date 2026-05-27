@@ -1,3 +1,7 @@
+### 1.0.0-alpha.11 (Released 2026-05-07)
+* Preserve block structure across lower-indented full-line comments in open mappings and sequences
+* Decode multiline plain scalar expressions as single scalar values
+
 ### 1.0.0-alpha.10 (Released 2026-05-07)
 * Enable blank line handling
 

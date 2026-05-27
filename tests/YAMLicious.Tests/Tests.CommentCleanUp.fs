@@ -2,6 +2,7 @@
 
 open Fable.Pyxpecto
 open YAMLicious
+open Syntax
 open System.Collections.Generic
 
 let Main = testList "CommentCleanUp" [
@@ -10,7 +11,7 @@ let Main = testList "CommentCleanUp" [
         let s = """
 # This is a line comment
 """
-        let actual = Persil.encodingCleanUp s |> Persil.commentCleanUp dict
+        let actual = Line.normalizeNewlines s |> Persil.commentCleanUp dict
         let expected = """
 <c f=0/>
 """
@@ -25,7 +26,7 @@ My Key: # This is a comment
   <s f=0/>
   My Value3 # :::: "This is also a comment"
 """
-        let actual = Persil.encodingCleanUp s |> Persil.commentCleanUp dict
+        let actual = Line.normalizeNewlines s |> Persil.commentCleanUp dict
         let expected = """
 My Key: <c f=0/>
   My Value1

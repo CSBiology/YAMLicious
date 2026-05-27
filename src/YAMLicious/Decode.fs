@@ -7,6 +7,7 @@ open System.Collections.Generic
 
 open YAMLicious
 open YAMLicious.YAMLiciousTypes
+open Syntax
 open Fable.Core
 
 [<AutoOpen>]
@@ -68,33 +69,9 @@ module Helper =
         #endif
 
     let private foldPlainScalarLines (value: string) =
-        let lines = value.Replace("\r\n", "\n").Split([| '\n' |], StringSplitOptions.None)
-
-        let isMoreIndented (line: string) =
-            line.StartsWith(" ") || line.StartsWith("\t")
-
-        let sb = System.Text.StringBuilder()
-
-        for i in 0 .. lines.Length - 1 do
-            let line = lines.[i]
-            let isEmpty = String.IsNullOrWhiteSpace line
-
-            if isEmpty then
-                sb.Append('\n') |> ignore
-            else
-                sb.Append(line) |> ignore
-                if i < lines.Length - 1 then
-                    let next = lines.[i + 1]
-                    let nextIsEmpty = String.IsNullOrWhiteSpace next
-
-                    if nextIsEmpty then
-                        sb.Append('\n') |> ignore
-                    elif isMoreIndented line || isMoreIndented next then
-                        sb.Append('\n') |> ignore
-                    else
-                        sb.Append(' ') |> ignore
-
-        sb.ToString()
+        (Line.normalizeNewlines value).Split([| '\n' |], StringSplitOptions.None)
+        |> Array.toList
+        |> BlockScalar.foldLines
 
     let scalarValue (content: YAMLContent) =
         match content.Style with

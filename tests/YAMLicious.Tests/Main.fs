@@ -6,7 +6,7 @@ let all =
         [ Tests.EncodingCleanUp.Main
           Tests.StringCleanUp.Main
           Tests.CommentCleanUp.Main
-          Tests.FlowToBlock.Main
+          Tests.FlowTokens.Main
           Tests.YamlGenericRead.Main
           Tests.YamlMatch.Main
           Tests.YamlRead.Main

@@ -79,6 +79,27 @@ let Main = testList "YamlRead" [
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "KeyValue empty inline sequence stays empty sequence" <| fun _ ->
+        let yaml = "value: []"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("value"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence []
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Empty inline sequence should not decode as an empty object."
+
+    testCase "KeyValue empty inline sequence roundtrips as brackets" <| fun _ ->
+        let yaml = "value: []"
+        let actual =
+            yaml
+            |> Reader.read
+            |> fun element -> Writer.write element None
+        Expect.equal (actual.Trim()) yaml "Empty inline sequence should be preserved for roundtrip YAML output."
+
     testCase "Single-quoted string" <| fun _ ->
         let yaml = "single: 'hello world'"
         let expected = YAMLElement.Object [
@@ -336,6 +357,38 @@ My Key: My Value1
         let actual = Reader.read yaml
         Expect.equal actual expected ""
 
+    testCase "Indented multiline plain scalar expression decodes as one string" <| fun _ ->
+        let yaml = """valueFrom:
+  ${
+    var reads = null;
+    if (self !== null) { reads = [self]; }
+    return reads;
+  }"""
+        let decoded =
+            YAMLicious.Decode.read yaml
+            |> YAMLicious.Decode.object (fun get ->
+                get.Required.Field "valueFrom" YAMLicious.Decode.string
+            )
+
+        Expect.isTrue (decoded.Contains("${")) "The opening expression marker should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("return reads;")) "The return statement should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("}")) "The closing brace should be part of the scalar string."
+
+    testCase "Inline-start multiline plain scalar expression decodes as one string" <| fun _ ->
+        let yaml = """valueFrom: ${
+  var reads = null;
+  return reads;
+}"""
+        let decoded =
+            YAMLicious.Decode.read yaml
+            |> YAMLicious.Decode.object (fun get ->
+                get.Required.Field "valueFrom" YAMLicious.Decode.string
+            )
+
+        Expect.isTrue (decoded.Contains("${")) "The opening expression marker should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("return reads;")) "The return statement should be part of the scalar string."
+        Expect.isTrue (decoded.Contains("}")) "The closing brace should be part of the scalar string."
+
     testCase "Root plain continuation folds into one scalar" <| fun _ ->
         let yaml = """
 My Value1
@@ -438,6 +491,157 @@ My Value1
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Blank sibling separators inside an open child mapping should remain harmless"
+
+    testCase "Lower-indented comment between nested mapping entries stays in open block" <| fun _ ->
+        let yaml = """inputs:
+  a: string
+# group comment
+  b: string"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("string"))
+                        ]
+                    )
+                    YAMLElement.Comment(" group comment")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("string"))
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not close the inputs mapping."
+
+    testCase "Lower-indented comment before nested sequence stays in open block" <| fun _ ->
+        let yaml = """inputs:
+# group comment
+  - id: a
+    type: string"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("inputs"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" group comment")
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("id"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("a"))
+                                ]
+                            )
+                            YAMLElement.Mapping(
+                                YAMLContent.create("type"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("string"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not detach the sequence value from inputs."
+
+    testCase "Lower-indented comment between nested workflow steps stays in open block" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+    in: []
+    out: []
+# separator
+  second:
+    run: tool.cwl
+    in: []
+    out: []"""
+        let emptySequence = YAMLElement.Object [YAMLElement.Sequence []]
+        let step name = 
+            YAMLElement.Mapping(
+                YAMLContent.create(name),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("run"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
+                    )
+                    YAMLElement.Mapping(YAMLContent.create("in"), emptySequence)
+                    YAMLElement.Mapping(YAMLContent.create("out"), emptySequence)
+                ]
+            )
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("steps"),
+                YAMLElement.Object [
+                    step "first"
+                    YAMLElement.Comment(" separator")
+                    step "second"
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A lower-indented full-line comment should not close the steps mapping."
+
+    testCase "Blank line before lower-indented comment keeps following entry in open block" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+
+# separator
+  second:
+    run: tool.cwl"""
+        let step name =
+            YAMLElement.Mapping(
+                YAMLContent.create(name),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("run"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl"))]
+                    )
+                ]
+            )
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("steps"),
+                YAMLElement.Object [
+                    step "first"
+                    YAMLElement.Comment(" separator")
+                    step "second"
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Blank lines before lower-indented comments should not close an open block."
+
+    testCase "Blank line before indented commented block does not create orphan indentation" <| fun _ ->
+        let yaml = """steps:
+  first:
+    run: tool.cwl
+# disabled section
+
+  # disabled:
+  #   run: disabled.cwl
+# end
+
+meta: value"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object elements ->
+            let hasMapping key =
+                elements
+                |> List.exists (function
+                    | YAMLElement.Mapping(k, _) -> k.Value = key
+                    | _ -> false)
+            Expect.isTrue (hasMapping "steps") "steps mapping should decode."
+            Expect.isTrue (hasMapping "meta") "meta mapping should decode after commented-out block."
+        | other -> failwithf "Expected object, got %A" other
 
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
@@ -604,6 +808,45 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Comments between sequence items should not terminate the mapped sequence."
+
+    testCase "Comment between inline sequence mapping and nested fields stays in same item" <| fun _ ->
+        let yaml = """listing:
+  - entryname: arc
+    # disabled entry example
+    entry: $(inputs.rootDir)
+    writable: true"""
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("listing"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("entryname"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("arc"))
+                                ]
+                            )
+                            YAMLElement.Comment(" disabled entry example")
+                            YAMLElement.Mapping(
+                                YAMLContent.create("entry"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("$(inputs.rootDir)"))
+                                ]
+                            )
+                            YAMLElement.Mapping(
+                                YAMLContent.create("writable"),
+                                YAMLElement.Object [
+                                    YAMLElement.Value(YAMLContent.create("true"))
+                                ]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A sequence item comment should not split following nested fields into another item."
 
     testCase "Sequence item accepts structural blank line before nested mapping" <| fun _ ->
         let yaml = """items:
@@ -1304,5 +1547,386 @@ trailing: ignored"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Blank separation lines between sequence items should not split one sequence into sibling sequences."
+
+    testCase "Empty inline flow object" <| fun _ ->
+        let yaml = "key: {}"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object []
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Empty inline flow object should parse as empty Object"
+
+    testCase "Multiline flow sequence with trailing comment on value line" <| fun _ ->
+        let yaml = "data: [a, b] # after"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "data" ->
+            match v with
+            | YAMLElement.Object children ->
+                let hasSeq = children |> List.exists (function YAMLElement.Sequence _ -> true | _ -> false)
+                let hasComment = children |> List.exists (function YAMLElement.Comment c -> c.Contains("after") | _ -> false)
+                Expect.isTrue hasSeq "Should contain a sequence"
+                Expect.isTrue hasComment "Should contain the trailing comment"
+            | _ -> Expect.isTrue false "Expected Object wrapping sequence and comment"
+        | _ -> Expect.isTrue false "Expected mapping for data"
+
+    testCase "Multiline flow sequence in mapping context" <| fun _ ->
+        let yaml = """data:
+  [
+    a,
+    b
+  ]"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "data" ->
+            match v with
+            | YAMLElement.Object [YAMLElement.Sequence items] ->
+                Expect.equal (List.length items) 2 "Should have 2 items in multiline sequence"
+            | _ -> Expect.isTrue false "Expected Object wrapping sequence"
+        | _ -> Expect.isTrue false "Expected mapping for data"
+
+    testCase "Multiline flow sequence as block sequence item parses structurally" <| fun _ ->
+        let yaml = "items:\n  - [\n      a,\n      b\n    ]"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("items"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Sequence [
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                            ]
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A multiline flow sequence used as a block sequence item should go through the flow parser"
+
+    testCase "Multiline flow object as block sequence item parses structurally" <| fun _ ->
+        let yaml = "items:\n  - {\n      a: b\n    }"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("items"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("a"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+                            )
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A multiline flow object used as a block sequence item should go through the flow parser"
+
+    testCase "Root multiline flow object parses structurally" <| fun _ ->
+        let yaml = "{\n  a: b\n}"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A root multiline flow object should parse like an inline root flow object"
+
+    testCase "Flow plain scalar value may contain colon" <| fun _ ->
+        let yaml = "data: {url: http://example.com, time: 12:45}"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("data"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("url"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("http://example.com"))]
+                    )
+                    YAMLElement.Mapping(
+                        YAMLContent.create("time"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("12:45"))]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Colon characters inside plain flow scalar values should remain scalar content"
+
+    testCase "Comment inside multiline flow sequence stays a comment node" <| fun _ ->
+        let yaml = "data:\n  [\n    a, # one\n    b\n  ]"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, YAMLElement.Object [YAMLElement.Sequence items])] when k.Value = "data" ->
+            Expect.equal (List.length items) 3 "The comment should be preserved as a sequence entry between values"
+            match items.[1] with
+            | YAMLElement.Object [YAMLElement.Comment c] -> Expect.equal c " one" "Flow comment placeholder should restore to a comment"
+            | other -> failwithf "Expected flow comment sequence entry, got: %A" other
+        | other -> failwithf "Unexpected structure: %A" other
+
+    testCase "Multiline flow object with closer inside mapping" <| fun _ ->
+        let yaml = """data:
+  k: {
+    a: 1
+  }"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "data" ->
+            match v with
+            | YAMLElement.Object children ->
+                let hasInnerKey = children |> List.exists (function
+                    | YAMLElement.Mapping(ik, _) when ik.Value = "k" -> true
+                    | _ -> false)
+                Expect.isTrue hasInnerKey "Should have inner mapping for key 'k'"
+            | _ -> Expect.isTrue false "Expected Object with inner mappings"
+        | _ -> Expect.isTrue false "Expected mapping for data"
+
+    testCase "Inline flow sequence with double-quoted value containing comma" <| fun _ ->
+        let yaml = "items: [\"hello, world\", c]"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "items" ->
+            match v with
+            | YAMLElement.Object [YAMLElement.Sequence items] ->
+                Expect.equal (List.length items) 2 "Should have 2 items in flow sequence with comma in quoted string"
+                let firstValue =
+                    match items.[0] with
+                    | YAMLElement.Object [YAMLElement.Value content] -> content.Value
+                    | _ -> ""
+                Expect.isTrue (firstValue.Contains("hello") && firstValue.Contains("world")) "First item should preserve comma-separated value"
+            | _ -> Expect.isTrue false "Expected Sequence inside Object"
+        | _ -> Expect.isTrue false "Expected mapping for items"
+
+    testCase "Inline flow object with double-quoted value containing comma" <| fun _ ->
+        let yaml = "data: {key: \"a, b, c\"}"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "data" ->
+            match v with
+            | YAMLElement.Object children ->
+                let hasKey = children |> List.exists (function
+                    | YAMLElement.Mapping(ck, _) -> ck.Value = "key"
+                    | _ -> false)
+                Expect.isTrue hasKey "Should contain key mapping"
+                let keyValue =
+                    children |> List.tryPick (function
+                        | YAMLElement.Mapping(ck, cv) when ck.Value = "key" ->
+                            match cv with
+                            | YAMLElement.Object [YAMLElement.Value content] -> Some content.Value
+                            | _ -> None
+                        | _ -> None)
+                match keyValue with
+                | Some v ->
+                    Expect.isTrue (v.Contains("a") && v.Contains("b") && v.Contains("c")) "Double-quoted value should preserve commas"
+                | None -> Expect.isTrue false "Expected value for key"
+            | _ -> Expect.isTrue false "Expected Object"
+        | _ -> Expect.isTrue false "Expected mapping for data"
+
+    testCase "Inline flow sequence nested in block sequence with double-quoted comma" <| fun _ ->
+        let yaml = "steps:\n  - [\"a,b\", c]\n  - [d, e]"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(k, v)] when k.Value = "steps" ->
+            match v with
+            | YAMLElement.Object [YAMLElement.Sequence items] ->
+                Expect.equal (List.length items) 2 "Should have 2 sequence items"
+            | _ -> Expect.isTrue false "Expected Sequence inside Object"
+        | _ -> Expect.isTrue false "Expected mapping for steps"
+
+    testCase "Multiline flow sequence accepts trailing comma and blank line" <| fun _ ->
+        let yaml = "arr:\n  [\n\n    a,\n    b,\n  ]"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("arr"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("a"))
+                        ];
+                        YAMLElement.Object [
+                            YAMLElement.Value(YAMLContent.create("b"))
+                        ]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Multiline flow sequence with trailing comma and blank line should parse correctly"
+
+    testCase "CWL-style inline flow object with nested flow value" <| fun _ ->
+        let yaml = """requirements: { LoadListingRequirement: { loadListing: "no_listing" } }"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(key, value)] ->
+            Expect.equal key.Value "requirements" "Key should be 'requirements'"
+            match value with
+            | YAMLElement.Object [YAMLElement.Mapping(innerKey, innerValue)] ->
+                Expect.equal innerKey.Value "LoadListingRequirement" "Inner key should be 'LoadListingRequirement'"
+                match innerValue with
+                | YAMLElement.Object _ ->
+                    Expect.isTrue true "Parsed nested flow object successfully"
+                | _ -> failwithf "Expected Object for inner value, got: %A" innerValue
+            | _ -> failwithf "Expected Object with Mapping for value, got: %A" value
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "Inline flow object as value with space before brace" <| fun _ ->
+        let yaml = "key: {a: 1, b: 2}"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(key, value)] ->
+            Expect.equal key.Value "key" "Key should be 'key'"
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "Inline flow array as value" <| fun _ ->
+        let yaml = "key: [1, 2, 3]"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(key, value)] ->
+            Expect.equal key.Value "key" "Key should be 'key'"
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "Empty flow object as mapping value (CWL pattern)" <| fun _ ->
+        let yaml = "requirements:\n  InlineJavascriptRequirement: {}"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(key, value)] ->
+            Expect.equal key.Value "requirements" "Key should be 'requirements'"
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "Empty flow array as mapping value" <| fun _ ->
+        let yaml = "outputs: {}"
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object [YAMLElement.Mapping(key, value)] ->
+            Expect.equal key.Value "outputs" "Key should be 'outputs'"
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "CWL ExpressionTool pool output roundtrip YAML" <| fun _ ->
+        let yaml = """#!/usr/bin/env cwl-runner
+
+cwlVersion: v1.2
+class: ExpressionTool
+id: "V_pool_out"
+label: Returns the output directory named after "analysis", containing all input files and directories.
+requirements:
+  InlineJavascriptRequirement: {}
+inputs:
+  mount_dir:
+    type: Directory
+  file_single:
+    type: File?
+  file_array:
+    type: File[]?
+  directory_single:
+    type: Directory?
+  directory_array:
+    type: Directory[]?
+  newname:
+    type: string?
+outputs:
+  pool_DIR:
+    type: Directory
+    doc: "Final analysis output folder"
+expression: >
+  ${ return (function() {
+    function sanitize(entry) {
+      var allowedFields = ['class', 'basename', 'location', 'listing'];
+      var sanitized = {};
+      for (var i = 0; i < allowedFields.length; i++) {
+        var key = allowedFields[i];
+        if (entry[key] !== undefined) sanitized[key] = entry[key];
+      }
+      return sanitized.class && sanitized.basename ? sanitized : null;
+      return name.replace(/\.tiff$/, "").replace(/\.tif$/, "");
+    }
+
+    var outputList = [];
+    if (inputs.directory_single) outputList.push(sanitize(inputs.directory_single));
+    if (inputs.file_single) outputList.push(sanitize(inputs.file_single));
+
+    return {
+      pool_DIR: { class: "Directory", basename: inputs.newname || "analysis", listing: outputList }
+    };
+  })(); }"""
+        let actual = Reader.read yaml
+        match actual with
+        | YAMLElement.Object _ ->
+            Expect.isTrue true "Parsed CWL ExpressionTool YAML"
+        | _ -> failwithf "Unexpected structure: %A" actual
+
+    testCase "CWL ExpressionTool roundtrip preserves block scalar" <| fun _ ->
+        let yaml = "expression: >\n  ${ return { \"out\": name }; }"
+        let parsed = Reader.read yaml
+        let written = Writer.write (YAMLElement.Object [parsed]) None
+        Expect.stringContains written "out" "Block scalar content should survive roundtrip"
+
+    testCase "InlineJavascriptRequirement empty flow object roundtrip" <| fun _ ->
+        let yaml = "InlineJavascriptRequirement: {}"
+        let parsed = Reader.read yaml
+        let written = Writer.write (YAMLElement.Object [parsed]) None
+        Expect.stringContains written "{}" "Empty flow object should survive roundtrip"
+
+    testCase "CWL ExpressionTool full roundtrip preserves expression and empty object" <| fun _ ->
+        let yaml = """#!/usr/bin/env cwl-runner
+
+cwlVersion: v1.2
+class: ExpressionTool
+id: "V_pool_out"
+label: Returns the output directory named after "analysis", containing all input files and directories.
+requirements:
+  InlineJavascriptRequirement: {}
+inputs:
+  mount_dir:
+    type: Directory
+  file_single:
+    type: File?
+  file_array:
+    type: File[]?
+  directory_single:
+    type: Directory?
+  directory_array:
+    type: Directory[]?
+  newname:
+    type: string?
+outputs:
+  pool_DIR:
+    type: Directory
+    doc: "Final analysis output folder"
+expression: >
+  ${ return (function() {
+    function sanitize(entry) {
+      var allowedFields = ['class', 'basename', 'location', 'listing'];
+      var sanitized = {};
+      for (var i = 0; i < allowedFields.length; i++) {
+        var key = allowedFields[i];
+        if (entry[key] !== undefined) sanitized[key] = entry[key];
+      }
+      return sanitized.class && sanitized.basename ? sanitized : null;
+      return name.replace(/\.tiff$/, "").replace(/\.tif$/, "");
+    }
+
+    var outputList = [];
+    if (inputs.directory_single) outputList.push(sanitize(inputs.directory_single));
+    if (inputs.file_single) outputList.push(sanitize(inputs.file_single));
+
+    return {
+      pool_DIR: { class: "Directory", basename: inputs.newname || "analysis", listing: outputList }
+    };
+  })(); }"""
+        let parsed = Reader.read yaml
+        let written = Writer.write parsed None
+        let reparsed = Reader.read written
+        let rewritten = Writer.write reparsed None
+        Expect.stringContains written "{}" "Empty flow object {} should appear in first write"
+        Expect.stringContains rewritten "{}" "Empty flow object {} should survive roundtrip"
+        Expect.stringContains rewritten "sanitize(entry)" "sanitize helper should survive roundtrip"
+        Expect.stringContains rewritten "allowedFields" "allowedFields array should survive roundtrip"
+        Expect.equal written rewritten "Write output should be stable across roundtrips"
 ]
 

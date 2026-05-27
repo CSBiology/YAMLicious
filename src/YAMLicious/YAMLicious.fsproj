@@ -22,12 +22,12 @@
     <Compile Include="Interop\JsInterop.fs" />
     <Compile Include="StringBuffer.fs" />
     <Compile Include="YAMLiciousTypes.fs" />
+    <Compile Include="Syntax.fs" />
     <Compile Include="Persil.fs" />
     <Compile Include="Escapes.fs" />
     <Compile Include="Preprocessing.fs" />
     <Compile Include="Regex.fs" />
     <Compile Include="RegexActivePatterns.fs" />
-    <Compile Include="FlowToBlock.fs" />
     <Compile Include="Reader.fs" />
     <Compile Include="Writer.fs" />
     <Compile Include="Encode.fs" />
