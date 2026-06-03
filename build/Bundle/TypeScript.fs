@@ -18,7 +18,7 @@ let private transpileFSharp =
     |> CmdLine.appendRaw (ProjectInfo.Projects.Main)
     |> CmdLine.appendPrefix "-o" ProjectInfo.Packages.JS
     |> CmdLine.appendRaw "--noCache"
-    |> CmdLine.appendPrefix "--fableLib" "fable-library"
+    |> CmdLine.appendPrefix "--fableLib" "@fable-org/fable-library-js"
     |> CmdLine.appendRaw "--noReflection"
     |> CmdLine.toString
 

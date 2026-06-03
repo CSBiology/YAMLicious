@@ -20,7 +20,6 @@
   <ItemGroup>
     <Compile Include="Interop\PyInterop.fs" />
     <Compile Include="Interop\JsInterop.fs" />
-    <Compile Include="StringBuffer.fs" />
     <Compile Include="YAMLiciousTypes.fs" />
     <Compile Include="Syntax.fs" />
     <Compile Include="Persil.fs" />
@@ -36,12 +35,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Fable.Core" Version="5.0.0-beta.4" />
+    <PackageReference Include="Fable.Core" Version="5.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
     <PythonDependencies>
-      <Package Name="fable-library" Version="&gt;= 5.0.0a21 &lt; 6.0.0" ResolutionStrategy="Max" />
+      <Package Name="fable-library" Version="&gt;= 5.1.0 &lt; 6.0.0" ResolutionStrategy="Max" />
     </PythonDependencies>
   </PropertyGroup>
 

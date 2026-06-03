@@ -8,7 +8,9 @@
   "directories": {
     "test": "tests"
   },
-  "files": [ "dist/js" ],
+  "files": [
+    "dist/js"
+  ],
   "scripts": {},
   "repository": {
     "type": "git",
@@ -25,6 +27,6 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "fable-library": "^1.1.1"
+    "@fable-org/fable-library-js": "^2.1.0"
   }
 }
