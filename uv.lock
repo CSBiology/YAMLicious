@@ -97,7 +97,7 @@ wheels = [
 
 [[package]]
 name = "yamlicious"
-version = "1.0.0a11"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fable-library" },
