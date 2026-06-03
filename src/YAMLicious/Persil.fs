@@ -2,6 +2,7 @@
 
 open System
 open System.Collections.Generic
+open System.Text
 open System.Text.RegularExpressions
 open YAMLiciousTypes
 open Syntax
@@ -52,7 +53,7 @@ let private nextStringIndex (dict: Dictionary<int, StringMapEntry>) =
 
 let private foldSingleQuoted (s: string) =
     let lines = s.Split([|NewLineChar|])
-    let sb = StringBuffer.StringBuffer()
+    let sb = StringBuilder()
     for i in 0 .. lines.Length - 1 do
         let mutable line = lines.[i]
         if i > 0 then line <- line.TrimStart()
@@ -67,7 +68,7 @@ let private foldSingleQuoted (s: string) =
     sb.ToString().Replace("''", "'")
 
 let private parseSingleQuotedSegment (s: string) (startIndex: int) =
-    let content = StringBuffer.StringBuffer()
+    let content = StringBuilder()
     let mutable i = startIndex + 1
     let mutable closed = false
     while i < s.Length && not closed do
@@ -85,7 +86,7 @@ let private parseSingleQuotedSegment (s: string) (startIndex: int) =
     closed, content.ToString(), i
 
 let private parseDoubleQuotedSegment (s: string) (startIndex: int) =
-    let content = StringBuffer.StringBuffer()
+    let content = StringBuilder()
     let mutable i = startIndex + 1
     let mutable closed = false
     let mutable escaped = false
@@ -168,7 +169,7 @@ let private isTokenBoundaryEnd (s: string) (nextIndex: int) =
         | _ -> false
 
 let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    let sb = StringBuffer.StringBuffer()
+    let sb = StringBuilder()
     let mutable i = 0
     let mutable n = nextStringIndex dict
     let mutable inComment = false

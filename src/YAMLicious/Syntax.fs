@@ -1,7 +1,7 @@
 module YAMLicious.Syntax
 
 open System
-open YAMLicious.StringBuffer
+open System.Text
 open YAMLicious.YAMLiciousTypes
 
 module Line =
@@ -205,7 +205,7 @@ module BlockScalar =
             line.StartsWith(" ") || line.StartsWith("\t")
 
         let arr = lines |> List.toArray
-        let sb = StringBuffer()
+        let sb = StringBuilder()
 
         for i in 0 .. arr.Length - 1 do
             let line = arr.[i]

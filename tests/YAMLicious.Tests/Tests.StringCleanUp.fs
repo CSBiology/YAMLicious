@@ -21,6 +21,11 @@ My Key2: "Ehhhhh makarena" ### A # in string is allowed!
 """
 
 let Main = testList "StringCleanUp" [
+    testCase "cleanup returns buffered text" <| fun () ->
+        let stringMap = new Dictionary<int, StringMapEntry>()
+        let actual = Persil.stringCleanUp stringMap "\"value\""
+        Expect.equal actual "<s f=0/>" "content should be materialized from the internal string buffer"
+
     testCase "single special char" <| fun () ->
         let stringMap = new Dictionary<int, StringMapEntry>()
         let actual = Persil.stringCleanUp stringMap Examples.StringReplace

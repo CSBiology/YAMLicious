@@ -1,7 +1,7 @@
 module YAMLicious.Preprocessing
 
-open YAMLicious.StringBuffer
 open System.Collections.Generic
+open System.Text
 open Syntax
 open YAMLiciousTypes
 
@@ -54,9 +54,9 @@ let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option)
         Config.init ()
         |> fun config -> if fconfig.IsSome then fconfig.Value config else config
 
-    let sb = StringBuffer()
+    let sb = StringBuilder()
 
-    let rec loop (current: PreprocessorElement) (sb: StringBuffer) (config: Config) =
+    let rec loop (current: PreprocessorElement) (sb: StringBuilder) (config: Config) =
         match current with
         | Line line -> sb.AppendLine(config.WhitespaceString + line) |> ignore
         | Intendation children ->
