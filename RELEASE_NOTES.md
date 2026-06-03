@@ -1,3 +1,7 @@
+### 1.0.0 (Released 2026-06-03)
+* Update Fable compiler and runtime dependencies to 5.1.0, including @fable-org/fable-library-js 2.1.0 for JavaScript
+* Use System.Text.StringBuilder directly across targets and remove the custom string buffer workaround
+
 ### 1.0.0-alpha.11 (Released 2026-05-07)
 * Preserve block structure across lower-indented full-line comments in open mappings and sequences
 * Decode multiline plain scalar expressions as single scalar values

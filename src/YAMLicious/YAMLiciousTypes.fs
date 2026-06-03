@@ -1,7 +1,7 @@
 module YAMLicious.YAMLiciousTypes
 
-open YAMLicious.StringBuffer
 open System.Collections.Generic
+open System.Text
 
 type Config =
     { Whitespace: int
@@ -66,7 +66,7 @@ and PreprocessorElement =
     | Nil 
 
     override this.ToString() =
-        let sb = StringBuffer()
+        let sb = StringBuilder()
         let rec innerprint (next: PreprocessorElement) (level: int) =
             let indent = String.init (level*2) (fun _ -> " ")
             match next with

@@ -1,10 +1,17 @@
 module YAMLicious.Escapes
 
 open System
-open YAMLicious.StringBuffer
+open System.Text
+
+type StringBuilder with
+    member private this.TrimEndWhitespace() =
+        let trimmed = this.ToString().TrimEnd([| '\t'; ' ' |])
+        if trimmed.Length <> this.Length then
+            this.Clear() |> ignore
+            this.Append(trimmed) |> ignore
 
 let unescapeDoubleQuoted (s: string) : string =
-    let sb = StringBuffer()
+    let sb = StringBuilder()
     let rec consumeEscapedLineBreaks (index: int) (extraBreaks: int) =
         let mutable j = index + 2
         while j < s.Length && (s.[j] = ' ' || s.[j] = '\t') do
