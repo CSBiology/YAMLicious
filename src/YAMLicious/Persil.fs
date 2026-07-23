@@ -228,10 +228,16 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
                     appendChar c
                     i <- i + 1
             | '\'' ->
-                // Preserve single-quoted segments untouched during double-quote pass.
-                let _, _, nextIndex = parseSingleQuotedSegment s i
-                appendText (s.Substring(i, nextIndex - i))
-                i <- nextIndex
+                // This branch is only reached in the double-quote pass (the single-quote pass
+                // matches the `target = SingleQuotedString` arm above). Because the single-quote
+                // pass runs first, every real single-quoted string is already a placeholder by
+                // now, so any apostrophe reaching here is ordinary scalar text. A `'` is not
+                // special in double-quoted or plain scalars and needs no escaping, so treat it as
+                // a literal character. (Scanning for a matching `'` here is not just unnecessary
+                // but harmful: an unclosed one — e.g. `'omics` in a plain scalar — would consume
+                // the rest of the document, dropping every later quoted token.)
+                appendChar c
+                i <- i + 1
             | '"' when target = QuotedStringKind.DoubleQuotedString ->
                 if isTokenBoundaryStart s i then
                     let closed, rawContent, nextIndex = parseDoubleQuotedSegment s i
@@ -245,10 +251,16 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
                     appendChar c
                     i <- i + 1
             | '"' ->
-                // Preserve double-quoted segments untouched during single-quote pass.
-                let _, _, nextIndex = parseDoubleQuotedSegment s i
-                appendText (s.Substring(i, nextIndex - i))
-                i <- nextIndex
+                // Preserve *closed* double-quoted segments untouched during the single-quote
+                // pass. A lone/unclosed double quote must not swallow the remainder of the
+                // document: emit it verbatim and advance a single char instead.
+                let closed, _, nextIndex = parseDoubleQuotedSegment s i
+                if closed then
+                    appendText (s.Substring(i, nextIndex - i))
+                    i <- nextIndex
+                else
+                    appendChar c
+                    i <- i + 1
             | _ ->
                 appendChar c
                 i <- i + 1
