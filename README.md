@@ -98,6 +98,16 @@ let arcValidationEncoder (arc: ArcValidation) =
 let actual : string = Encode.write 2 (arcValidationEncoder Example2)
 ```
 
+### Scalar styles
+
+When you encode a value without specifying a scalar style, the writer automatically picks a representation that stays valid YAML:
+
+- multiline strings become block scalars
+- single-line strings that are not valid unquoted (e.g. containing `#` or `: `, or starting with an indicator such as `*`, `@`, `-`) become double-quoted scalars
+- everything else stays plain
+
+If you need a specific style, set it explicitly on the `YAMLContent`; an explicit `Plain` style is respected as an opt-out from the automatic quoting.
+
 
 ---
 ## Local Development

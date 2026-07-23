@@ -281,4 +281,91 @@ let Main =
         let written = Writer.write parsed None
         let reparsed = Reader.read written
         Expect.equal reparsed parsed "Non-specific tag should not be rewritten to another tag kind"
+
+    // ── Automatic plain-vs-double-quoted selection for style-less scalars ────────
+
+    testCase "isPlainSafe classifies structurally unsafe strings" <| fun _ ->
+        // safe — note ":x" is valid: a leading ':' followed by a non-space is a legal
+        // plain-scalar first character, and YAMLicious only splits mappings on ": ".
+        for s in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x" ] do
+            Expect.isTrue (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-safe"
+        // unsafe — includes "a#b" because YAMLicious treats any '#' as a comment start.
+        for s in [ ""; " padded"; "trailing "; "a: b"; "@id"; "*ref"; "- item"; "x # y"; "a#b"; "'q"; "\"q"; "-"; "line1\nline2" ] do
+            Expect.isFalse (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-unsafe"
+
+    testCase "Style-less unsafe scalar auto-selects double-quoted and round-trips" <| fun _ ->
+        // Every one of these has no explicit style (mirrors Encode.string) and is not a
+        // valid plain scalar, so the writer must emit a double-quoted scalar.
+        let cases =
+            [ "a: b"; "@id"; "*ref"; "- item"; "x # y"; "a#b"; ""; " padded"; "trailing "; "'q"; "\"q"; "tab\there" ]
+        for value in cases do
+            let ast =
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value (YAMLContent.create(value)))
+                ]
+            let written = Writer.write ast None
+            Expect.isTrue (written.Contains("k: \"")) $"'{value}' should be emitted as a double-quoted scalar (got: {written})"
+
+            match Reader.read written with
+            | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Object [YAMLElement.Value v])]
+            | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value v)] ->
+                Expect.equal v.Value value $"Round-trip should preserve the exact value for '{value}'"
+                Expect.equal v.Style (Some ScalarStyle.DoubleQuoted) $"Reader should report double-quoted style for '{value}'"
+            | other ->
+                failwithf "Unexpected AST for '%s': %A" value other
+
+    testCase "Style-less safe scalar stays plain and round-trips" <| fun _ ->
+        let cases = [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x" ]
+        for value in cases do
+            let ast =
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value (YAMLContent.create(value)))
+                ]
+            let written = Writer.write ast None
+            Expect.isFalse (written.Contains("\"")) $"'{value}' should stay unquoted (got: {written})"
+
+            match Reader.read written with
+            | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Object [YAMLElement.Value v])]
+            | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value v)] ->
+                Expect.equal v.Value value $"Round-trip should preserve the exact value for '{value}'"
+            | other ->
+                failwithf "Unexpected AST for '%s': %A" value other
+
+    testCase "Style-less multiline scalar still prefers a block scalar over double-quoting" <| fun _ ->
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value (YAMLContent.create("line1\nline2")))
+            ]
+        let written = Writer.write ast None
+        Expect.isTrue (written.Contains("k: |-")) $"Multiline style-less value should use a block scalar (got: {written})"
+        Expect.isFalse (written.Contains("\\n")) "Multiline value should not be collapsed into an escaped double-quoted scalar"
+
+        match Reader.read written with
+        | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value v)] ->
+            Expect.equal v.Value "line1\nline2" "Block-scalar round-trip should preserve the value"
+        | other ->
+            failwithf "Unexpected AST: %A" other
+
+    testCase "Explicit Plain style is respected even when structurally unsafe" <| fun _ ->
+        // Setting Plain explicitly is the caller's opt-out from automatic quoting.
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("k"),
+                    YAMLElement.Value (YAMLContent.create("a: b", style = ScalarStyle.Plain)))
+            ]
+        let written = Writer.write ast None
+        Expect.isTrue (written.Contains("k: a: b")) $"Explicit Plain style should be emitted verbatim (got: {written})"
+        Expect.isFalse (written.Contains("\"")) "Explicit Plain style should not be auto-quoted"
+
+    testCase "Style-less unsafe scalars survive read-write-read unchanged" <| fun _ ->
+        // Idempotency: quoting is stable across repeated round-trips.
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value (YAMLContent.create("a: b")))
+            ]
+        let written1 = Writer.write ast None
+        let reparsed = Reader.read written1
+        let written2 = Writer.write reparsed None
+        Expect.equal written2 written1 "Second write should equal the first (idempotent quoting)"
   ]

@@ -5,6 +5,49 @@ open Syntax
 
 module StyleVerifier =
 
+    /// Characters that make a plain (unquoted) scalar unsafe when they appear as the
+    /// very first character. Leading whitespace is handled separately via the trim check.
+    let private plainUnsafeLeading =
+        Set [| '!'; '&'; '*'; '['; ']'; '{'; '}'; ','; '#'; '|'; '>'; '%'; '@'; '`'; '"'; '\'' |]
+
+    /// Decide whether a string can be emitted as a YAML plain (unquoted) scalar without
+    /// changing its meaning. This is the *plain-scalar safety* question, which is broader
+    /// than "does a double-quoted scalar need to escape a character": a value like "@id"
+    /// or "a: b" contains no escape-worthy character yet still breaks or mis-parses when
+    /// left unquoted.
+    ///
+    /// Multiline values (containing '\n') are reported unsafe here; callers that support
+    /// block scalars route those to a block scalar before reaching the inline path, so in
+    /// practice this only decides plain-vs-double-quoted for single-line scalars.
+    let isPlainSafe (s: string) : bool =
+        if System.String.IsNullOrEmpty s then
+            false // an empty plain scalar parses back as null
+        elif s <> s.Trim() then
+            false // leading/trailing whitespace is lost or mis-parsed when unquoted
+        else
+            let first = s.[0]
+            let leadingUnsafe =
+                plainUnsafeLeading.Contains first
+                // '-', '?', ':' are only unsafe as the first char when followed by
+                // whitespace (or when they are the whole string), e.g. "- x", "-", ": x".
+                || ((first = '-' || first = '?' || first = ':')
+                    && (s.Length = 1 || s.[1] = ' ' || s.[1] = '\t'))
+            if leadingUnsafe then
+                false
+            else
+                let mutable safe = true
+                let mutable i = 0
+                while safe && i < s.Length do
+                    let c = s.[i]
+                    if c < ' ' || c = '\u007f' then
+                        safe <- false // control characters (incl. newline, tab, CR, DEL) need quoting
+                    elif c = ':' && (i + 1 >= s.Length || s.[i + 1] = ' ' || s.[i + 1] = '\t') then
+                        safe <- false // ": " or a trailing ':' starts a mapping
+                    elif c = '#' then
+                        safe <- false // YAMLicious treats any '#' as the start of a comment
+                    i <- i + 1
+                safe
+
     let private isInlineSimpleScalar (v: YAMLContent) =
         not (v.Value.Contains("\n"))
         && v.Comment.IsNone
@@ -79,15 +122,26 @@ module Formatting =
         | _ ->
             options.MultilineFallbackStyle, options.MultilineFallbackChomping, None
 
+    /// Render a value that has no explicit inline quote style: keep it plain when that is
+    /// safe, otherwise fall back to a double-quoted scalar so the output stays valid YAML.
+    /// This mirrors, for single-line scalars, the automatic block-scalar selection that
+    /// already happens for style-less multiline values.
+    let private renderUnstyledInline (v: string) =
+        if StyleVerifier.isPlainSafe v then v
+        else "\"" + escapeDoubleQuoted v + "\""
+
     let private scalarToInlineText (options: WriterOptions) (content: YAMLContent) =
         let v = content.Value
         if options.PreserveScalarStyle then
             match content.Style with
             | Some ScalarStyle.SingleQuoted -> "'" + escapeSingleQuoted v + "'"
             | Some ScalarStyle.DoubleQuoted -> "\"" + escapeDoubleQuoted v + "\""
-            | _ -> v
+            // An explicit Plain style is respected verbatim (caller opt-out); a missing
+            // style is auto-resolved to plain-or-double-quoted based on content safety.
+            | Some ScalarStyle.Plain -> v
+            | _ -> renderUnstyledInline v
         else
-            v
+            renderUnstyledInline v
 
     let mkKeyContent (options: WriterOptions) (content: YAMLContent) =
         mkNodePrefix content + scalarToInlineText options content
