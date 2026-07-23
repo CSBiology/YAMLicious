@@ -1,3 +1,6 @@
+### 1.0.1 (Released 2026-07-23)
+* Automatically select a safe scalar style when writing style-less scalars: single-line values that are not valid unquoted (e.g. containing `#` or `: `, or starting with an indicator such as `*`, `@`, `-`) are now emitted as double-quoted scalars instead of broken plain scalars, mirroring the existing automatic block-scalar selection for multiline values. An explicit `Plain` style is still respected as an opt-out.
+
 ### 1.0.0 (Released 2026-06-03)
 * Update Fable compiler and runtime dependencies to 5.1.0, including @fable-org/fable-library-js 2.1.0 for JavaScript
 * Use System.Text.StringBuilder directly across targets and remove the custom string buffer workaround
