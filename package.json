@@ -2,7 +2,7 @@
   "name": "YAMLicious",
   "description": "placeholer",
   "keywords": [],
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "dist/js/Library.js",
   "type": "module",
   "directories": {
