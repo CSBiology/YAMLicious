@@ -6,6 +6,8 @@ YAMLicious is a small YAML reader/writer inspired by [Thoth.Json](https://github
 
 > [!IMPORTANT]
 > If you want to use YAMLicious in Python, please install [`fable-library`](https://pypi.org/project/fable-library/#history) via python dependency manager of your choice. YAMLicious depends on fable-library for core functionality.
+> 
+> Due to a bug in earlier versions of Fable 5, YAMlicious encoders require [fable compiler >= 5.11](https://www.nuget.org/packages/Fable/5.11.0) for transpilation to python, see [#20](https://github.com/CSBiology/YAMLicious/issues/20)
 
 ## Code examples
 
