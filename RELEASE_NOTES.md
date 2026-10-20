@@ -46,6 +46,9 @@
 * `Reader.readDocuments` keeps the comments of a prelude in the document that its `---` starts. This includes a comment behind a directive and a comment behind the `---`.
 * `Reader.readDocuments` drops a document that holds only directives.
 * `Reader.read` and `Reader.readDocuments` read the prelude of a document with the same code in `Persil`.
+* An explicit mapping entry (`? key` and `: value`) reads its value like the value behind any other key. Earlier versions read the value text a second time, so `k: "q"\n? a\n: "x"` gave `a` the value `q`, and a comment behind the value threw a missing key error. The body of a block scalar value stays as written.
+* A key that starts with `$`, such as `$namespaces:` or `$schemas:` in CWL, reads as a key of its mapping. Earlier versions turned it into a sequence item and dropped the `$`.
+* The lines behind a compact sequence entry nest under the node that the entry starts. In `- - class: File` that node is the inner sequence, and in `- key:` it is the mapping that starts at the key. Earlier versions attached such lines to the wrong node, so lists of lists of mappings such as CWL `fileCollectionSet` and entries like `- a:` with an indented block read wrongly or threw.
 * `Persil.tokenize` replaces `Persil.stringCleanUp` and `Persil.singleQuotedStringCleanUp`. One scanner finds quoted scalars and comments and copies block scalar bodies as they are. It returns a `Persil.TokenizedYaml`.
 * `Persil.commentCleanUp` is removed. `Persil.tokenize` finds the comments.
 * `Persil.StringMatchPattern` and `Persil.SingleQuotedStringPattern` are removed.
@@ -65,6 +68,9 @@
 * `Syntax` gains `CommentMarker.startsAt`, which tells whether a `#` starts a comment, and `Property.endIndex`, which finds the end of a tag or an anchor.
 * `Syntax` gains the module `LineValue`. `LineValue.find` returns where the value of a line starts and the indentation of the node that owns it, and `LineValue.startsPlain` tells whether that value is a plain scalar. The block scalar header parse and the scanner share it.
 * `Syntax.Line.isBlank` is replaced by `Syntax.Line.isSpacesOnly`. A line with a tab is no longer blank.
+* `Regex.SchemaNamespacePattern` and the active pattern `RegexActivePatterns.SchemaNamespace` are removed.
+* `Syntax.LineValue.dashColumns` returns the columns of the `-` entry indicators at the start of a line.
+* `Preprocessing.read` gives every `-` entry indicator of a compact entry its own `Line "-"` element, and the node behind it nests in the following `Intendation`.
 * `Decode.Helper.withoutComments` removes the comments from a `YAMLElement.Object` or a `YAMLElement.Sequence`.
 * `YAMLiciousTypes.QuotedStringKind` gains the case `EscapedPlainString` for plain text in the shape of a placeholder. A match over `QuotedStringKind` must handle it.
 

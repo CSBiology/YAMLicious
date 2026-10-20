@@ -22,6 +22,15 @@ let private plainMapping (key: string) (value: string) =
         YAMLElement.Mapping(YAMLContent.create(key), YAMLElement.Object [YAMLElement.Value(YAMLContent.create(value))])
     ]
 
+let private scalarNode (value: string) =
+    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value)) ]
+
+let private sequenceNode (items: YAMLElement list) =
+    YAMLElement.Object [ YAMLElement.Sequence items ]
+
+let private entry (key: string) (value: YAMLElement) =
+    YAMLElement.Mapping(YAMLContent.create(key), value)
+
 let Main = testList "YamlRead" [
     testCase "Value" <| fun _ ->
         let yaml = "Hello World"
@@ -1339,15 +1348,16 @@ My Key:
         Expect.equal actual expected "Blank lines after a multiline flow sequence opener should be ignored structurally"
 
     testCase "Namespaces" <| fun _ ->
+        // yaml@2.6.1: {"$namespaces":{"arc":"https://github.com/nfdi4plants/ARC_ontology","test":"https://github.com/nfdi4plants/TEST_ontology"}}
         let yaml = """
 $namespaces:
   arc: https://github.com/nfdi4plants/ARC_ontology
   test: https://github.com/nfdi4plants/TEST_ontology
 """
         let expected = YAMLElement.Object [
-            YAMLElement.Sequence[
+            YAMLElement.Mapping(
+                YAMLContent.create("$namespaces"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("namespaces"));
                     YAMLElement.Mapping(
                         YAMLContent.create("arc"),
                         YAMLElement.Object[
@@ -1361,10 +1371,165 @@ $namespaces:
                         ]
                     )
                 ]
-            ]
+            )
         ]
         let actual = Reader.read yaml
-        Expect.equal actual expected ""
+        Expect.equal actual expected "A key that starts with a dollar sign is a key like any other"
+
+    testCase "A dollar key with a block sequence" <| fun _ ->
+        // yaml@2.6.1: {"$schemas":["https://x","https://y"]} for both inputs
+        let expected = YAMLElement.Object [ entry "$schemas" (sequenceNode [ scalarNode "https://x"; scalarNode "https://y" ]) ]
+        Expect.equal (Reader.read "$schemas:\n  - https://x\n  - https://y\n") expected "The indented sequence"
+        Expect.equal (Reader.read "$schemas:\n- https://x\n- https://y\n") expected "The sequence at the column of the key"
+
+    testCase "A CWL head with dollar keys and prefixed keys" <| fun _ ->
+        // yaml@2.6.1: {"id":"x","$namespaces":{"s":"https://schema.org/"},"$schemas":["https://schema.org/version/latest/termsonly-current-https.rdf"],"cwlVersion":"v1.2","s:author":[{"class":"s:Person","s:name":"Jane"}]}
+        let yaml = "id: x\n$namespaces:\n  s: https://schema.org/\n$schemas:\n  - https://schema.org/version/latest/termsonly-current-https.rdf\ncwlVersion: v1.2\ns:author:\n  - class: s:Person\n    s:name: Jane\n"
+        let expected = YAMLElement.Object [
+            entry "id" (scalarNode "x")
+            entry "$namespaces" (YAMLElement.Object [ entry "s" (scalarNode "https://schema.org/") ])
+            entry "$schemas" (sequenceNode [ scalarNode "https://schema.org/version/latest/termsonly-current-https.rdf" ])
+            entry "cwlVersion" (scalarNode "v1.2")
+            entry "s:author" (sequenceNode [ YAMLElement.Object [ entry "class" (scalarNode "s:Person"); entry "s:name" (scalarNode "Jane") ] ])
+        ]
+        Expect.equal (Reader.read yaml) expected "The dollar keys and the prefixed keys are keys"
+
+    testCase "A dollar key with a value and a nested dollar key" <| fun _ ->
+        // yaml@2.6.1: {"$a":1} and {"x":{"$a":{"b":1}}}
+        Expect.equal
+            (Reader.read "$a: 1\n")
+            (YAMLElement.Object [ entry "$a" (scalarNode "1") ])
+            "A dollar key with a value"
+        Expect.equal
+            (Reader.read "x:\n  $a:\n    b: 1\n")
+            (YAMLElement.Object [ entry "x" (YAMLElement.Object [ entry "$a" (YAMLElement.Object [ entry "b" (scalarNode "1") ]) ]) ])
+            "A nested dollar key"
+
+    testCase "A dollar key with a space or a colon in its name and a sibling behind it" <| fun _ ->
+        // yaml@2.6.1: {"$a b":{"c":1}}, {"$a:b":{"c":1}}, {"$":{"c":1}} and {"$a":{"b":1},"z":2}
+        let inner (key: string) = YAMLElement.Object [ entry key (YAMLElement.Object [ entry "c" (scalarNode "1") ]) ]
+        Expect.equal (Reader.read "$a b:\n  c: 1\n") (inner "$a b") "A space in the name"
+        Expect.equal (Reader.read "$a:b:\n  c: 1\n") (inner "$a:b") "A colon in the name"
+        Expect.equal (Reader.read "$:\n  c: 1\n") (inner "$") "A dollar sign alone"
+        Expect.equal
+            (Reader.read "$a:\n  b: 1\nz: 2\n")
+            (YAMLElement.Object [ entry "$a" (YAMLElement.Object [ entry "b" (scalarNode "1") ]); entry "z" (scalarNode "2") ])
+            "A sibling behind the dollar key"
+
+    testCase "A compact nested sequence holds the items at the column of its dash" <| fun _ ->
+        // yaml@2.6.1: [["a","b"]], [["a"],"b"], [[["a","b"]]] and [[["a","b"],"c"],"d"]
+        Expect.equal
+            (Reader.read "- - a\n  - b\n")
+            (sequenceNode [ sequenceNode [ scalarNode "a"; scalarNode "b" ] ])
+            "A sibling of the first inner item"
+        Expect.equal
+            (Reader.read "- - a\n- b\n")
+            (sequenceNode [ sequenceNode [ scalarNode "a" ]; scalarNode "b" ])
+            "An item of the outer sequence ends the inner one"
+        Expect.equal
+            (Reader.read "- - - a\n    - b\n")
+            (sequenceNode [ sequenceNode [ sequenceNode [ scalarNode "a"; scalarNode "b" ] ] ])
+            "Three dashes on one line"
+        Expect.equal
+            (Reader.read "- - - a\n    - b\n  - c\n- d\n")
+            (sequenceNode [ sequenceNode [ sequenceNode [ scalarNode "a"; scalarNode "b" ]; scalarNode "c" ]; scalarNode "d" ])
+            "Each dash closes the sequences behind it"
+
+    testCase "The lines behind a compact nested sequence item belong to that item" <| fun _ ->
+        // yaml@2.6.1: {"k":[[{"class":"File","path":"p"}]]}, [[{"k":"v","j":"w"}]], [["x\n","y"]],
+        // [[{"class":"File","path":"p"},"z"],"w"] and [[{"a":"b"}]]
+        let fileItem = YAMLElement.Object [ entry "class" (scalarNode "File"); entry "path" (scalarNode "p") ]
+        Expect.equal
+            (Reader.read "k:\n  - - class: File\n      path: p\n")
+            (YAMLElement.Object [ entry "k" (sequenceNode [ sequenceNode [ fileItem ] ]) ])
+            "A mapping behind a mapping key"
+        Expect.equal
+            (Reader.read "- - k: v\n    j: w\n")
+            (sequenceNode [ sequenceNode [ YAMLElement.Object [ entry "k" (scalarNode "v"); entry "j" (scalarNode "w") ] ] ])
+            "A mapping at the root"
+        Expect.equal
+            (Reader.read "- - |\n    x\n  - y\n")
+            (sequenceNode [
+                sequenceNode [
+                    YAMLElement.Object [
+                        YAMLElement.Value(YAMLContent.create("x\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+                    ]
+                    scalarNode "y"
+                ]
+            ])
+            "A block scalar"
+        Expect.equal
+            (Reader.read "- - class: File\n    path: p\n  - z\n- w\n")
+            (sequenceNode [ sequenceNode [ fileItem; scalarNode "z" ]; scalarNode "w" ])
+            "A sibling and an outer item behind the mapping"
+        Expect.equal
+            (Reader.read "- - ? a\n    : b\n")
+            (sequenceNode [ sequenceNode [ YAMLElement.Object [ entry "a" (scalarNode "b") ] ] ])
+            "An explicit key"
+
+    testCase "A list of lists of CWL file records reads as nested sequences" <| fun _ ->
+        // yaml@2.6.1: {"fileCollectionSet":[[{"class":"File","path":"a_1.fq.gz"},{"class":"File","path":"a_2.fq.gz"}],[{"class":"File","path":"b_1.fq.gz"}]]}
+        let yaml = "fileCollectionSet:\n  - - class: File\n      path: a_1.fq.gz\n    - class: File\n      path: a_2.fq.gz\n  - - class: File\n      path: b_1.fq.gz\n"
+        let file (path: string) = YAMLElement.Object [ entry "class" (scalarNode "File"); entry "path" (scalarNode path) ]
+        Expect.equal
+            (Reader.read yaml)
+            (YAMLElement.Object [
+                entry "fileCollectionSet" (sequenceNode [ sequenceNode [ file "a_1.fq.gz"; file "a_2.fq.gz" ]; sequenceNode [ file "b_1.fq.gz" ] ])
+            ])
+            "Two inner sequences with their records"
+
+    testCase "A key at the start of a sequence item owns the block behind it" <| fun _ ->
+        // yaml@2.6.1: [{"a":{"b":1},"c":2}], [{"a":"x\n","b":1}] and [{"key":"x\n"}]
+        Expect.equal
+            (Reader.read "- a:\n    b: 1\n  c: 2\n")
+            (sequenceNode [ YAMLElement.Object [ entry "a" (YAMLElement.Object [ entry "b" (scalarNode "1") ]); entry "c" (scalarNode "2") ] ])
+            "A mapping behind the key"
+        Expect.equal
+            (Reader.read "- a: |\n    x\n  b: 1\n")
+            (sequenceNode [
+                YAMLElement.Object [
+                    entry "a" (YAMLElement.Value(YAMLContent.create("x\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None))))
+                    entry "b" (scalarNode "1")
+                ]
+            ])
+            "A block scalar behind the key"
+        Expect.equal
+            (Reader.read "- key: |2\n    x\n")
+            (sequenceNode [
+                YAMLElement.Object [
+                    entry "key" (YAMLElement.Value(YAMLContent.create("x\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 2))))
+                ]
+            ])
+            "A block scalar with an indentation indicator"
+
+    testCase "Comments around the items of a compact nested sequence stay with their items" <| fun _ ->
+        // yaml@2.6.1: [["a","b"]]. It drops the comments.
+        Expect.equal
+            (Reader.read "- - a # c1\n  # c2\n  - b # c3\n")
+            (sequenceNode [
+                sequenceNode [
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("a", comment=" c1")) ]
+                    YAMLElement.Comment " c2"
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("b", comment=" c3")) ]
+                ]
+            ])
+            "The comments"
+
+    testCase "Nested sequences of mappings and dollar keys survive write and read" <| fun _ ->
+        // yaml@2.6.1 reads the written text as {"fileCollectionSet":[[{"class":"File","path":"a_1"},{"class":"File","path":"a_2"}],[{"class":"File","path":"b_1"}]]}
+        // and as {"$namespaces":{"s":"https://schema.org/"},"$schemas":["https://x"]}
+        let file (path: string) = YAMLElement.Object [ entry "class" (scalarNode "File"); entry "path" (scalarNode path) ]
+        let records =
+            YAMLElement.Object [
+                entry "fileCollectionSet" (sequenceNode [ sequenceNode [ file "a_1"; file "a_2" ]; sequenceNode [ file "b_1" ] ])
+            ]
+        let dollarKeys =
+            YAMLElement.Object [
+                entry "$namespaces" (YAMLElement.Object [ entry "s" (scalarNode "https://schema.org/") ])
+                entry "$schemas" (sequenceNode [ scalarNode "https://x" ])
+            ]
+        Expect.equal (Reader.read (Writer.write records None)) records "Nested sequences of mappings"
+        Expect.equal (Reader.read (Writer.write dollarKeys None)) dollarKeys "Dollar keys"
 
     testCase "Block scalar literal" <| fun _ ->
         let yaml = """doc: |

@@ -4,6 +4,14 @@ open Fable.Pyxpecto
 open YAMLicious
 open YAMLiciousTypes
 
+let private doubleQuoted (value: string) = YAMLContent.create(value, style=ScalarStyle.DoubleQuoted)
+
+let private singleQuoted (value: string) = YAMLContent.create(value, style=ScalarStyle.SingleQuoted)
+
+/// A mapping entry whose value is the one scalar.
+let private scalarEntry (key: YAMLContent) (value: YAMLContent) =
+    YAMLElement.Mapping(key, YAMLElement.Object [ YAMLElement.Value value ])
+
 let Main = testList "Advanced Features" [
     // --- Section 1: Multi-Document Stream Support ---
 
@@ -198,6 +206,102 @@ rbi:
             )
         ]
         Expect.equal actual expected "Nested mapping key should be flattened string"
+
+    testCase "An explicit value reads the strings and comments of its own document" <| fun _ ->
+        // yaml@2.6.1: {"k":"q","a":"x"}, {"a":1,"b":"c","d":2} and {"a":"b"}
+        Expect.equal
+            (Reader.read "k: \"q\"\n? a\n: \"x\"")
+            (YAMLElement.Object [ scalarEntry (YAMLContent.create "k") (doubleQuoted "q"); scalarEntry (YAMLContent.create "a") (doubleQuoted "x") ])
+            "A quoted value behind another quoted value"
+        Expect.equal
+            (Reader.read "a: 1\n? b\n: c # note\nd: 2")
+            (YAMLElement.Object [
+                scalarEntry (YAMLContent.create "a") (YAMLContent.create "1")
+                scalarEntry (YAMLContent.create "b") (YAMLContent.create("c", comment=" note"))
+                scalarEntry (YAMLContent.create "d") (YAMLContent.create "2")
+            ])
+            "A comment behind the value"
+        Expect.equal
+            (Reader.read "? \"a\"\n: \"b\"")
+            (YAMLElement.Object [ scalarEntry (doubleQuoted "a") (doubleQuoted "b") ])
+            "A quoted key and a quoted value"
+
+    testCase "An explicit value reads an indented block behind the colon" <| fun _ ->
+        // yaml@2.6.1: {"k":"q","a":{"m":"v"}}
+        let expected =
+            YAMLElement.Object [
+                scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
+                YAMLElement.Mapping(
+                    YAMLContent.create "a",
+                    YAMLElement.Object [ scalarEntry (YAMLContent.create "m") (doubleQuoted "v") ]
+                )
+            ]
+        Expect.equal (Reader.read "k: \"q\"\n? a\n:\n  m: \"v\"") expected "A mapping behind the colon"
+
+    testCase "An explicit value reads a flow sequence with a quoted item" <| fun _ ->
+        // yaml@2.6.1: {"k":"q","a":["x","y"]}
+        let expected =
+            YAMLElement.Object [
+                scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
+                YAMLElement.Mapping(
+                    YAMLContent.create "a",
+                    YAMLElement.Object [
+                        YAMLElement.Sequence [
+                            YAMLElement.Object [ YAMLElement.Value(YAMLContent.create "x") ]
+                            YAMLElement.Object [ YAMLElement.Value(doubleQuoted "y") ]
+                        ]
+                    ]
+                )
+            ]
+        Expect.equal (Reader.read "k: \"q\"\n? a\n: [x, \"y\"]") expected "A flow sequence on the colon line"
+
+    testCase "An explicit value that starts a block scalar keeps its body as written" <| fun _ ->
+        // yaml@2.6.1: {"k":"q","a":"<c f=0/>\n"}
+        let expected =
+            YAMLElement.Object [
+                scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
+                scalarEntry
+                    (YAMLContent.create "a")
+                    (YAMLContent.create("<c f=0/>\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+            ]
+        Expect.equal (Reader.read "k: \"q\"\n? a\n: |\n  <c f=0/>\n") expected "The body text is not a placeholder"
+
+    testCase "Long explicit keys with quoted values between plain entries read their own values" <| fun _ ->
+        // yaml@2.6.1 reads one entry per line pair with the values "1641", "1665", "1669" and "1687". This is
+        // the shape of the entries in a long list of workflow ids and their keys.
+        let longKey1 = "topica/long-branch-one/flow-entry-collection-assembled-from-records--first-pass--sample-merging-with-global-reference-copy-version-"
+        let longKey2 = "topica/habitat-range-estimation/flow-entry-habitat-range-estimation-with-planner-from-sourcedata-sets---reference-library-copy"
+        let yaml =
+            "assembly/a/first-process: '1641'\n"
+            + "? " + longKey1 + "\n: '1665'\n"
+            + "topicb/radio-scanning/satellite-1-samples: '1669'\n"
+            + "? " + longKey2 + "\n: '1687'\n"
+        let expected =
+            YAMLElement.Object [
+                scalarEntry (YAMLContent.create "assembly/a/first-process") (singleQuoted "1641")
+                scalarEntry (YAMLContent.create longKey1) (singleQuoted "1665")
+                scalarEntry (YAMLContent.create "topicb/radio-scanning/satellite-1-samples") (singleQuoted "1669")
+                scalarEntry (YAMLContent.create longKey2) (singleQuoted "1687")
+            ]
+        Expect.equal (Reader.read yaml) expected "Every value is the one that stands behind its key"
+
+    testCase "An explicit key on several lines and a multiline explicit value read from the document" <| fun _ ->
+        // yaml@2.6.1: {"k":"q","a b":"x"} for the first two inputs and {"k":"q","a":"c d"} for the last one.
+        // The reader keeps the line break of a plain scalar on several lines.
+        let expected =
+            YAMLElement.Object [
+                scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
+                scalarEntry (YAMLContent.create "a\nb") (doubleQuoted "x")
+            ]
+        Expect.equal (Reader.read "k: \"q\"\n? a\n  b\n: \"x\"") expected "The key continues on the next line"
+        Expect.equal (Reader.read "k: \"q\"\n?\n  a\n  b\n: \"x\"") expected "The key starts on the next line"
+        Expect.equal
+            (Reader.read "k: \"q\"\n? a\n: c\n  d")
+            (YAMLElement.Object [
+                scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
+                scalarEntry (YAMLContent.create "a") (YAMLContent.create("c\nd", style=ScalarStyle.Plain))
+            ])
+            "The value continues on the next line"
 
     // --- Section 6: Single-Quoted Scalars ---
 

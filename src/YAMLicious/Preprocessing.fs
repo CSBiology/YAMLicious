@@ -54,10 +54,39 @@ let private scalarBlock (header: Persil.TokenLine) (body: string list) =
     | None ->
         failwithf "Line %d starts a block scalar but holds no block scalar header: %s" header.SourceLine header.Text
 
+/// A sequence entry puts its node behind the dash. In `- - a` the node starts at the second dash, and in
+/// `- k: v` at the key. The line becomes one unit for each dash that stands left of the node, at the column
+/// of the dash, and the unit of the node keeps its column and everything behind it, so no text moves. The
+/// lines behind the entry then nest by their columns like the lines behind any other node.
+let private splitEntryDashes (line: Persil.TokenLine) =
+    match line.Kind with
+    | Persil.LineKind.Code
+    | Persil.LineKind.BlockHeader ->
+        match LineValue.dashColumns line.Text with
+        | [] -> [ line ]
+        | columns ->
+            let code = line.Text.Substring(0, line.CodeLength)
+            let node = (LineValue.find code).Owner
+            match columns |> List.filter (fun column -> column < node) with
+            | [] -> [ line ]
+            | dashes ->
+                let nodeColumn = LineValue.skipBlanks code (List.last dashes + 1)
+                [ for column in dashes do
+                    yield
+                        { line with
+                            Text = System.String(' ', column) + "-"
+                            Kind = Persil.LineKind.Code
+                            BlockId = Persil.NoBlock
+                            CommentId = Persil.NoComment
+                            CodeLength = column + 1 }
+                  yield { line with Text = System.String(' ', nodeColumn) + line.Text.Substring(nodeColumn) } ]
+    | _ -> [ line ]
+
 /// Joins every block scalar header with the body lines that the scanner assigned to it. The walk runs
 /// from the last line to the first, so each body is complete when its header comes up and the units
 /// come out in input order without a reversal.
-let private groupUnits (lines: Persil.TokenLine[]) =
+let private groupUnits (tokenLines: Persil.TokenLine[]) =
+    let lines = tokenLines |> Array.collect (splitEntryDashes >> Array.ofList)
     let mutable units = []
     let mutable body = []
     for index = lines.Length - 1 downto 0 do
@@ -199,9 +228,9 @@ let private stripIndent (indent: int) (line: string) =
         else line.TrimStart()
 
 /// Turns a unit into elements on the reversed accumulator. A block scalar becomes its header line and
-/// one flat body block. The body is never nested or interpreted, and its indentation beyond the
-/// header's is content. An empty body still yields a block, so that the Reader reads the header as a
-/// block scalar and not as a plain value.
+/// one flat body block without the indentation of the node that owns the scalar. The body is never
+/// nested or interpreted, and its indentation beyond that of the owning node is content. An empty body
+/// still yields a block, so that the Reader reads the header as a block scalar and not as a plain value.
 let private lower (frameIndent: int) (item: InputUnit) (acc: PreprocessorElement list) =
     match item with
     | InputUnit.Scalar block ->

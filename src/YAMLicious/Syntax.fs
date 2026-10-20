@@ -126,6 +126,17 @@ module LineValue =
             i <- skipBlanks s (Property.endIndex s i)
         i
 
+    /// The columns of the `-` indicators that stand in a row at the start of a line. `- - a` has two, at the
+    /// columns 0 and 2. A dash is an indicator when a blank or the end of the line follows it.
+    let dashColumns (line: string) : int list =
+        let rec loop (position: int) (columns: int list) =
+            if position < line.Length && line.[position] = '-' && (position + 1 >= line.Length || isBlankChar line.[position + 1]) then
+                loop (skipBlanks line (position + 1)) (position :: columns)
+            else
+                List.rev columns
+
+        loop (skipBlanks line 0) []
+
     /// True for the `-`, `?` and `:` that start a sequence entry, an explicit key or an explicit value.
     let private isEntryIndicator (s: string) (i: int) =
         (s.[i] = '-' || s.[i] = '?' || s.[i] = ':') && (i + 1 >= s.Length || isBlankChar s.[i + 1])

@@ -184,17 +184,6 @@ let (|FlowStyleObjectCloser|_|) (input: PreprocessorElement) =
 // Backward compatibility alias
 let (|JSONCloser|_|) = (|FlowStyleObjectCloser|_|)
 
-let (|SchemaNamespace|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s -> 
-        let line = trimForPattern s
-        let m = Regex.Match(line, SchemaNamespacePattern) 
-        if m.Success then 
-            Some {| Key = m.Groups.["key"].Value|}
-        else
-            None
-    | _ -> None
-
 let (|DocumentEnd|_|) (input: PreprocessorElement) =
     match input with
     | Line s when Document.isEnd s -> Some ()

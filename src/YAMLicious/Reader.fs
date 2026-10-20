@@ -16,15 +16,6 @@ let private restoreScalarPlaceholderValue (entry: StringMapEntry) =
         // Double-quoted scalars need escape processing for the decoded value.
         Escapes.unescapeDoubleQuoted entry.Value
 
-let private restoreBlockScalarPlaceholderValue (entry: StringMapEntry) =
-    match entry.Kind with
-    | QuotedStringKind.SingleQuotedString ->
-        // Inside a block scalar, quote delimiters are literal content and must be preserved.
-        "'" + entry.Value + "'"
-    | QuotedStringKind.DoubleQuotedString ->
-        "\"" + entry.Value + "\""
-    | QuotedStringKind.EscapedPlainString -> entry.Value
-
 let private tryParseExactPlaceholderIndex (v: string) =
     let m = Regex.Match(v.Trim(), $"^{StringReplacementPattern}$")
     if m.Success then Some (int m.Groups.["index"].Value) else None
@@ -58,18 +49,12 @@ let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list
     | _ ->
         None
 
-/// True when the value written after a sequence dash starts a block scalar. The header can follow the
-/// dash directly, as in `- |`, or follow more entry indicators, as in `- - |` and `- ? |`.
-let rec private startsBlockScalar (value: string) =
-    BlockScalar.isHeaderValue value
-    || ((value.StartsWith("- ") || value.StartsWith("? ")) && startsBlockScalar (value.Substring(2).TrimStart()))
-
 /// Puts the value written after a sequence dash in front of the block that follows it. A block
 /// scalar header keeps that block as one Intendation because the body is a single unit.
 /// Flattening it would turn each body line into a node of its own.
 let private joinSequenceItemValue (value: string option) (block: PreprocessorElement list) =
     match value with
-    | Some header when startsBlockScalar header ->
+    | Some header when BlockScalar.isHeaderValue header ->
         [PreprocessorElement.Line header; PreprocessorElement.Intendation block]
     | Some v ->
         PreprocessorElement.Line v :: block
@@ -141,40 +126,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | PreprocessorElement.Intendation children -> flattenFlowContent children
             | _ -> [])
     
-    let restoreInlinePlaceholders (line: string) =
-        let withStrings =
-            Regex.Replace(
-                line,
-                StringReplacementPattern,
-                (fun (m: Match) ->
-                    let idx = m.Groups.["index"].Value |> int
-                    restoreBlockScalarPlaceholderValue stringDict.[idx]
-                )
-            )
-        Regex.Replace(
-            withStrings,
-            CommentPattern,
-            (fun (m: Match) ->
-                let idx = m.Groups.["comment"].Value |> int
-                "#" + commentDict.[idx]
-            )
-        )
-
-    let rec flattenBlockScalarWithDepth (depth: int) (eles: PreprocessorElement list) : string list =
-        eles
-        |> List.collect (function
-            | Line s ->
-                let prefix =
-                    if s = "" then ""
-                    else System.String(' ', depth * 2)
-                [prefix + restoreInlinePlaceholders s]
-            | Intendation children ->
-                flattenBlockScalarWithDepth (depth + 1) children
-            | _ -> [])
-
-    let flattenBlockScalar (eles: PreprocessorElement list) : string list =
-        flattenBlockScalarWithDepth 0 eles
-
     /// The lines of a block in order, nested blocks included. Each line keeps the text that
     /// Preprocessing delivered. `tryCollapsePlainScalarContent` matches the nonblank ones against the
     /// segments of a plain scalar.
@@ -186,8 +137,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | _ -> [])
 
     /// The lines of a block scalar body. Preprocessing delivers the body as one flat block, with only
-    /// the header's indentation removed and no placeholder restored, because the scanner copies a body
-    /// as it is. A text such as `<c f=0/>` in a body is content, so the lines stay verbatim here too.
+    /// the indentation of the node that owns the scalar removed and no placeholder restored, because
+    /// the scanner copies a body as it is. A text such as `<c f=0/>` in a body is content, so the lines
+    /// stay verbatim here too.
     let blockScalarLines (body: PreprocessorElement list) : string list =
         body
         |> List.choose (function
@@ -267,7 +219,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         match Syntax.BlockScalar.parseHeader props.Value with
         | Some header ->
             let lines = blockScalarLines block
-            // The body is already relative to the header, so the header indentation is 0 here.
+            // Preprocessing removed the indentation of the owning node from the body already, so the
+            // indentation that the body is measured from is 0 here.
             let value = Syntax.BlockScalar.buildContent header.Style header.Chomp 0 header.Indent lines
             let comment = restoreCommentReplace commentDict commentId
             Some
@@ -579,26 +532,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             acc
             |> List.rev
             |> YAMLElement.Object
-        | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
-            let objectList = 
-                PreprocessorElement.Line v.Key::yamlAstList
-            let sequenceElements, rest = splitSequenceItems rest0
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        readSequenceItem i
-                ]
-            loopRead handles rest (current::acc)
-        | SchemaNamespace v::rest0 -> //create/appendSequenceElement
-            let sequenceElements, rest = splitSequenceItems rest0
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles [PreprocessorElement.Line v.Key] []
-                    for i in sequenceElements do
-                        readSequenceItem i
-                ]
-            loopRead handles rest (current::acc)
         // Example1: 
         // - My Value 1 <c f=1/>
         //   My Value 2
@@ -711,63 +644,42 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     | None -> ()
                 ]
             loopRead handles rest ((List.rev elements) @ acc)
-        // Explicit key with indented content (complex key), mapped to string for AST compatibility
-        | ExplicitKey k::rest -> 
-             let parseValue (vStr: string) =
-                 let subPrep = Preprocessing.read vStr
-                 let subLvl = match subPrep.AST with Level l -> l | _ -> []
-                 let result = loopRead handles subLvl []
-                 result
+        // ? key
+        // : value
+        | ExplicitKey k::rest ->
+            // A key is one scalar, so the lines of a key that spans several lines become one text. A
+            // complex key such as a sequence is flattened to its text the same way.
+            let keyContent, afterKey =
+                match k, rest with
+                | Some header, Intendation body::afterBody when BlockScalar.isHeaderValue header ->
+                    readBlockScalarContent header None body, afterBody
+                | _, Intendation keyBody::afterBody ->
+                    createScalarContent (String.concat "\n" (Option.toList k @ collectContentLines keyBody)) None, afterBody
+                | Some s, _ ->
+                    createScalarContent s None, rest
+                | None, _ ->
+                    YAMLContent.create(""), rest
 
-             // The value behind a key that owns no indented lines. Without a value the key maps to nothing.
-             let readMapping (keyContent: YAMLContent) (afterKey: PreprocessorElement list) =
-                match afterKey with
-                | ExplicitValue v::Intendation iList::tail ->
-                    let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
-                    loopRead handles tail (YAMLElement.Mapping(keyContent, parseValue fullValue)::acc)
-                | ExplicitValue v::tail ->
-                    loopRead handles tail (YAMLElement.Mapping(keyContent, parseValue v)::acc)
-                | _ ->
-                    // Orphan explicit key or unexpected sequence
-                    loopRead handles afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil)::acc)
+            // The lines behind the colon read as the lines behind a key do. A flow collection that
+            // continues on the indented lines joins them into one line first.
+            let readExplicitValue (value: string) (block: PreprocessorElement list) =
+                if not block.IsEmpty && (value.StartsWith("[") || value.StartsWith("{")) then
+                    loopRead handles [PreprocessorElement.Line (String.concat " " (value :: flattenFlowContent block))] []
+                else
+                    let inlineValue = if value = "" then None else Some value
+                    let parsedValue = loopRead handles (joinSequenceItemValue inlineValue block) []
+                    match tryCollapsePlainScalarContent inlineValue.IsSome block parsedValue with
+                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
+                    | None -> parsedValue
 
-             match k, rest with
-             | Some header, Intendation body::afterBody when BlockScalar.isHeaderValue header ->
-                readMapping (readBlockScalarContent header None body) afterBody
-             | _, Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
-                let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
-                let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let keyContent = createScalarContent fullKey None
-
-                let separator = if v.TrimStart().StartsWith("[") || v.TrimStart().StartsWith("{") then " " else "\n"
-                let fullValue = v + separator + (flattenBlockScalar iList |> String.concat separator)
-                let valueElement = parseValue fullValue
-
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | _, Intendation keyBody::ExplicitValue v::tail ->
-                let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
-                let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
-                let keyContent = createScalarContent fullKey None
-
-                let valueElement = parseValue v
-
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | _ ->
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
-                readMapping keyContent rest
+            match afterKey with
+            | ExplicitValue v::Intendation iList::tail ->
+                loopRead handles tail (YAMLElement.Mapping(keyContent, readExplicitValue v iList)::acc)
+            | ExplicitValue v::tail ->
+                loopRead handles tail (YAMLElement.Mapping(keyContent, readExplicitValue v [])::acc)
+            | _ ->
+                // Without a value the key maps to nothing.
+                loopRead handles afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil)::acc)
         | Key v::Intendation yamlAstList::rest -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
             let keyContent = createScalarContent v.Key c

@@ -290,9 +290,16 @@ let private unitTests = testList "Block scalar units" [
             "The end of the input is valid"
 
     testCase "A sibling of a compact mapping scalar after a terminating comment is no boundary error" <| fun _ ->
-        // yaml@2.6.1: [{"k":"text\n","next":1}]. The compact header is still read wrongly later on, so
-        // this checks only that the boundary uses the column of the key and not the column of the dash.
-        Expect.equal (errorOf (fun () -> Preprocessing.read "- k: |\n    text\n# about next\n  next: 1\n" |> ignore)) "" "Preprocessing accepts the input"
+        // yaml@2.6.1: [{"k":"text\n","next":1}]. The boundary uses the column of the key and not the
+        // column of the dash.
+        Expect.equal
+            (Reader.read "- k: |\n    text\n# about next\n  next: 1\n")
+            (YAMLElement.Object [
+                YAMLElement.Sequence [
+                    YAMLElement.Object [ mapping "k" (literalBlock "text\n"); comment " about next"; mapping "next" (plainNode "1") ]
+                ]
+            ])
+            "The sibling belongs to the item"
 
     testCase "readDocuments rejects the boundary error too" <| fun _ ->
         let message = errorOf (fun () -> Reader.readDocuments "a: |\n  x\n# c\n  bad\n---\nb: 1\n" |> ignore)
@@ -444,11 +451,10 @@ let private unitTests = testList "Block scalar units" [
             "The empty body is an empty Intendation"
 
     testCase "The indentation pass reads the body relative to the node that owns the scalar" <| fun _ ->
-        // yaml@2.6.1: [{"key":"x\n"}] and [" x\n"]. The Reader still reads the compact `- key: |2` wrongly,
-        // so this checks the output of the indentation pass.
+        // yaml@2.6.1: [{"key":"x\n"}] and [" x\n"].
         Expect.equal
             (Preprocessing.read "- key: |2\n    x\n").AST
-            (Level [ Line "- key: |2"; Intendation [ Line "  x" ] ])
+            (Level [ Line "-"; Intendation [ Line "key: |2"; Intendation [ Line "  x" ] ] ])
             "The body loses the two spaces of the key column"
         Expect.equal
             (Preprocessing.read "- |2\n   x\n").AST
