@@ -944,17 +944,20 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected "A hash that does not follow whitespace is part of the scalar."
 
-    testCase "Hash directly after a flow closer is not a comment" <| fun _ ->
-        let yaml = "k: [a]#c"
-        let expected = YAMLElement.Object [
-            YAMLElement.Mapping(
-                YAMLContent.create("k"),
-                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("[a]#c"))]
-            )
+    testCase "Hash directly after a flow closer is read as a plain scalar" <| fun _ ->
+        let cases = [
+            "k: [a]#c", "k", "[a]#c"
+            "Say: [Hello, World]# 420 blaze it", "Say", "[Hello, World]# 420 blaze it"
         ]
-        let actual = Reader.read yaml
-        Expect.equal actual expected "A hash directly after ] belongs to the plain scalar."
-        Expect.isFalse (hasAnyComment actual) "A hash directly after ] should not start a comment."
+        for (yaml, key, scalar) in cases do
+            let expected = YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create(key),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create(scalar))]
+                )
+            ]
+            let actual = Reader.read yaml
+            Expect.equal actual expected $"A hash without leading whitespace belongs to the plain scalar of {yaml}."
 
     testCase "Hash inside a literal block scalar is content" <| fun _ ->
         let yaml = "s: |\n  line\n  # not a comment\n"
@@ -2247,19 +2250,41 @@ expression: >
             |> Decode.object (fun get -> get.Required.Field "baseCommand" (Decode.list Decode.string))
         Expect.equal actual ["python"] "The commented-out entry should not appear in the list."
 
-    testCase "Comment that ends a block scalar before more indented text is rejected" <| fun _ ->
-        Expect.throws (fun () -> Reader.read "a: >-\n  text\n# c\n  more\n" |> ignore) "A comment line ends a block scalar, so the more indented text after it is invalid."
-
-    testCase "Hash directly after a flow closer is read as a plain scalar" <| fun _ ->
-        let yaml = "Say: [Hello, World]# 420 blaze it"
+    testCase "Comment before a flow sequence closer that is not dedented stays in the flow collection" <| fun _ ->
+        // yaml@2.6.1 reads both inputs as {"a":[["1"]]}
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
-                YAMLContent.create("Say"),
-                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("[Hello, World]# 420 blaze it"))]
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [
+                            YAMLElement.Sequence [
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                                YAMLElement.Comment(" c")
+                            ]
+                        ]
+                    ]
+                ]
             )
         ]
-        let actual = Reader.read yaml
-        Expect.equal actual expected "A hash without leading whitespace belongs to the plain scalar."
+        for yaml in [ "a:\n  - [\n    1,\n# c\n    ]\n"; "a:\n  - [\n    1,\n  # c\n    ]\n" ] do
+            Expect.equal (Reader.read yaml) expected $"The comment should stay a Comment entry of the flow sequence in {yaml}."
+
+    testCase "Comment before a flow mapping closer that is not dedented stays in the flow collection" <| fun _ ->
+        // yaml@2.6.1 reads the input as [{"x":1}]
+        let yaml = "- {\n    x: 1,\n# c\n    }\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("x"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                    )
+                    YAMLElement.Comment(" c")
+                ]
+            ]
+        ]
+        Expect.equal (Reader.read yaml) expected "The comment should stay a Comment entry of the flow mapping."
 
     testCase "Comment after the last item at the end of a block stays in the sequence" <| fun _ ->
         let yaml = "files:\n  - a\n  # c2"

@@ -10,6 +10,9 @@ let private blockScalar (style: BlockScalarStyle) (chomp: ChompingMode) (indent:
 let private literalBlock (value: string) =
     blockScalar BlockScalarStyle.Literal ChompingMode.Clip None value
 
+let private plainNode (value: string) =
+    YAMLElement.Object [YAMLElement.Value(YAMLContent.create(value))]
+
 let Main =
   testList "Block Scalars" [
     testCase "Explicit indentation preserves leading content spaces" <| fun _ ->
@@ -467,4 +470,86 @@ next: value"""
             ]
         let actual = Preprocessing.read yaml
         Expect.equal actual.AST expected "The body should be one Intendation of lines without nested blocks"
+
+    testCase "Comment less indented than the content ends a nested block scalar" <| fun _ ->
+        // yaml@2.6.1: {"a":{"b":"x\n","d":1}}
+        let yaml = "a:\n  b: |\n      x\n    # c\n  d: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("b"), literalBlock "x\n")
+                    YAMLElement.Comment(" c")
+                    YAMLElement.Mapping(YAMLContent.create("d"), plainNode "1")
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment between the header and the content indentation is a comment, not content"
+
+    testCase "Comment less indented than an explicit indicator ends the block scalar" <| fun _ ->
+        // yaml@2.6.1: {"a":"  x\n","b":1}
+        let yaml = "a: |2\n    x\n # c\nb: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("a"), blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) "  x\n")
+            YAMLElement.Comment(" c")
+            YAMLElement.Mapping(YAMLContent.create("b"), plainNode "1")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The indicator sets the content indentation, so a comment at one space ends the scalar"
+
+    testCase "Comment less indented than the content ends a sequence item block scalar" <| fun _ ->
+        // yaml@2.6.1: ["x\n","y"]
+        let yaml = "- |\n    x\n  # c\n- y\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [literalBlock "x\n"]
+                YAMLElement.Comment(" c")
+                plainNode "y"
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The comment ends the scalar and stays between the sequence items"
+
+    testCase "Comment less indented than the content ends a folded block scalar" <| fun _ ->
+        // yaml@2.6.1: {"key":"folded\n","next":1}
+        let yaml = "key: >\n    folded\n  # c\nnext: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), blockScalar BlockScalarStyle.Folded ChompingMode.Clip None "folded\n")
+            YAMLElement.Comment(" c")
+            YAMLElement.Mapping(YAMLContent.create("next"), plainNode "1")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The content indentation is the one of the first line, not of the header"
+
+    testCase "Trailing comment between the header and the content indentation ends the block scalar" <| fun _ ->
+        // yaml@2.6.1: {"x":{"a":"body\n"}} and {"a":"x\n"}
+        let nested = "x:\n  a: |\n      body\n    # c\n"
+        let expectedNested = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("x"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("a"), literalBlock "body\n")
+                    YAMLElement.Comment(" c")
+                ]
+            )
+        ]
+        Expect.equal (Reader.read nested) expectedNested "A trailing comment stays in the block of the header"
+        let root = "a: |\n    x\n  # c\n"
+        let expectedRoot = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("a"), literalBlock "x\n")
+            YAMLElement.Comment(" c")
+        ]
+        Expect.equal (Reader.read root) expectedRoot "A trailing comment must not be read as scalar content"
+
+    testCase "Keep chomping stops before a comment that is less indented than the content" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n\n","b":1}
+        let yaml = "a: |+\n    x\n\n  # c\nb: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("a"), blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n\n")
+            YAMLElement.Comment(" c")
+            YAMLElement.Mapping(YAMLContent.create("b"), plainNode "1")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The blank line before the comment belongs to the scalar and the comment does not"
   ]

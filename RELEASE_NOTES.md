@@ -1,5 +1,5 @@
 ### 2.0.0 (Unreleased)
-* A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`. Inside block scalar content a `#` is always text.
+* A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`. Inside block scalar content a `#` is always text. A comment line that is indented less than the content ends the scalar.
 * Invalid input such as `[a]#c` (no space before `#`) is now read as the plain scalar `[a]#c`. Earlier versions read a comment.
 * A full-line comment belongs to the node that follows it. Comments directly under a nested key no longer fail with "Unknown pattern".
 * A comment with no following node in its block stays at the end of that block. After the last item of a sequence it stays in the sequence.
@@ -9,6 +9,15 @@
 * `Persil.CommentMatchPattern` is removed.
 * Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
 * The writer puts the body of a block scalar with an explicit indentation indicator (`|2`) at the indicated indentation.
+* The content of a block scalar is indented as deep as its first nonblank line, or as deep as the indentation indicator says counted from the header.
+* An explicit indentation indicator (`|2`) keeps the spaces beyond the indicated indentation as content.
+* Keep chomping (`|+`) retains all trailing blank lines of a block scalar.
+* A block scalar item such as `- |` in a sequence that is not indented under its key reads correctly.
+* A quoted `#` before a block scalar header, as in `"a #b": |`, no longer breaks the block scalar.
+* A comment line that ends a block scalar and is followed by more indented content is reported as an error that names the comment.
+* The writer adds an indentation indicator (`|2`) when the first nonblank line of a block scalar starts with a space. YAML requires it, and without it other parsers reject the output.
+* New public API: `Syntax.CommentMarker.startsAt` tells whether a `#` starts a comment, and `Decode.Helper.withoutComments` removes the comments from a `YAMLElement.Object` or `YAMLElement.Sequence`.
+* `Syntax.BlockScalar.tryDetectHeaderIndent` and `Syntax.BlockScalar.isHeaderLine` are replaced by `Syntax.BlockScalar.tryParseHeaderLine`, which returns the parsed header.
 
 ### 1.0.2 (Released 2026-07-23)
 * Fix a reader bug where a lone apostrophe inside a plain scalar — a legal, non-delimiting character in plain and double-quoted scalars — caused the double-quote extraction pass to consume the remainder of the document, dropping every subsequent quoted token (notably double-quoted keys). Apostrophes are now treated as ordinary characters in the double-quote pass, and an unclosed quote of either kind no longer swallows the rest of the input.

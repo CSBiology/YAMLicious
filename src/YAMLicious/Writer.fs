@@ -115,12 +115,28 @@ module Formatting =
             .Replace("\u2029", "\\P")
             .Replace("\n", "\\n")
 
+    /// YAML 1.2.2 8.1.1.1 requires an indentation indicator when the first nonblank line of the
+    /// content starts with a space. Without it a reader takes that space as indentation. The
+    /// indicator counts from the header's indentation, so any width is valid. Two spaces match
+    /// the continuation prefix of plain multiline scalars.
+    let private requiredIndentIndicator (value: string) =
+        let firstContentLine =
+            (Line.normalizeNewlines value).Split([| '\n' |], System.StringSplitOptions.None)
+            |> Array.tryFind (Line.isBlank >> not)
+        match firstContentLine with
+        | Some line when line.StartsWith(" ") -> Some continuationPrefix.Length
+        | _ -> None
+
     let resolveBlockStyle (options: WriterOptions) (content: YAMLContent) =
-        match options.PreserveScalarStyle, content.Style with
-        | true, Some (ScalarStyle.Block (style, chomp, indent)) ->
-            style, chomp, indent
-        | _ ->
-            options.MultilineFallbackStyle, options.MultilineFallbackChomping, None
+        let style, chomp, indent =
+            match options.PreserveScalarStyle, content.Style with
+            | true, Some (ScalarStyle.Block (style, chomp, indent)) ->
+                style, chomp, indent
+            | _ ->
+                options.MultilineFallbackStyle, options.MultilineFallbackChomping, None
+        match indent with
+        | Some _ -> style, chomp, indent
+        | None -> style, chomp, requiredIndentIndicator content.Value
 
     /// Render a value that has no explicit inline quote style: keep it plain when that is
     /// safe, otherwise fall back to a double-quoted scalar so the output stays valid YAML.

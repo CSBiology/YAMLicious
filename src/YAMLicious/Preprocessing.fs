@@ -17,17 +17,45 @@ let private isFlowCloserLine (line: string) =
 let private withIndent (indent: int) (line: string) =
     System.String(' ', indent) + line.TrimStart()
 
+/// Splits the body off a block scalar. The body holds every blank line and every line indented at
+/// least as deep as the content indentation. It ends before the next nonblank line that is indented
+/// less. Blank lines before that line stay in the body so that keep chomping can retain them.
+let private takeBlockScalarBody (headerIndent: int) (indicator: int option) (lines: string list) =
+    let contentIndent = BlockScalar.contentIndent headerIndent indicator lines
+    let rec loop acc remaining =
+        match remaining with
+        | line :: rest when BlockScalar.isBodyLine contentIndent line ->
+            loop (line :: acc) rest
+        | _ ->
+            List.rev acc, remaining
+
+    loop [] lines
+
+/// The indentation of the node that owns the last content line. A block scalar body belongs to
+/// the node of its header, so a trailing comment cannot sit deeper than the header.
+let private lastNodeIndent (lines: string list) =
+    let rec loop (remaining: string list) (indent: int) =
+        match remaining with
+        | [] -> indent
+        | line :: rest when not (isContentLine line) -> loop rest indent
+        | line :: rest ->
+            let lineIndent = Line.countLeadingSpaces line
+            match BlockScalar.tryParseHeaderLine line with
+            | Some header ->
+                let _, afterBody = takeBlockScalarBody lineIndent header.Indent rest
+                loop afterBody lineIndent
+            | None -> loop rest lineIndent
+
+    loop lines 0
+
 /// A full-line comment belongs to the node that follows it. Giving it the indentation of the
 /// next content line puts it into that node's block, so the indentation pass below treats
-/// comments like any other line. Comments with no content after them stay in the last block,
-/// at most as deep as its final content line. A comment before a flow closer takes the
-/// indentation of the previous entry, which keeps it inside the flow collection.
+/// comments like any other line. Comments with no content after them stay in the last block, at
+/// most as deep as the node of its final content line. A comment before a flow closer takes the
+/// indentation of the previous entry when that entry is deeper than the closer, and the
+/// indentation of the closer otherwise. Either way it stays inside the flow collection.
 let private alignCommentLines (lines: string list) =
-    let lastContentIndent =
-        lines
-        |> List.tryFindBack isContentLine
-        |> Option.map Line.countLeadingSpaces
-        |> Option.defaultValue 0
+    let trailingIndent = lastNodeIndent lines
 
     let rec loop (reversed: string list) (nextContent: string option) (acc: string list) =
         match reversed with
@@ -45,9 +73,9 @@ let private alignCommentLines (lines: string list) =
                         |> Option.map Line.countLeadingSpaces
                     match previousIndent with
                     | Some p when p > closerIndent -> withIndent p line
-                    | _ -> line
+                    | _ -> withIndent closerIndent line
                 | Some next -> withIndent (Line.countLeadingSpaces next) line
-                | None -> withIndent (min lastContentIndent (Line.countLeadingSpaces line)) line
+                | None -> withIndent (min trailingIndent (Line.countLeadingSpaces line)) line
             loop rest nextContent (aligned :: acc)
         | line :: rest ->
             loop rest nextContent (line :: acc)
@@ -62,22 +90,6 @@ let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (re
     else
         Line.countLeadingSpaces line > currentIntendation
 
-let private isBlockScalarHeaderLine (line: string) =
-    BlockScalar.isHeaderLine (line.TrimEnd())
-
-/// Splits the body off a block scalar. The body holds every blank line and every line indented
-/// deeper than the header. It ends before the next nonblank line at the header's indentation or
-/// less. Blank lines before that line stay in the body so that keep chomping can retain them.
-let private takeBlockScalarBody (headerIndent: int) (lines: string list) =
-    let rec loop acc remaining =
-        match remaining with
-        | line :: rest when Line.isBlank line || Line.countLeadingSpaces line > headerIndent ->
-            loop (line :: acc) rest
-        | _ ->
-            List.rev acc, remaining
-
-    loop [] lines
-
 /// Removes exactly the header's indentation from a body line. Counting spaces keeps tabs and
 /// all deeper indentation, which is content. A blank line shorter than the header loses only the
 /// spaces it has.
@@ -86,18 +98,19 @@ let private stripBlockScalarIndent (headerIndent: int) (line: string) =
 
 /// Reads a block scalar body as one flat block. Its indentation beyond the header's is content,
 /// so the structural pass neither nests nor interprets the lines. The Reader gets them as they are.
-let private readBlockScalarBody (headerIndent: int) (lines: string list) =
-    let body, remaining = takeBlockScalarBody headerIndent lines
+let private readBlockScalarBody (headerIndent: int) (indicator: int option) (lines: string list) =
+    let body, remaining = takeBlockScalarBody headerIndent indicator lines
     let bodyLines = body |> List.map (fun bodyLine -> Line(stripBlockScalarIndent headerIndent bodyLine))
     Intendation bodyLines, remaining
 
 /// Moves a line onto the reversed accumulator. A block scalar header takes its whole body along,
 /// so an enclosing block never separates the header from the body or from its trailing blank lines.
 let private pushLineWithBody (acc: string list) (line: string) (rest: string list) =
-    if isBlockScalarHeaderLine line then
-        let body, remaining = takeBlockScalarBody (Line.countLeadingSpaces line) rest
+    match BlockScalar.tryParseHeaderLine line with
+    | Some header ->
+        let body, remaining = takeBlockScalarBody (Line.countLeadingSpaces line) header.Indent rest
         List.rev body @ (line :: acc), remaining
-    else
+    | None ->
         line :: acc, rest
 
 let private splitNestedBlock (currentIntendation: int) (lines: string list) =
@@ -153,7 +166,7 @@ let read (yamlStr: string) =
                 | _ -> true
             )
 
-        let canStartNestedBlockAfterPresentation () =
+        let previousContentLineOpensBlock () =
             previousContentLine ()
             |> function
                 | Some (Line line) ->
@@ -165,8 +178,8 @@ let read (yamlStr: string) =
 
         let blockScalarHeaderBefore () =
             match previousContentLine () with
-            | Some (Line line) -> isBlockScalarHeaderLine line
-            | _ -> false
+            | Some (Line line) -> BlockScalar.tryParseHeaderLine line
+            | _ -> None
 
         match lines with
         | [] -> acc
@@ -177,16 +190,21 @@ let read (yamlStr: string) =
                     |> List.tryFind (Line.isBlank >> not)
                     |> Option.map Line.countLeadingSpaces
 
-                match nextIndentation with
-                | Some nextIntendation when nextIntendation > currentIntendation && blockScalarHeaderBefore () ->
-                    let bodyElement, remaining = readBlockScalarBody currentIntendation lines
+                let header =
+                    match nextIndentation with
+                    | Some nextIntendation when nextIntendation > currentIntendation -> blockScalarHeaderBefore ()
+                    | _ -> None
+
+                match header, nextIndentation with
+                | Some header, _ ->
+                    let bodyElement, remaining = readBlockScalarBody currentIntendation header.Indent lines
                     loop remaining currentIntendation (bodyElement :: acc)
-                | Some nextIntendation when nextIntendation > currentIntendation && (List.isEmpty acc || canStartNestedBlockAfterPresentation ()) ->
+                | None, Some nextIntendation when nextIntendation > currentIntendation && (List.isEmpty acc || previousContentLineOpensBlock ()) ->
                     let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
 
                     let children = loop nextLevelLines nextIntendation [] |> List.rev
                     loop currentLevelLines currentIntendation (Intendation children :: acc)
-                | _ ->
+                | None, _ ->
                     loop rest currentIntendation (Line("") :: acc)
             else
                 let nextIntendation = Line.countLeadingSpaces line
@@ -195,17 +213,22 @@ let read (yamlStr: string) =
                     let lineText = stripIndent currentIntendation line
                     let lineEle = Line(lineText)
                     loop rest currentIntendation (lineEle :: acc)
-                elif nextIntendation > currentIntendation && blockScalarHeaderBefore () then
-                    let bodyElement, remaining = readBlockScalarBody currentIntendation lines
-                    loop remaining currentIntendation (bodyElement :: acc)
                 else
-                    // The block starts with its first line, which can itself be a header,
-                    // so the recursion below processes that line too.
-                    let firstReversed, afterFirst = pushLineWithBody [] line rest
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation afterFirst
+                    let header =
+                        if nextIntendation > currentIntendation then blockScalarHeaderBefore () else None
 
-                    let children = loop (List.rev firstReversed @ nextLevelLines) nextIntendation [] |> List.rev
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
+                    match header with
+                    | Some header ->
+                        let bodyElement, remaining = readBlockScalarBody currentIntendation header.Indent lines
+                        loop remaining currentIntendation (bodyElement :: acc)
+                    | None ->
+                        // The block starts with its first line, which can itself be a header,
+                        // so the recursion below processes that line too.
+                        let firstReversed, afterFirst = pushLineWithBody [] line rest
+                        let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation afterFirst
+
+                        let children = loop (List.rev firstReversed @ nextLevelLines) nextIntendation [] |> List.rev
+                        loop currentLevelLines currentIntendation (Intendation children :: acc)
 
     let lines = content.Lines |> List.ofArray |> alignCommentLines
     let ast = loop lines 0 [] |> List.rev |> Level

@@ -55,18 +55,12 @@ let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list
     | _ ->
         None
 
-/// A block scalar header written directly after a sequence dash, such as `- |` or `- &a >-`.
-let private isSequenceBlockScalarHeader (value: string) =
-    let withoutComment, _ = Placeholder.splitTrailingComment value
-    let indicator = BlockScalar.stripProperties withoutComment
-    indicator.StartsWith("|") || indicator.StartsWith(">")
-
 /// Puts the value written after a sequence dash in front of the block that follows it. A block
 /// scalar header keeps that block as one Intendation because the body is a single unit.
 /// Flattening it would turn each body line into a node of its own.
 let private joinSequenceItemValue (value: string option) (block: PreprocessorElement list) =
     match value with
-    | Some header when isSequenceBlockScalarHeader header ->
+    | Some header when BlockScalar.isHeaderValue header ->
         [PreprocessorElement.Line header; PreprocessorElement.Intendation block]
     | Some v ->
         PreprocessorElement.Line v :: block
@@ -117,12 +111,12 @@ let private isCommentOrBlankElement e =
     | YamlComment _ -> true
     | _ -> isBlankLineElement e
 
-/// Returns the comment id of the first comment line in the elements, including nested ones.
-let rec private tryFindCommentLine (eles: PreprocessorElement list) : int option =
+/// Returns the comment id of the first comment line in the elements. A block scalar body is one
+/// flat block, so there are no nested elements to search.
+let private tryFindCommentLine (eles: PreprocessorElement list) : int option =
     eles
     |> List.tryPick (function
         | YamlComment comment -> Some comment.Comment
-        | Intendation children -> tryFindCommentLine children
         | _ -> None)
 
 /// Splits the items of a block sequence from the elements that follow it. Comments after the
@@ -249,11 +243,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         let props = extractProperties handles raw
         let finalValue, finalStyle = restoreScalarWithStyle props.Value
         YAMLContent.create(finalValue, ?comment = comment, ?anchor = props.Anchor, ?tag = props.Tag, ?style = finalStyle)
-
-    let isBlockScalarHeaderCandidate (rawHeader: string) =
-        let headerWithoutComment, _ = Placeholder.splitTrailingComment rawHeader
-        let props = extractProperties handles headerWithoutComment
-        props.Value.StartsWith("|") || props.Value.StartsWith(">")
 
     let tryReadBlockScalar (rawHeader: string) (baseCommentId: int option) (block: PreprocessorElement list) =
         let headerWithoutComment, headerCommentId = Placeholder.splitTrailingComment rawHeader
@@ -842,7 +831,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 let current = YAMLElement.Value(YAMLContent.create(v.Key + ":", ?comment = c))
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
-        | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+        | KeyValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
             match tryReadBlockScalar v.Value None block with
             | Some blockScalar ->
                 let keyContent = createScalarContent v.Key None
@@ -895,7 +884,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 YAMLElement.Comment (c)
             loopRead handles rest (current::acc)
         // Root-level block scalar
-        | YamlValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
+        | YamlValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
             match tryReadBlockScalar v.Value v.Comment block with
             | Some blockScalar ->
                 let current =
@@ -956,48 +945,38 @@ let readDocuments (yaml: string) : YAMLElement list =
     let appendCurrentDocument (currentDoc: string list) (docs: string list list) =
         if List.isEmpty currentDoc then docs else (List.rev currentDoc)::docs
 
-    let rec splitDocuments (remaining: string list) (currentDoc: string list) (docs: string list list) (blockHeaderIndent: int option) =
+    // A document marker counts only at column 0. A block scalar body is blank or indented, so
+    // its lines never look like a marker and need no special handling here.
+    let rec splitDocuments (remaining: string list) (currentDoc: string list) (docs: string list list) =
         match remaining with
         | [] ->
             appendCurrentDocument currentDoc docs |> List.rev
-        | line::rest ->
-            match blockHeaderIndent with
-            | Some headerIndent ->
-                if line.Trim() = "" || Line.countLeadingSpaces line > headerIndent then
-                    splitDocuments rest (line::currentDoc) docs blockHeaderIndent
-                else
-                    // A non-empty line dedented to the header level ends the block scalar.
-                    splitDocuments remaining currentDoc docs None
-            | None when Document.isTopLevelMarker Document.isStart line ->
-                let inlineContent = Document.tryInlineContentAfterStartMarker line
-                if List.isEmpty currentDoc || Document.isDirectivePreludeOnly currentDoc then
-                    let preludeDirectives =
-                        currentDoc
-                        |> List.filter (fun l -> l.TrimStart().StartsWith("%"))
-                    let nextDoc =
-                        match inlineContent with
-                        | Some content -> content::preludeDirectives
-                        | None -> preludeDirectives
-                    splitDocuments rest nextDoc docs None
-                else
-                    let docs' = appendCurrentDocument currentDoc docs
-                    let nextDoc =
-                        match inlineContent with
-                        | Some content -> [content]
-                        | None -> []
-                    splitDocuments rest nextDoc docs' None
-            | None when Document.isTopLevelMarker Document.isEnd line ->
+        | line::rest when Document.isTopLevelMarker Document.isStart line ->
+            let inlineContent = Document.tryInlineContentAfterStartMarker line
+            if List.isEmpty currentDoc || Document.isDirectivePreludeOnly currentDoc then
+                let preludeDirectives =
+                    currentDoc
+                    |> List.filter (fun l -> l.TrimStart().StartsWith("%"))
+                let nextDoc =
+                    match inlineContent with
+                    | Some content -> content::preludeDirectives
+                    | None -> preludeDirectives
+                splitDocuments rest nextDoc docs
+            else
                 let docs' = appendCurrentDocument currentDoc docs
-                splitDocuments rest [] docs' None
-            | None ->
-                let nextBlock =
-                    match Syntax.BlockScalar.tryDetectHeaderIndent line with
-                    | Some indent -> Some indent
-                    | None -> None
-                splitDocuments rest (line::currentDoc) docs nextBlock
+                let nextDoc =
+                    match inlineContent with
+                    | Some content -> [content]
+                    | None -> []
+                splitDocuments rest nextDoc docs'
+        | line::rest when Document.isTopLevelMarker Document.isEnd line ->
+            let docs' = appendCurrentDocument currentDoc docs
+            splitDocuments rest [] docs'
+        | line::rest ->
+            splitDocuments rest (line::currentDoc) docs
 
     let documentTexts =
-        splitDocuments lines [] [] None
+        splitDocuments lines [] []
         |> List.filter (fun doc ->
             doc |> List.exists (fun l -> l.Trim() <> "")
         )

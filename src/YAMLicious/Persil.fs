@@ -294,17 +294,17 @@ let private detectBlockScalarContentLines (yamlString: string) =
     let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
     let protectedLines = ResizeArray<int>()
     let mutable i = 0
-    let mutable openBlockIndent: int option = None
+    let mutable openBlockContentIndent: int option = None
 
     while i < lines.Length do
-        match openBlockIndent with
-        | Some headerIndent ->
+        match openBlockContentIndent with
+        | Some contentIndent ->
             let line = lines.[i]
-            if line.Trim() = "" || Line.countLeadingSpaces line > headerIndent then
+            if BlockScalar.isBodyLine contentIndent line then
                 protectedLines.Add(i) |> ignore
                 i <- i + 1
             else
-                openBlockIndent <- None
+                openBlockContentIndent <- None
         | None ->
             let line = lines.[i]
             if line.TrimStart().StartsWith("#") then
@@ -315,9 +315,12 @@ let private detectBlockScalarContentLines (yamlString: string) =
                     match tryFindCommentStartOutsideQuotes line with
                     | -1 -> line
                     | idx -> line.Substring(0, idx)
-                match BlockScalar.tryDetectHeaderIndent code with
-                | Some indent ->
-                    openBlockIndent <- Some indent
+                match BlockScalar.tryParseHeaderLine code with
+                | Some header ->
+                    let firstBodyIndex = i + 1
+                    let following = seq { for j in firstBodyIndex .. lines.Length - 1 -> lines.[j] }
+                    openBlockContentIndent <-
+                        Some (BlockScalar.contentIndent (Line.countLeadingSpaces code) header.Indent following)
                     i <- i + 1
                 | None ->
                     i <- i + 1

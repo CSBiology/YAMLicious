@@ -186,15 +186,33 @@ module BlockScalar =
         |> fun s -> s.Split([|' '; '\t'|], StringSplitOptions.RemoveEmptyEntries)
         |> Array.tryHead
 
-    let tryDetectHeaderIndent (line: string) =
-        match headerTokenFromLine line with
-        | Some token when parseHeader token |> Option.isSome ->
-            Some (Line.countLeadingSpaces line)
-        | _ ->
-            None
+    /// The header a line opens, such as `|2-` in `key: |2-`. The line must not contain comment text,
+    /// because a `: |` inside a comment would look like a header. A comment placeholder is fine.
+    let tryParseHeaderLine (line: string) =
+        headerTokenFromLine line |> Option.bind parseHeader
 
-    let isHeaderLine (line: string) =
-        tryDetectHeaderIndent line |> Option.isSome
+    /// True when a value, as written after a key or a sequence dash, starts a block scalar.
+    /// Properties and a trailing comment placeholder do not count.
+    let isHeaderValue (value: string) =
+        let withoutComment, _ = Placeholder.splitTrailingComment value
+        let indicator = stripProperties withoutComment
+        indicator.StartsWith("|") || indicator.StartsWith(">")
+
+    /// YAML 1.2.2 8.1.1.1: the indentation of the content lines of a block scalar. An indentation
+    /// indicator counts from the header's indentation. Without one, the first nonblank line sets it.
+    /// The content is always indented deeper than the header, so a first nonblank line at or below
+    /// the header means the scalar has no content.
+    let contentIndent (headerIndent: int) (indicator: int option) (followingLines: string seq) =
+        match indicator with
+        | Some spaces -> headerIndent + spaces
+        | None ->
+            match followingLines |> Seq.tryFind (Line.isBlank >> not) with
+            | Some first -> max (headerIndent + 1) (Line.countLeadingSpaces first)
+            | None -> headerIndent + 1
+
+    /// Blank lines and lines indented at least as deep as the content indentation form the body.
+    let isBodyLine (indent: int) (line: string) =
+        Line.isBlank line || Line.countLeadingSpaces line >= indent
 
     let applyChomping (chomp: ChompingMode) (content: string) =
         match chomp with
@@ -236,18 +254,8 @@ module BlockScalar =
         sb.ToString()
 
     let deindentLines (headerIndent: int) (explicitIndent: int option) (lines: string list) =
-        let contentIndent =
-            match explicitIndent with
-            | Some i -> headerIndent + i
-            | None ->
-                lines
-                |> List.filter (fun l -> l.Trim() <> "")
-                |> List.map Line.countLeadingSpaces
-                |> function
-                    | [] -> headerIndent
-                    | indents -> indents |> List.min
-
-        lines |> List.map (stripIndent contentIndent)
+        let indent = contentIndent headerIndent explicitIndent lines
+        lines |> List.map (stripIndent indent)
 
     let buildContent (style: BlockScalarStyle) (chomp: ChompingMode) (headerIndent: int) (explicitIndent: int option) (lines: string list) =
         let deindentedLines = deindentLines headerIndent explicitIndent lines

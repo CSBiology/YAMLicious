@@ -20,6 +20,11 @@ let private expectSingleRootValue (ast: YAMLElement) =
     | YAMLElement.Object [YAMLElement.Value value] -> value
     | _ -> failwithf "Unexpected AST: %A" ast
 
+/// A style-less value, as Encode.string creates it. Its first line starts with a space.
+let private leadingSpaceValue = "  leading spaces first line\nnormal second line\n"
+
+let private keepTrailingNewline = { WriterOptions.Default with MultilineFallbackChomping = ChompingMode.Clip }
+
 let Main =
   testList "Scalar Styles" [
     testCase "Normalization helper ignores scalar style metadata" <| fun _ ->
@@ -239,6 +244,66 @@ let Main =
         let value2 = expectSingleRootValue ast2
         Expect.equal value2.Value value1.Value "Root round-trip should not change the value"
         Expect.equal ast2 ast1 "Root round-trip should keep metadata and value"
+
+    testCase "Writer adds an indentation indicator when the first line of a mapping value starts with a space" <| fun _ ->
+        // yaml@2.6.1 reads the written text back as the original string
+        let ast = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create(leadingSpaceValue)))
+        ]
+        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        Expect.trimEqual written "k: |2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
+        let value = expectSingleMappingValue (Reader.read written)
+        Expect.equal value.Value leadingSpaceValue "YAMLicious should read the value back unchanged"
+
+    testCase "Writer adds an indentation indicator to the default strip chomping" <| fun _ ->
+        let value = "  leading spaces first line\nnormal second line"
+        let ast = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create(value)))
+        ]
+        let written = Writer.write ast None
+        Expect.trimEqual written "k: |2-\n    leading spaces first line\n  normal second line" "The indicator and the chomping indicator go into one header"
+        let reread = expectSingleMappingValue (Reader.read written)
+        Expect.equal reread.Value value "YAMLicious should read the value back unchanged"
+
+    testCase "Writer counts the indentation indicator from the header of a nested mapping value" <| fun _ ->
+        let ast = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create(leadingSpaceValue)))
+                ]
+            )
+        ]
+        let written = Writer.writeWithOptions ast keepTrailingNewline (Some (fun config -> { config with Whitespace = 2 }))
+        Expect.trimEqual written "a:\n  k: |2\n      leading spaces first line\n    normal second line" "The body sits two spaces beyond the header plus the content spaces"
+        Expect.yamlSemanticEqual (Reader.read written) ast "YAMLicious should read the nested value back unchanged"
+
+    testCase "Writer adds an indentation indicator when the first line of a sequence item starts with a space" <| fun _ ->
+        // yaml@2.6.1 reads the written text back as the original string
+        let ast = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create(leadingSpaceValue))]
+            ]
+        ]
+        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        Expect.trimEqual written "- |2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
+        let value = expectSingleSequenceItemValue (Reader.read written)
+        Expect.equal value.Value leadingSpaceValue "YAMLicious should read the item back unchanged"
+
+    testCase "Writer adds an indentation indicator when the first line of a root value starts with a space" <| fun _ ->
+        // yaml@2.6.1 reads the written text back as the original string
+        let ast = YAMLElement.Value(YAMLContent.create(leadingSpaceValue))
+        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        Expect.trimEqual written "|2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
+        let value = expectSingleRootValue (Reader.read written)
+        Expect.equal value.Value leadingSpaceValue "YAMLicious should read the root value back unchanged"
+
+    testCase "Writer adds no indentation indicator when the first nonblank line starts without a space" <| fun _ ->
+        let ast = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create("first\n  second\n")))
+        ]
+        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        Expect.trimEqual written "k: |\n    first\n      second" "Deeper later lines need no indicator"
 
     testCase "Expression block scalar keeps quote delimiters and stays block style on write" <| fun _ ->
         let yaml = """expression: >
