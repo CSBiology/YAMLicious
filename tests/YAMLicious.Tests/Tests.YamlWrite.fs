@@ -236,4 +236,38 @@ let Main = testList "YamlWrite" [
         Expect.equal (actual.Contains("\\0")) true "Null byte should be escaped"
         Expect.equal (actual.Contains("\\a")) true "Bell should be escaped"
         Expect.equal (actual.Contains("\\b")) true "Backspace should be escaped"
+
+    testCase "Comment element inside a sequence is written as a comment line" <| fun _ ->
+        let ele = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                        YAMLElement.Comment(" x")
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+                    ]
+                ]
+            )
+        ]
+        let actual = write ele None
+        let expected = "a:
+    - 1
+    # x
+    - 2"
+        Expect.trimEqual actual expected ""
+        Expect.equal (Reader.read actual) (Reader.read "a:\n  - 1\n  # x\n  - 2") "The written comment should read back at the same position."
+
+    testCase "Comments round-trip through write and read" <| fun _ ->
+        let inputs = [
+            "r:\n  a:\n    # c\n    b: 1"
+            "a:\n- 1\n# end\nb: 2"
+            "lang: C#\nrun: tool.cwl#main\nnote: a #b"
+            "a:\n  - 1\n  # x\n  - 2"
+        ]
+        for input in inputs do
+            let parsed = Reader.read input
+            let reparsed = Reader.read (write parsed None)
+            let label = input.Replace("\n", "\\n")
+            Expect.equal reparsed parsed $"Round trip should keep the tree for: {label}"
 ]

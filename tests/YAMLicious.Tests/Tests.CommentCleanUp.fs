@@ -36,5 +36,13 @@ My Key: <c f=0/>
         let expectedDict = Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
         Expect.encodeEqual actual expected ""
         Expect.dictEqual dict expectedDict ""
+    testCase "Hash without preceding whitespace is not a comment" <| fun _ ->
+        let dict = Dictionary<int, string>()
+        let s = "a: tool.cwl#main # real"
+        let actual = Line.normalizeNewlines s |> Persil.commentCleanUp dict
+        let expected = "a: tool.cwl#main <c f=0/>"
+        let expectedDict = Dictionary<int, string>(Map [0, " real"])
+        Expect.encodeEqual actual expected ""
+        Expect.dictEqual dict expectedDict ""
 ]
 

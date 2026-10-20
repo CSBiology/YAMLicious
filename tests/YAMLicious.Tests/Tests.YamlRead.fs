@@ -6,6 +6,17 @@ open YAMLiciousTypes
 open Preprocessing
 open YAMLiciousTypes
 
+let private hasAnyComment (element: YAMLElement) =
+    let rec loop (el: YAMLElement) =
+        match el with
+        | YAMLElement.Comment _ -> true
+        | YAMLElement.Value content -> content.Comment.IsSome
+        | YAMLElement.Mapping (key, value) -> key.Comment.IsSome || loop value
+        | YAMLElement.Object items
+        | YAMLElement.Sequence items -> List.exists loop items
+        | _ -> false
+    loop element
+
 let Main = testList "YamlRead" [
     testCase "Value" <| fun _ ->
         let yaml = "Hello World"
@@ -843,6 +854,229 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "A sequence item comment should not split following nested fields into another item."
+
+    testCase "Comment under a nested key with mapping value" <| fun _ ->
+        let yaml = "r:\n  a:\n    # c\n    b: 1"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("r"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Comment(" c")
+                            YAMLElement.Mapping(
+                                YAMLContent.create("b"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment below a nested key should land in the block of the next mapping."
+
+    testCase "Comment under a nested key with sequence value" <| fun _ ->
+        let yaml = "r:\n  a:\n    # c\n    - 1"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("r"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("a"),
+                        YAMLElement.Object [
+                            YAMLElement.Comment(" c")
+                            YAMLElement.Sequence [
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                            ]
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment below a nested key should precede the sequence inside the same block."
+
+    testCase "Comment under a deeply nested key" <| fun _ ->
+        let yaml = "a:\n  b:\n    c:\n      # x\n      d: 1"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("c"),
+                                YAMLElement.Object [
+                                    YAMLElement.Comment(" x")
+                                    YAMLElement.Mapping(
+                                        YAMLContent.create("d"),
+                                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                                    )
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment should stay with the next mapping at any nesting depth."
+
+    testCase "Hash without preceding whitespace stays in the scalar" <| fun _ ->
+        let yaml = "run: tool.cwl#main\nlang: C#\nurl: http://x.org/a#frag"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("run"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("tool.cwl#main"))]
+            )
+            YAMLElement.Mapping(
+                YAMLContent.create("lang"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("C#"))]
+            )
+            YAMLElement.Mapping(
+                YAMLContent.create("url"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("http://x.org/a#frag"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A hash that does not follow whitespace is part of the scalar."
+
+    testCase "Hash directly after a flow closer is not a comment" <| fun _ ->
+        let yaml = "k: [a]#c"
+        let actual = Reader.read yaml
+        Expect.isFalse (hasAnyComment actual) "A hash directly after ] should not start a comment."
+
+    testCase "Hash inside a literal block scalar is content" <| fun _ ->
+        let yaml = "s: |\n  line\n  # not a comment\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("s"),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "line\n# not a comment\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A hash line inside a literal block scalar is scalar content."
+        Expect.isFalse (hasAnyComment actual) "A literal block scalar should not produce comments."
+
+    testCase "Comment after the last item of an unindented sequence belongs to the next key" <| fun _ ->
+        let yaml = "a:\n- 1\n# end\nb: 2"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                    ]
+                ]
+            )
+            YAMLElement.Comment(" end")
+            YAMLElement.Mapping(
+                YAMLContent.create("b"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment after the last sequence item should precede the next key and stay outside the sequence."
+
+    testCase "Trailing comment at the end of a nested block stays in the block" <| fun _ ->
+        let yaml = "a:\n  b: 1\n  # end"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                    )
+                    YAMLElement.Comment(" end")
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment after the last content line should stay in the last block."
+
+    testCase "Comment before a dedented key belongs to that key" <| fun _ ->
+        let yaml = "a:\n  b: 1\n  # about c\nc: 2"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                    )
+                ]
+            )
+            YAMLElement.Comment(" about c")
+            YAMLElement.Mapping(
+                YAMLContent.create("c"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment before a dedented key should move to the block of that key."
+
+    testCase "Comments in a CWL requirements block" <| fun _ ->
+        let yaml = """requirements:
+  EnvVarRequirement:
+    envDef:
+      # Runner writes logs
+      TOOL_RUN_SETTINGS: >-
+        -Da
+        -Db
+  InitialWorkDirRequirement:
+    listing:
+      # Make an editable copy
+      - entryname: src_data
+        writable: true"""
+        let envDefFirst =
+            match Reader.read yaml with
+            | YAMLElement.Object [
+                YAMLElement.Mapping(
+                    _,
+                    YAMLElement.Object [
+                        YAMLElement.Mapping(
+                            _,
+                            YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Object (first :: _))]
+                        )
+                        _
+                    ]
+                )
+              ] -> Some first
+            | _ -> None
+        Expect.equal envDefFirst (Some (YAMLElement.Comment(" Runner writes logs"))) "The comment should be the first element of the envDef block."
+        let javaOptions =
+            Decode.read yaml
+            |> Decode.object (fun get ->
+                get.Required.Field "requirements" (Decode.object (fun get2 ->
+                    get2.Required.Field "EnvVarRequirement" (Decode.object (fun get3 ->
+                        get3.Required.Field "envDef" (Decode.object (fun get4 ->
+                            get4.Required.Field "TOOL_RUN_SETTINGS" Decode.string
+                        ))
+                    ))
+                ))
+            )
+        Expect.equal javaOptions "-Da -Db" "The folded scalar should decode despite the comment above it."
+        let listing =
+            Decode.read yaml
+            |> Decode.object (fun get ->
+                get.Required.Field "requirements" (Decode.object (fun get2 ->
+                    get2.Required.Field "InitialWorkDirRequirement" (Decode.object (fun get3 ->
+                        get3.Required.Field "listing" (Decode.list (Decode.object (fun get4 ->
+                            get4.Required.Field "entryname" Decode.string
+                        )))
+                    ))
+                ))
+            )
+        Expect.equal listing ["src_data"] "The listing should decode despite the comment above it."
 
     testCase "Sequence item accepts structural blank line before nested mapping" <| fun _ ->
         let yaml = """items:

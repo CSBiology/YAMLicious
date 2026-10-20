@@ -250,6 +250,27 @@ Hello World: 42"""
         )
         let expected = [true; true; false]
         Expect.equal actual expected ""
+    testCase "Decode.list skips comments between items" <| fun _ ->
+        let ele = "a:\n  - 1\n  # x\n  - 2"
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            get.Required.Field "a" (Decode.list Decode.int)
+        )
+        let expected = [1; 2]
+        Expect.equal actual expected ""
+    testCase "Decode.tuple2 skips comments" <| fun _ ->
+        let ele = "- 1\n# c\n- x"
+        let actual = ele |> Decode.read |> Decode.tuple2 Decode.int Decode.string
+        let expected = (1, "x")
+        Expect.equal actual expected ""
+    testCase "Decode.object skips a comment before the first field" <| fun _ ->
+        let ele = "a:\n  # c\n  b: hi"
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            get.Required.Field "a" (Decode.object (fun get2 ->
+                get2.Required.Field "b" Decode.string
+            ))
+        )
+        let expected = "hi"
+        Expect.equal actual expected ""
 ]
 
 let tests_validationPackages = testList "ValidationPackages" [
