@@ -167,16 +167,13 @@ type private Scanner(s: string) =
     // only properties is a pending property and pushes nothing, so the value behind it belongs to the node
     // in front of it.
     let owners = ResizeArray<int>()
-    // True while the last node of the line in progress is a plain scalar that started on the line.
+    // True while the last node of the line in progress is a plain scalar that started on the line. Where
+    // it started: the position in the emitted line, the offset in the source and the size of the string
+    // table at that moment.
     let mutable plainOpen = false
-    // The column of the block node that owns the plain scalar that the lines so far left open, or
-    // NoPlain. A nonblank line indented deeper than that node continues the scalar (YAML 1.2.2 7.3.3).
-    // Every character on such a line is text, so a quote, a bracket, a dash or a tag opens no node there.
-    // A comment ends the scalar, and a colon followed by a blank is an error, because a plain scalar
-    // cannot hold a mapping key. Blank lines keep the scalar open and every other line closes it.
-    let mutable plainOwner = NoPlain
-    // True while the line in progress continues that scalar.
-    let mutable continuation = false
+    let mutable plainStartPos = 0
+    let mutable plainStartSrc = 0
+    let mutable plainStringMark = 0
     // The owner and the line of a plain scalar that a comment ended, or NoPlain. A comment ends a plain
     // scalar, so a line that is deeper than its owner can neither continue it nor start a node.
     let mutable endedOwner = NoPlain
@@ -311,6 +308,10 @@ type private Scanner(s: string) =
             match c with
             | '[' | ']' | '{' | '}' | ',' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' -> false
             | _ -> true
+        if plainOpen then
+            plainStartPos <- line.Length
+            plainStartSrc <- i
+            plainStringMark <- strings.Count
 
     /// Appends a character of a plain scalar. At a node start it begins the scalar.
     let appendPlain (c: char) =
@@ -367,7 +368,7 @@ type private Scanner(s: string) =
     let commitLiteralPlaceholder (stop: int) =
         if atNodeStart then startPlain '<'
         let stringId = strings.Count
-        strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.EscapedPlainString })
+        strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.PlainScalar })
         line.Append("<s f=" + string stringId + "/>") |> ignore
         atNodeStart <- false
         hasCode <- true
@@ -410,26 +411,25 @@ type private Scanner(s: string) =
         lineComment <- commentId
         i <- e
 
-    /// True when the code holds a colon that a blank or the end of the code follows. Such a colon makes
+    /// True when the text holds a colon that a blank or the end of the text follows. Such a colon makes
     /// the text in front of it a mapping key, which a plain scalar cannot hold.
-    let hasMappingIndicator (text: string) (codeEnd: int) =
+    let hasMappingIndicator (text: string) =
         let mutable found = false
         let mutable k = 0
-        while not found && k < codeEnd do
-            if text.[k] = ':' && (k + 1 >= codeEnd || isBlankChar text.[k + 1]) then found <- true
+        while not found && k < text.Length do
+            if text.[k] = ':' && (k + 1 >= text.Length || isBlankChar text.[k + 1]) then found <- true
             k <- k + 1
         found
 
-    /// Brings the stack of owners, the open plain scalar and the scalar that a comment ended up to date
-    /// with the finished line.
-    let trackStructure (kind: LineKind) (text: string) (codeEnd: int) =
+    /// Brings the stack of owners up to date with the finished line. It returns the owner of the plain
+    /// scalar that the line opens, or NoPlain.
+    let trackStructure (kind: LineKind) (text: string) (codeEnd: int) : int =
         if kind = LineKind.DocumentStart || kind = LineKind.DocumentEnd then
             owners.Clear()
             endedOwner <- NoPlain
         let structural =
-            hasCode && not continuation && not startedInFlow
+            hasCode && not startedInFlow
             && (kind = LineKind.Code || kind = LineKind.BlockHeader || kind = LineKind.DocumentStart)
-        // The owner of the plain scalar that this line opens, or NoPlain.
         let mutable opens = NoPlain
         if structural then
             let indent = Line.countLeadingSpaces text
@@ -446,20 +446,102 @@ type private Scanner(s: string) =
             if not (value.Bare && value.Start >= code.Length) then owners.Add value.Owner
             if plainOpen && flowOpeners.Count = 0 then
                 opens <- if value.Bare then parent else value.Owner
-        elif continuation && hasCode && hasMappingIndicator text codeEnd then
-            failwithf "Line %d: a multi-line plain scalar cannot hold a mapping key (`: `)." lineNumber
+        opens
 
-        // A comment ends the scalar that the line continues or opens, and the one in front of a comment-only
-        // line. A continuation line and a blank line leave the owner as it is. Any other line opens a
-        // scalar when its value is a plain scalar, and closes the open one otherwise.
-        if lineComment <> NoComment then
-            let ended = if continuation || not hasCode then plainOwner else opens
-            plainOwner <- NoPlain
-            if ended <> NoPlain then
-                endedOwner <- ended
-                endedLine <- lineNumber
-        elif not continuation && kind <> LineKind.Blank then
-            plainOwner <- opens
+    /// Merges the lines that continue the plain scalar which the line in progress opened (YAML 1.2.2
+    /// 7.3.3) into that line, so that a multiline plain scalar is one token like a multiline quoted
+    /// scalar. A nonblank line deeper than the owner continues the scalar, and the blank lines in between
+    /// belong to it. A comment line, a document marker and a line that is not deeper end it. The scalar
+    /// becomes one entry of the string table, with one segment per line joined by line breaks, and one
+    /// placeholder takes its place in the line. An empty segment is an empty line, which Decode folds
+    /// into a line break.
+    ///
+    /// Every character of a continuation line is text, so a quote, a bracket, a dash or a tag opens no
+    /// node there. A colon followed by a blank is an error, because a plain scalar cannot hold a mapping
+    /// key. A comment ends the scalar, either at the end of its last line, which then keeps the comment,
+    /// or as a line of its own.
+    let absorbPlain (owner: int) =
+        let firstLine = physicalLine ()
+        let mutable firstEnd = i
+        while firstEnd > plainStartSrc && isBlankChar s.[firstEnd - 1] do
+            firstEnd <- firstEnd - 1
+        let segments = ResizeArray<string>()
+        segments.Add(copyRange plainStartSrc firstEnd)
+
+        // `cursor` is the line break in front of the line under examination, and `ahead` counts the
+        // breaks from the end of the first line to it. `taken` and `at` describe the last line that the
+        // scalar took, and `pending` counts the blank lines behind it.
+        let mutable cursor = i
+        let mutable ahead = 0
+        let mutable pending = 0
+        let mutable taken = 0
+        let mutable at = i
+        let mutable commentAt = -1
+        let mutable scanning = i < n
+        while scanning do
+            let first = cursor + 1
+            if first >= n then
+                scanning <- false
+            else
+                let mutable last = first
+                while last < n && s.[last] <> NewLineChar do
+                    last <- last + 1
+                ahead <- ahead + 1
+                let mutable afterSpaces = first
+                while afterSpaces < last && s.[afterSpaces] = ' ' do
+                    afterSpaces <- afterSpaces + 1
+                let indent = afterSpaces - first
+                let mutable textStart = afterSpaces
+                while textStart < last && isBlankChar s.[textStart] do
+                    textStart <- textStart + 1
+                if textStart >= last then
+                    pending <- pending + 1
+                    cursor <- last
+                elif s.[textStart] = '#' then
+                    endedOwner <- owner
+                    endedLine <- firstLine + ahead
+                    scanning <- false
+                elif markerAt first || indent <= owner then
+                    scanning <- false
+                else
+                    let mutable commentStart = last
+                    let mutable h = textStart + 1
+                    while commentStart = last && h < last do
+                        if s.[h] = '#' && isBlankChar s.[h - 1] then commentStart <- h
+                        h <- h + 1
+                    let mutable textEnd = commentStart
+                    while textEnd > textStart && isBlankChar s.[textEnd - 1] do
+                        textEnd <- textEnd - 1
+                    let segment = copyRange textStart textEnd
+                    if hasMappingIndicator segment then
+                        failwithf "Line %d: a multi-line plain scalar cannot hold a mapping key (`: `)." (firstLine + ahead)
+                    for _ in 1 .. pending do
+                        segments.Add ""
+                    pending <- 0
+                    segments.Add segment
+                    taken <- ahead
+                    at <- last
+                    cursor <- last
+                    if commentStart < last then
+                        commentAt <- commentStart
+                        endedOwner <- owner
+                        endedLine <- firstLine + ahead
+                        scanning <- false
+
+        if segments.Count > 1 then
+            // Entries that the first line made inside the scalar are part of its text now.
+            while strings.Count > plainStringMark do
+                strings.Remove(strings.Count - 1) |> ignore
+            let prefix = line.ToString().Substring(0, plainStartPos)
+            let stringId = strings.Count
+            strings.Add(stringId, { Value = String.Join(string NewLineChar, segments.ToArray()); Kind = QuotedStringKind.PlainScalar })
+            line.Clear().Append(prefix).Append("<s f=" + string stringId + "/>") |> ignore
+            foldedBreaks <- foldedBreaks + taken
+            i <- at
+            if commentAt >= 0 then
+                line.Append(' ') |> ignore
+                i <- commentAt
+                takeComment ()
 
     /// Looks for a block scalar header in the code of the finished line and records the line. The
     /// code is the emitted text before any comment placeholder, so a quoted scalar is a placeholder
@@ -469,7 +551,7 @@ type private Scanner(s: string) =
         let mutable kind = lineKind
         let mutable opened = NoBlock
         let codeEnd = if lineComment = NoComment then text.Length else codeLength
-        if hasCode && not continuation && not startedInFlow && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
+        if hasCode && not startedInFlow && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
             match BlockScalar.tryParseHeaderCode (text.Substring(0, codeEnd)) with
             | Some found ->
                 opened <- blockCount
@@ -495,8 +577,18 @@ type private Scanner(s: string) =
         | LineKind.Code -> if hasCode then inPrelude <- false
         | _ -> ()
 
-        trackStructure kind text codeEnd
-        records.Add(mkLine text kind opened lineNumber lineComment codeEnd)
+        let opens = trackStructure kind text codeEnd
+        if opens <> NoPlain then
+            if lineComment = NoComment then
+                absorbPlain opens
+            else
+                endedOwner <- opens
+                endedLine <- lineNumber
+
+        // The scalar may have taken more lines, and the last of them may end in a comment.
+        let finalText = line.ToString()
+        let finalEnd = if lineComment = NoComment then finalText.Length else codeLength
+        records.Add(mkLine finalText kind opened lineNumber lineComment finalEnd)
 
     /// Copies the line at the cursor into the block scalar in progress when it belongs to the body.
     /// A line of spaces belongs to it and leaves the content indentation open. A line with other
@@ -598,17 +690,6 @@ type private Scanner(s: string) =
                 | _ ->
                     appendPlain c
 
-    /// True when the line at the cursor is nonblank and indented deeper than the owner of the open
-    /// plain scalar.
-    let continuesPlain () =
-        let mutable k = i
-        while k < n && s.[k] = ' ' do
-            k <- k + 1
-        let indent = k - i
-        while k < n && isBlankChar s.[k] do
-            k <- k + 1
-        plainOwner <> NoPlain && indent > plainOwner && k < n && s.[k] <> '\n' && not (markerAt i)
-
     /// Scans one emitted line, starting at a physical line start.
     let scanLine () =
         line.Clear() |> ignore
@@ -618,9 +699,8 @@ type private Scanner(s: string) =
         lineComment <- NoComment
         codeLength <- -1
         plainOpen <- false
-        continuation <- continuesPlain ()
         startedInFlow <- flowOpeners.Count > 0
-        if not startedInFlow then atNodeStart <- not continuation
+        if not startedInFlow then atNodeStart <- true
 
         if i < n && s.[i] = '%' && inPrelude then
             scanDirective ()

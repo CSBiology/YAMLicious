@@ -32,14 +32,15 @@ type ScalarStyle =
     | Block of BlockScalarStyle * ChompingMode * int option
 
 /// What kind of text a string table entry holds. The scanner stores each quoted scalar with its quote
-/// style, and it stores plain text that looks like one of its placeholders.
+/// style, and it stores the plain text that it owns.
 type QuotedStringKind =
     | SingleQuotedString
     | DoubleQuotedString
-    /// Plain text in the shape of a placeholder, `<c f=N/>` or `<s f=N/>`. The scanner moves it into the
-    /// string table so that no later stage reads it as a placeholder. The Reader restores it as the text
-    /// it was, with the style of a plain scalar.
-    | EscapedPlainString
+    /// Plain text that no later stage may read as structure. It is a plain scalar that spans several
+    /// lines, with one segment per line and a line break between the segments, or plain text in the shape
+    /// of a placeholder, `<c f=N/>` or `<s f=N/>`. The Reader restores it as the text it was, with the style
+    /// of a plain scalar when the text spans several lines.
+    | PlainScalar
 
 type StringMapEntry = {
     Value: string

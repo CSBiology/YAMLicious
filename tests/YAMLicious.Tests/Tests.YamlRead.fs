@@ -400,10 +400,12 @@ My Key: My Value1
         Expect.isTrue (decoded.Contains("}")) "The closing brace should be part of the scalar string."
 
     testCase "Inline-start multiline plain scalar expression decodes as one string" <| fun _ ->
+        // yaml@2.6.1: {"valueFrom":"${ var reads = null; return reads; }"}. A closing brace at column 0 would end
+        // the scalar, and yaml@2.6.1 rejects it (UNEXPECTED_TOKEN).
         let yaml = """valueFrom: ${
   var reads = null;
   return reads;
-}"""
+  }"""
         let decoded =
             YAMLicious.Decode.read yaml
             |> YAMLicious.Decode.object (fun get ->
@@ -746,6 +748,7 @@ My Key:
         Expect.equal actual expected ""
 
     testCase "SequenceSameIndentAsMapping2" <| fun _ ->
+        // yaml@2.6.1: {"My Key":["My Value1 My Value2","My Value3"]}
         let yaml = """
 My Key:
 - My Value1
@@ -758,8 +761,7 @@ My Key:
                 YAMLElement.Object [
                     YAMLElement.Sequence[
                         YAMLElement.Object [
-                            YAMLElement.Value(YAMLContent.create("My Value1"));
-                            YAMLElement.Value(YAMLContent.create("My Value2"))
+                            YAMLElement.Value(YAMLContent.create("My Value1\nMy Value2", style=ScalarStyle.Plain))
                         ]
                         YAMLElement.Object [
                             YAMLElement.Value(YAMLContent.create("My Value3"))

@@ -42,9 +42,9 @@ let Main = testList "CommentCleanUp" [
         Expect.equal actual.StringMap.Count 0 "no strings"
 
     testCase "comments in values and behind values" <| fun _ ->
-        // The `<s f=0/>` in the input is plain text, not a placeholder. The scanner moves it into the
-        // string table, so every placeholder in the emitted text is its own. A quote inside a comment
-        // is comment text.
+        // The `<s f=0/>` in the input is plain text, not a placeholder. The scanner moves the plain scalar
+        // of the three lines, with that text in it, into the string table, so every placeholder in the
+        // emitted text is its own. A quote inside a comment is comment text.
         let s = """
 My Key: # This is a comment
   My Value1
@@ -53,19 +53,17 @@ My Key: # This is a comment
 """
         let expected = """
 My Key: <c f=0/>
-  My Value1
-  <s f=0/>
-  My Value3 <c f=1/>
+  <s f=0/> <c f=1/>
 """
         let actual = Persil.tokenize s
         Expect.encodeEqual (tokenizedText actual) expected ""
         Expect.dictEqual actual.CommentMap (commentMapOf [0, " This is a comment"; 1, " :::: \"This is also a comment\""]) ""
-        Expect.equal (kindsOf actual) [blank; code; code; code; code; blank] "a trailing comment keeps the line code"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<s f=0/>"; Kind = QuotedStringKind.EscapedPlainString }]) "the literal text is the only string"
+        Expect.equal (kindsOf actual) [blank; code; code; blank] "a trailing comment keeps the line code"
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "My Value1\n<s f=0/>\nMy Value3"; Kind = QuotedStringKind.PlainScalar }]) "the scalar is the only string"
 
     testCase "Text in the shape of a comment placeholder is text and not a comment" <| fun _ ->
         let actual = expectComments "a: x <c f=0/>\nb: 1 # real\n" "a: x <s f=0/>\nb: 1 <c f=0/>\n" [code; code; blank] [0, " real"]
-        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<c f=0/>"; Kind = QuotedStringKind.EscapedPlainString }]) "the literal text moved into the string table"
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<c f=0/>"; Kind = QuotedStringKind.PlainScalar }]) "the literal text moved into the string table"
         Expect.equal (actual.Lines |> Array.map (fun line -> line.CommentId) |> List.ofArray) [Persil.NoComment; 0; Persil.NoComment] "only the second line has a comment"
 
     testCase "Hash without preceding whitespace is not a comment" <| fun _ ->

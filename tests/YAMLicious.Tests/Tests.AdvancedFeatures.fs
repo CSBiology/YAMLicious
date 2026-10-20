@@ -287,11 +287,11 @@ rbi:
 
     testCase "An explicit key on several lines and a multiline explicit value read from the document" <| fun _ ->
         // yaml@2.6.1: {"k":"q","a b":"x"} for the first two inputs and {"k":"q","a":"c d"} for the last one.
-        // The reader keeps the line break of a plain scalar on several lines.
+        // The reader keeps the line break of a plain scalar on several lines and gives it the plain style.
         let expected =
             YAMLElement.Object [
                 scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
-                scalarEntry (YAMLContent.create "a\nb") (doubleQuoted "x")
+                scalarEntry (YAMLContent.create("a\nb", style=ScalarStyle.Plain)) (doubleQuoted "x")
             ]
         Expect.equal (Reader.read "k: \"q\"\n? a\n  b\n: \"x\"") expected "The key continues on the next line"
         Expect.equal (Reader.read "k: \"q\"\n?\n  a\n  b\n: \"x\"") expected "The key starts on the next line"

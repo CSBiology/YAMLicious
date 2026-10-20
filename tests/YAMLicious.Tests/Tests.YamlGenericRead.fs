@@ -75,37 +75,18 @@ classDiagram
     }
 """
         let actual = read yaml
-        let expected = Level [
-            Line "classDiagram"
-            Intendation [
-                Line "Animal <|-- Duck"
-                Line "Animal <|-- Fish"
-                Line "Animal <|-- Zebra"
-                Line "class Duck{"
-                Intendation [
-                    Line "+String beakColor"
-                    Line "+swim()"
-                    Line "+quack()"
-                ]
-                Line "}"
-                Line "class Fish{"
-                Intendation [
-                    Line "-int sizeInFeet"
-                    Line "-canEat()"
-                ]
-                Line "}"
-                Line "class Zebra{"
-                Intendation [
-                    Line "+bool is_wild"
-                    Line "+run()"
-                ]
-                Line "}"
-            ]
-        ]
+        let expected = Level [ Line "<s f=0/>" ]
         Expect.equal actual.AST expected ""
+        let lines =
+            [ "classDiagram"; "Animal <|-- Duck"; "Animal <|-- Fish"; "Animal <|-- Zebra"
+              "class Duck{"; "+String beakColor"; "+swim()"; "+quack()"; "}"
+              "class Fish{"; "-int sizeInFeet"; "-canEat()"; "}"
+              "class Zebra{"; "+bool is_wild"; "+run()"; "}" ]
+        Expect.equal actual.StringMap.Count 1 "one string"
+        Expect.equal actual.StringMap.[0] { Value = String.concat "\n" lines; Kind = QuotedStringKind.PlainScalar } "the lines of the scalar"
     testCase "Example Comment + String" <| fun _ ->
         // yaml@2.6.1: {"My Key":"My Value1 \"# This is not a comment!\" My Value3"}. The lines below the key
-        // continue one plain scalar, so the quotes on the second of them are text.
+        // are one plain scalar, which the scanner moves into the string table. Its last line keeps the comment.
         let yaml = "
 My Key: # This is a comment
   My Value1 
@@ -115,13 +96,14 @@ My Key: # This is a comment
         let expected = Level [
             Line "My Key: <c f=0/>"
             Intendation [
-                Line "My Value1 "
-                Line "\"# This is not a comment!\""
-                Line "My Value3 <c f=1/>"
+                Line "<s f=0/> <c f=1/>"
             ]
         ]
         let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
-        let expectedStringDict = new System.Collections.Generic.Dictionary<int, StringMapEntry>()
+        let expectedStringDict =
+            new System.Collections.Generic.Dictionary<int, StringMapEntry>(
+                Map [0, { Value = "My Value1\n\"# This is not a comment!\"\nMy Value3"; Kind = QuotedStringKind.PlainScalar }]
+            )
         Expect.equal actual.AST expected "ast"
         Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
         Expect.dictEqual actual.StringMap expectedStringDict "strings"

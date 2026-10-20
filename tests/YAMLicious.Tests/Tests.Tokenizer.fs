@@ -16,6 +16,7 @@ let private body = Persil.LineKind.BlockBody
 
 let private single (value: string) : StringMapEntry = { Value = value; Kind = QuotedStringKind.SingleQuotedString }
 let private dquote (value: string) : StringMapEntry = { Value = value; Kind = QuotedStringKind.DoubleQuotedString }
+let private plainEntry (value: string) : StringMapEntry = { Value = value; Kind = QuotedStringKind.PlainScalar }
 
 let private kindsOf (tokenized: Persil.TokenizedYaml) =
     tokenized.Lines |> Array.map (fun line -> line.Kind) |> List.ofArray
@@ -128,36 +129,44 @@ let private countLineBreaks (input: string) =
         i <- i + 1
     lineBreakCount.Value <- count
 
-/// Compares how the time of Persil.tokenize grows from the small to the large input with how the time
-/// of one pass over the same text grows. The pass is linear, so a linear tokenizer scores about 1 and a
-/// quadratic one about the ratio of the two sizes. The reference absorbs the cost that a large input
-/// pays for the garbage collector and the caches. Every round measures the four series one after the
-/// other, so a load on the machine hits the tokenizer and the reference alike. The first round warms up
-/// the code and is dropped. The fastest of the five rounds after it keeps a pause of the garbage
-/// collector out of the result.
-let private expectLinear (build: int -> string) =
+/// Compares how the time of `operation` grows from the small to the large input with how the time of
+/// `reference`, a linear pass, grows on the same inputs. A linear operation scores about 1 and a quadratic
+/// one about the ratio of the two sizes. The reference absorbs the cost that a large input pays for the
+/// garbage collector and the caches. Every round measures the four series one after the other, so a load
+/// on the machine hits the operation and the reference alike. The first round warms up the code and is
+/// dropped. The fastest of the five rounds after it keeps a pause of the garbage collector out of the result.
+let private expectLinear (name: string) (operation: string -> unit) (reference: string -> unit) (build: int -> string) =
     let smallInput = build smallLines
     let largeInput = build largeLines
     let actions: (unit -> unit)[] = [|
-        fun () -> Persil.tokenize smallInput |> ignore
-        fun () -> Persil.tokenize largeInput |> ignore
-        fun () -> countLineBreaks smallInput
-        fun () -> countLineBreaks largeInput
+        fun () -> operation smallInput
+        fun () -> operation largeInput
+        fun () -> reference smallInput
+        fun () -> reference largeInput
     |]
     let fastest = Array.create actions.Length infinity
     for round in 0 .. 5 do
         for i in 0 .. actions.Length - 1 do
             let milliseconds = sampleMilliseconds actions.[i]
             if round > 0 then fastest.[i] <- min fastest.[i] milliseconds
-    let tokenizeRatio = fastest.[1] / fastest.[0]
+    let operationRatio = fastest.[1] / fastest.[0]
     let referenceRatio = fastest.[3] / fastest.[2]
-    let normalized = tokenizeRatio / referenceRatio
+    let normalized = operationRatio / referenceRatio
     // The limit is the geometric mean of 1 (linear) and the size ratio (quadratic), the middle on a log scale.
     let limit = sqrt (float largeLines / float smallLines)
     Expect.isTrue
         (normalized < limit)
-        (sprintf "The tokenizer took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. The reference took %.3f ms and %.3f ms, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
-            fastest.[0] smallLines fastest.[1] largeLines tokenizeRatio fastest.[2] fastest.[3] referenceRatio normalized limit)
+        (sprintf "%s took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. The reference took %.3f ms and %.3f ms, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
+            name fastest.[0] smallLines fastest.[1] largeLines operationRatio fastest.[2] fastest.[3] referenceRatio normalized limit)
+
+/// A mapping whose first value is a plain scalar of the given number of continuation lines.
+let private plainScalarInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("k: start\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("j: 1\n") |> ignore
+    sb.ToString()
 
 let private headerTests = testList "Block scalar header" [
     testCase "standalone, mapping value, sequence entry and explicit key positions" <| fun _ ->
@@ -345,24 +354,25 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
         let actual =
             expectLines
                 "desc: see the list\n  [draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
-                "desc: see the list\n  [draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
-                [code; code; header; body; code; header; body; blank]
-        Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1; 1; 1; -1] "both headers open a block"
-        Expect.equal actual.StringMap.Count 0 "the bodies hold no placeholder"
+                "desc: <s f=0/>\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
+                [code; header; body; code; header; body; blank]
+        Expect.equal (blockIdsOf actual) [-1; 0; 0; -1; 1; 1; -1] "both headers open a block"
+        Expect.equal (stringsOf actual) [0, plainEntry "see the list\n[draft"] "the bracket is part of the scalar, and the bodies hold no placeholder"
         Expect.equal actual.CommentMap.Count 0 "the hash in the second body is text"
 
     testCase "an unbalanced brace or a dash and bracket on a continuation line does not hide the block after it" <| fun _ ->
         // yaml@2.6.1: {"desc":"see the list {bar","script":"echo 'hi'\n"} and {"desc":"see the list - [bar","script":"echo 'hi'\n"}
         for continuation in [ "  {bar"; "  - [bar" ] do
             let input = "desc: see the list\n" + continuation + "\nscript: |\n  echo 'hi'\n"
-            let actual = expectLines input input [code; code; header; body; blank]
-            Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1] $"the header after {continuation.Trim()} opens a block"
+            let actual = expectLines input "desc: <s f=0/>\nscript: |\n  echo 'hi'\n" [code; header; body; blank]
+            Expect.equal (blockIdsOf actual) [-1; 0; 0; -1] $"the header after {continuation.Trim()} opens a block"
+            Expect.equal (stringsOf actual) [0, plainEntry ("see the list\n" + continuation.Trim())] "the scalar"
 
     testCase "an unbalanced bracket in a sequence item does not hide the block after it" <| fun _ ->
         // yaml@2.6.1: ["desc [bar","echo 'hi'\n"]
-        let input = "- desc\n  [bar\n- |\n  echo 'hi'\n"
-        let actual = expectLines input input [code; code; header; body; blank]
-        Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1] "the header opens a block"
+        let actual = expectLines "- desc\n  [bar\n- |\n  echo 'hi'\n" "- <s f=0/>\n- |\n  echo 'hi'\n" [code; header; body; blank]
+        Expect.equal (blockIdsOf actual) [-1; 0; 0; -1] "the header opens a block"
+        Expect.equal (stringsOf actual) [0, plainEntry "desc\n[bar"] "the scalar"
 
     testCase "a flow mapping with a header-looking value opens no block" <| fun _ ->
         let actual =
@@ -520,12 +530,15 @@ let private documentScannerTests = testList "Directives and document markers in 
 
     testCase "the reserved characters are text inside a plain scalar and on a continuation line" <| fun _ ->
         // yaml@2.6.1: {"k":"a %x"}, {"k":"a@b"}, {"k":"x`y"} and {"k":"a %x"}
-        for input in [ "k: a %x"; "k: a@b"; "k: x`y"; "k: a\n  %x" ] do
-            let actual = expectLines input input (List.replicate (input.Split('\n').Length) code)
+        for input in [ "k: a %x"; "k: a@b"; "k: x`y" ] do
+            let actual = expectLines input input [code]
             Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+        let continuation = expectLines "k: a\n  %x" "k: <s f=0/>" [code]
+        Expect.equal (stringsOf continuation) [0, plainEntry "a\n%x"] "a continuation line"
 
     testCase "a marker needs a separator behind it and sits at column 0" <| fun _ ->
-        expectLines "---a: 1\n...foo\n --- x\n--- a\n..." "---a: 1\n...foo\n --- x\n--- a\n..." [code; code; code; start; finish] |> ignore
+        // The line `...foo` opens a plain scalar and the line ` --- x` continues it.
+        expectLines "---a: 1\n...foo\n --- x\n--- a\n..." "---a: 1\n<s f=0/>\n--- a\n..." [code; code; start; finish] |> ignore
         expectLines "---\t\n---" "---\t\n---" [start; start] |> ignore
 
     testCase "a quote does not cross a marker" <| fun _ ->
@@ -600,27 +613,63 @@ let private quoteScannerTests = testList "Quotes in the scanner" [
 ]
 
 let private continuationScannerTests = testList "Plain scalar continuation lines in the scanner" [
-    let expectText (input: string) =
-        let lineCount = input.Split([| '\n' |]).Length
-        expectLines input input (List.replicate lineCount code)
+    /// Asserts that the input becomes the text with one plain string, whose value joins the segments.
+    let expectMerged (input: string) (text: string) (value: string) =
+        let lineCount = text.Split([| '\n' |]).Length
+        let actual = expectLines input text (List.replicate lineCount code)
+        Expect.equal (stringsOf actual) [0, plainEntry value] $"the string of {input}"
+        actual
 
-    testCase "a quote on a continuation line is text" <| fun _ ->
+    testCase "the lines of a plain scalar become one string with a quote as text" <| fun _ ->
         // yaml@2.6.1: {"k":"$(inputs.a + \"x\")"}, {"k":"$(f(inputs.a, \"x\", 1))"}, {"k":"a \"b\""}, {"k":"a 'b' c"},
         // ["a \"b\""], "a \"b\"" and {"k":"a b \"c\""}
-        for input in [ "k: $(inputs.a +\n  \"x\")"; "k: $(f(inputs.a,\n  \"x\", 1))"; "k: a\n  \"b\""; "k: a\n  'b' c"; "- a\n  \"b\""; "a\n  \"b\""; "k: a\n  b\n  \"c\"" ] do
-            let actual = expectText input
-            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+        expectMerged "k: $(inputs.a +\n  \"x\")" "k: <s f=0/>" "$(inputs.a +\n\"x\")" |> ignore
+        expectMerged "k: $(f(inputs.a,\n  \"x\", 1))" "k: <s f=0/>" "$(f(inputs.a,\n\"x\", 1))" |> ignore
+        expectMerged "k: a\n  \"b\"" "k: <s f=0/>" "a\n\"b\"" |> ignore
+        expectMerged "k: a\n  'b' c" "k: <s f=0/>" "a\n'b' c" |> ignore
+        expectMerged "- a\n  \"b\"" "- <s f=0/>" "a\n\"b\"" |> ignore
+        expectMerged "a\n  \"b\"" "<s f=0/>" "a\n\"b\"" |> ignore
+        expectMerged "k: a\n  b\n  \"c\"" "k: <s f=0/>" "a\nb\n\"c\"" |> ignore
 
-    testCase "a dash, a bracket or a brace on a continuation line is text" <| fun _ ->
-        // yaml@2.6.1: {"k":"a - b"}, {"k":"a [b"}, {"k":"a {b"}, {"k":"a - \"b\""}, {"k":"a [\"b\", c]"} and {"k":"a {\"b\"}"}
-        for input in [ "k: a\n  - b"; "k: a\n  [b"; "k: a\n  {b"; "k: a\n  - \"b\""; "k: a\n  [\"b\", c]"; "k: a\n  {\"b\"}" ] do
-            let actual = expectText input
-            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+    testCase "an indicator character on a continuation line is text" <| fun _ ->
+        // yaml@2.6.1: {"k":"a - b"}, {"k":"a [b"}, {"k":"a {b"}, {"k":"a - \"b\""}, {"k":"a [\"b\", c]"}, {"k":"a {\"b\"}"},
+        // {"k":"a ? |"}, {"k":"a http://x"}, {"k":"a b:c"} and {"k":"a b#c"}
+        expectMerged "k: a\n  - b" "k: <s f=0/>" "a\n- b" |> ignore
+        expectMerged "k: a\n  [b" "k: <s f=0/>" "a\n[b" |> ignore
+        expectMerged "k: a\n  {b" "k: <s f=0/>" "a\n{b" |> ignore
+        expectMerged "k: a\n  - \"b\"" "k: <s f=0/>" "a\n- \"b\"" |> ignore
+        expectMerged "k: a\n  [\"b\", c]" "k: <s f=0/>" "a\n[\"b\", c]" |> ignore
+        expectMerged "k: a\n  {\"b\"}" "k: <s f=0/>" "a\n{\"b\"}" |> ignore
+        expectMerged "k: a\n  ? |" "k: <s f=0/>" "a\n? |" |> ignore
+        expectMerged "k: a\n  http://x" "k: <s f=0/>" "a\nhttp://x" |> ignore
+        expectMerged "k: a\n  b:c" "k: <s f=0/>" "a\nb:c" |> ignore
+        expectMerged "k: a\n  b#c" "k: <s f=0/>" "a\nb#c" |> ignore
 
     testCase "a continuation line that looks like a block scalar header opens no block" <| fun _ ->
         // yaml@2.6.1: [{"k":"v ? |"},"b"]
-        let actual = expectText "- k: v\n      ? |\n- b"
-        Expect.equal (blockIdsOf actual) [-1; -1; -1] "no block"
+        let actual = expectLines "- k: v\n      ? |\n- b" "- k: <s f=0/>\n- b" [code; code]
+        Expect.equal (stringsOf actual) [0, plainEntry "v\n? |"] "the string"
+        Expect.equal (blockIdsOf actual) [-1; -1] "no block"
+
+    testCase "every segment is trimmed and a blank line is an empty segment" <| fun _ ->
+        // yaml@2.6.1: {"k":"a b c"}, {"k":"a\nb"} and {"k":"a\n\nb"}
+        expectMerged "k: a   \n  b  \n  \tc\t" "k: <s f=0/>" "a\nb\nc" |> ignore
+        expectMerged "k: a\n\n  b" "k: <s f=0/>" "a\n\nb" |> ignore
+        expectMerged "k: a\n\n\n  b" "k: <s f=0/>" "a\n\n\nb" |> ignore
+
+    testCase "a blank line behind the scalar stays a line of its own" <| fun _ ->
+        // yaml@2.6.1: {"k":"a b","j":1}
+        let actual = expectLines "k: a\n  b\n\nj: 1" "k: <s f=0/>\n\nj: 1" [code; blank; code]
+        Expect.equal (stringsOf actual) [0, plainEntry "a\nb"] "the string"
+        let atEnd = expectLines "k: a\n  b\n\n" "k: <s f=0/>\n\n" [code; blank; blank]
+        Expect.equal (stringsOf atEnd) [0, plainEntry "a\nb"] "the string at the end of the input"
+
+    testCase "a comment behind the last line stays on the merged line" <| fun _ ->
+        // yaml@2.6.1: {"k":"a b"}
+        let actual = expectLines "k: a\n  b #c" "k: <s f=0/> <c f=0/>" [code]
+        Expect.equal (stringsOf actual) [0, plainEntry "a\nb"] "the string"
+        Expect.equal (commentsOf actual) [0, "c"] "the comment"
+        Expect.equal actual.Lines.[0].CodeLength 12 "the comment placeholder starts behind the string placeholder"
 
     testCase "a comment ends the plain scalar and a deeper line behind it is an error" <| fun _ ->
         // yaml@2.6.1 rejects all six inputs with BAD_INDENT and MISSING_CHAR, the last one with UNEXPECTED_TOKEN
@@ -655,35 +704,29 @@ let private continuationScannerTests = testList "Plain scalar continuation lines
         let afterKey = expectLines "k:\n  \"b\"" "k:\n  <s f=0/>" [code; code]
         Expect.equal (stringsOf afterKey) [0, dquote "b"] "the string"
 
-    testCase "a blank line keeps the plain scalar open" <| fun _ ->
-        // yaml@2.6.1: {"k":"a\n\"b\""}
-        let input = "k: a\n\n  \"b\""
-        let actual = expectLines input input [code; blank; code]
-        Expect.equal actual.StringMap.Count 0 "no string"
-
     testCase "a line that is not deeper than the owner of the scalar is no continuation" <| fun _ ->
         // yaml@2.6.1 rejects the first four inputs and reads the fifth as [{"k":"v \"b\""}].
         // The owner is the key column in `k: a` and `- k: v`, and the column of the last dash in `- a` and `- - a`.
         for (input, text) in [ ("k: a\n\"b\"", "k: a\n<s f=0/>"); ("- a\n\"b\"", "- a\n<s f=0/>"); ("- - a\n  \"b\"", "- - a\n  <s f=0/>"); ("- k: v\n  \"b\"", "- k: v\n  <s f=0/>") ] do
             let actual = expectLines input text [code; code]
             Expect.equal (stringsOf actual) [0, dquote "b"] $"the string in {input}"
-        let deeper = expectText "- k: v\n   \"b\""
-        Expect.equal deeper.StringMap.Count 0 "a line deeper than the key continues the scalar"
+        expectMerged "- k: v\n   \"b\"" "- k: <s f=0/>" "v\n\"b\"" |> ignore
 
     testCase "the scalar ends at the next line that is not deeper" <| fun _ ->
         // yaml@2.6.1: {"k":"a \"b\"","m":"z","n":"x\n"}
         let actual =
             expectLines
                 "k: a\n  \"b\"\nm: \"z\"\nn: |\n  x\n"
-                "k: a\n  \"b\"\nm: <s f=0/>\nn: |\n  x\n"
-                [code; code; code; header; body; blank]
-        Expect.equal (stringsOf actual) [0, dquote "z"] "the string behind the scalar"
+                "k: <s f=0/>\nm: <s f=1/>\nn: |\n  x\n"
+                [code; code; header; body; blank]
+        Expect.equal (stringsOf actual) [0, plainEntry "a\n\"b\""; 1, dquote "z"] "the strings"
 
     testCase "the parent node owns a value on a line of its own" <| fun _ ->
         // yaml@2.6.1: {"valueFrom":"$(f(inputs.a, \"x\", 1))"}, ["a \"b\", c"], {"k":"a \"b\""} and "a \"b\""
-        for input in [ "valueFrom:\n  $(f(inputs.a,\n  \"x\", 1))"; "-\n  a\n  \"b\", c"; "k:\n  a\n  \"b\""; "a\n\"b\"" ] do
-            let actual = expectText input
-            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+        expectMerged "valueFrom:\n  $(f(inputs.a,\n  \"x\", 1))" "valueFrom:\n  <s f=0/>" "$(f(inputs.a,\n\"x\", 1))" |> ignore
+        expectMerged "-\n  a\n  \"b\", c" "-\n  <s f=0/>" "a\n\"b\", c" |> ignore
+        expectMerged "k:\n  a\n  \"b\"" "k:\n  <s f=0/>" "a\n\"b\"" |> ignore
+        expectMerged "a\n\"b\"" "<s f=0/>" "a\n\"b\"" |> ignore
 
     testCase "a line that is not deeper than the parent ends a value on a line of its own" <| fun _ ->
         // yaml@2.6.1: {"k":"a","j":"x"} and ["a","b"]
@@ -694,32 +737,28 @@ let private continuationScannerTests = testList "Plain scalar continuation lines
 
     testCase "the key of a sequence item owns its value, and a sibling key ends the scalar" <| fun _ ->
         // yaml@2.6.1: [{"key":"a \"b\"","other":"c"}], [["a","b"]] and [["a \"b\"","c"]]
-        let mapping = expectLines "- key:\n    a\n    \"b\"\n  other: \"c\"" "- key:\n    a\n    \"b\"\n  other: <s f=0/>" [code; code; code; code]
-        Expect.equal (stringsOf mapping) [0, dquote "c"] "the sibling key opens a string, and the quote on the line before is text"
+        let mapping = expectLines "- key:\n    a\n    \"b\"\n  other: \"c\"" "- key:\n    <s f=0/>\n  other: <s f=1/>" [code; code; code]
+        Expect.equal (stringsOf mapping) [0, plainEntry "a\n\"b\""; 1, dquote "c"] "the sibling key opens a string, and the quote on the line before is text"
         let nested = expectLines "- -\n    a\n  - \"b\"" "- -\n    a\n  - <s f=0/>" [code; code; code]
         Expect.equal (stringsOf nested) [0, dquote "b"] "the second item of the inner sequence"
-        let inner = expectLines "- - a\n    \"b\"\n  - \"c\"" "- - a\n    \"b\"\n  - <s f=0/>" [code; code; code]
-        Expect.equal (stringsOf inner) [0, dquote "c"] "a quote deeper than the inner dash is text"
+        let inner = expectLines "- - a\n    \"b\"\n  - \"c\"" "- - <s f=0/>\n  - <s f=1/>" [code; code]
+        Expect.equal (stringsOf inner) [0, plainEntry "a\n\"b\""; 1, dquote "c"] "a quote deeper than the inner dash is text"
 
     testCase "a line of properties alone leaves the value to the node in front of it" <| fun _ ->
         // yaml@2.6.1: {"k":"x \"y\""}
-        let actual = expectText "k:\n  &a\n    x\n  \"y\""
-        Expect.equal actual.StringMap.Count 0 "the quote is text, because the owner of x is the key"
+        let actual = expectLines "k:\n  &a\n    x\n  \"y\"" "k:\n  &a\n    <s f=0/>" [code; code; code]
+        Expect.equal (stringsOf actual) [0, plainEntry "x\n\"y\""] "the quote is text, because the owner of x is the key"
 
     testCase "a document marker ends the plain scalar and a plain scalar on the marker line is owned by the root" <| fun _ ->
         // yaml@2.6.1: two documents, "a" and "b", and "a \"b\""
         let quoted = expectLines "a\n--- \"b\"" "a\n--- <s f=0/>" [code; start]
         Expect.equal (stringsOf quoted) [0, dquote "b"] "the quote behind the marker opens a scalar"
-        let plain = expectLines "--- a\n  \"b\"" "--- a\n  \"b\"" [start; code]
-        Expect.equal plain.StringMap.Count 0 "the quote on the second line is text"
+        let plain = expectLines "--- a\n  \"b\"" "--- <s f=0/>" [start]
+        Expect.equal (stringsOf plain) [0, plainEntry "a\n\"b\""] "the quote on the second line is text"
 
     testCase "text in the shape of a placeholder starts a plain scalar" <| fun _ ->
         // yaml@2.6.1: {"k":"<s f=0/> [x, \"y\"]"}
-        let actual = expectLines "k: <s f=0/>\n  [x, \"y\"]" "k: <s f=0/>\n  [x, \"y\"]" [code; code]
-        Expect.equal
-            (stringsOf actual)
-            [0, ({ Value = "<s f=0/>"; Kind = QuotedStringKind.EscapedPlainString }: StringMapEntry)]
-            "only the text of the first line is a string, and the quote on the second line is text"
+        expectMerged "k: <s f=0/>\n  [x, \"y\"]" "k: <s f=0/>" "<s f=0/>\n[x, \"y\"]" |> ignore
 
     testCase "a continuation line that holds a mapping indicator is an error" <| fun _ ->
         // yaml@2.6.1 rejects all four inputs with BLOCK_AS_IMPLICIT_KEY and MULTILINE_IMPLICIT_KEY
@@ -728,12 +767,10 @@ let private continuationScannerTests = testList "Plain scalar continuation lines
                 (errorOf (fun () -> Persil.tokenize input |> ignore))
                 "Line 2: a multi-line plain scalar cannot hold a mapping key (`: `)."
                 $"The error of {input}"
-
-    testCase "a continuation line holds the other indicator characters as text" <| fun _ ->
-        // yaml@2.6.1: {"k":"a http://x"}, {"k":"a b:c"}, {"k":"a b#c"}, {"k":"a - x"}, {"k":"a [x, \"y\"]"} and {"k":"a ? |"}
-        for input in [ "k: a\n  http://x"; "k: a\n  b:c"; "k: a\n  b#c"; "k: a\n  - x"; "k: a\n  [x, \"y\"]"; "k: a\n  ? |" ] do
-            let actual = expectText input
-            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+        Expect.stringContains
+            (errorOf (fun () -> Persil.tokenize "k: a\n  b\n\n  c: d" |> ignore))
+            "Line 4: a multi-line plain scalar cannot hold a mapping key (`: `)."
+            "The error names the physical line behind a blank line"
 ]
 
 /// The pair `"a": 1` and the pair `"second": 2` of a flow mapping.
@@ -911,6 +948,16 @@ let private lineDataTests = testList "Line data" [
         Expect.equal (sourceLinesOf escaped.Lines) [1; 3; 4] "double-quoted with an escaped line break"
         let several = Persil.tokenize "a: 'p\n q'\nb: \"r\n s\"\nc: |\n  z\n"
         Expect.equal (sourceLinesOf several.Lines) [1; 3; 5; 6; 7] "several multiline scalars before a block scalar"
+
+    testCase "a merged plain scalar keeps the number of its first line and the lines behind it count on" <| fun _ ->
+        let plain = Persil.tokenize "a: x\n  y\nb: 1\n"
+        Expect.equal (sourceLinesOf plain.Lines) [1; 3; 4] "two lines"
+        let blank = Persil.tokenize "a: x\n\n  y\nb: 1\n"
+        Expect.equal (sourceLinesOf blank.Lines) [1; 4; 5] "a blank line inside"
+        let trailing = Persil.tokenize "a: x\n  y\n\nb: 1\n"
+        Expect.equal (sourceLinesOf trailing.Lines) [1; 3; 4; 5] "a blank line behind the scalar is a line of its own"
+        let comment = Persil.tokenize "a: x\n  y # c\nb: 1\n"
+        Expect.equal (sourceLinesOf comment.Lines) [1; 3; 4] "a comment behind the last line"
 
     testCase "line endings do not change the numbers" <| fun _ ->
         Expect.equal (sourceLinesOf (Persil.tokenize "a: 1\r\nb: |\r\n  x\r\nc: 2\r\n").Lines) [1; 2; 3; 4; 5] "CRLF"
@@ -1176,6 +1223,56 @@ let private readerTests = testList "Reader on scanner output" [
         Expect.equal (Reader.read "- ...\n- y" |> Decode.list Decode.string) [ "..."; "y" ] "a dash"
         Expect.equal (Reader.read "k:\n  ..." |> Decode.object (fun get -> get.Required.Field "k" Decode.string)) "..." "a line of its own"
         Expect.equal (Reader.read "a: 1\n...\nb: 2\n") (YAMLElement.Object [ mapping "a" (plainNode "1") ]) "the end marker at column 0"
+
+    testCase "the lines of a plain scalar are one value that no stage reads as structure" <| fun _ ->
+        // yaml@2.6.1: {"k":"a - x"}, {"k":"v ? | x"}, {"k":"a [x, \"y\"]"} and [{"k":"v ? |"},"b"]
+        let plainLines (value: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value, style = ScalarStyle.Plain)) ]
+        Expect.equal (Reader.read "k: a\n  - x") (YAMLElement.Object [ mapping "k" (plainLines "a\n- x") ]) "a dash"
+        Expect.equal (Reader.read "k: v\n  ? |\n  x") (YAMLElement.Object [ mapping "k" (plainLines "v\n? |\nx") ]) "an explicit key mark"
+        Expect.equal (Reader.read "k: a\n  [x, \"y\"]") (YAMLElement.Object [ mapping "k" (plainLines "a\n[x, \"y\"]") ]) "a flow sequence with a quote"
+        Expect.equal
+            (Reader.read "- k: v\n      ? |\n- b")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ mapping "k" (plainLines "v\n? |") ]; plainNode "b" ] ])
+            "a mapping in a sequence item"
+
+    testCase "Decode folds the lines of a plain scalar" <| fun _ ->
+        // yaml@2.6.1: {"valueFrom":"$(f(inputs.a, \"x\", 1))"}, {"k":"a b c"}, {"k":"a\nb"}, {"k":"a - x"} and "a b"
+        let field (name: string) (yaml: string) =
+            Reader.read yaml |> Decode.object (fun get -> get.Required.Field name Decode.string)
+        Expect.equal (field "valueFrom" "valueFrom: $(f(inputs.a,\n  \"x\", 1))") "$(f(inputs.a, \"x\", 1))" "an expression"
+        Expect.equal (field "k" "k: a\n  b  \n  c") "a b c" "trailing blanks"
+        Expect.equal (field "k" "k: a\n\n  b") "a\nb" "a blank line is a line break"
+        Expect.equal (field "k" "k: a\n  - x") "a - x" "a dash"
+        Expect.equal (Reader.read "a\nb" |> Decode.string) "a b" "a root scalar"
+
+    testCase "a comment behind the last line of a plain scalar is the comment of the value" <| fun _ ->
+        // yaml@2.6.1: {"k":"a b"}
+        let expected =
+            YAMLElement.Object [
+                mapping "k" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("a\nb", comment = "c", style = ScalarStyle.Plain)) ])
+            ]
+        Expect.equal (Reader.read "k: a\n  b #c") expected "the value and its comment"
+
+    testCase "a plain scalar can be the explicit key or the explicit value" <| fun _ ->
+        // yaml@2.6.1: {"a b":"c"} and {"key":"a b"}. Decode does not fold the line break of a key.
+        let key = YAMLContent.create("a\nb", style = ScalarStyle.Plain)
+        Expect.equal (Reader.read "? a\n  b\n: c") (YAMLElement.Object [ YAMLElement.Mapping(key, plainNode "c") ]) "the key"
+        Expect.equal (Reader.read "? key\n: a\n  b" |> Decode.object (fun get -> get.Required.Field "key" Decode.string)) "a b" "the value"
+
+    testCase "a mapping key or a comment inside a plain scalar is an error" <| fun _ ->
+        // yaml@2.6.1 rejects both inputs
+        Expect.throws (fun () -> Reader.read "k: a\n  b: c" |> ignore) "a colon followed by a blank"
+        Expect.throws (fun () -> Reader.read "k: a # c\n  b" |> ignore) "a comment ends the scalar"
+
+    testCase "a plain scalar of more than 5000 lines reads as one value" <| fun _ ->
+        let lines = 5200
+        let raw = "start" + String.concat "" [ for i in 0 .. lines - 1 -> sprintf "\nline %d" i ]
+        let expected =
+            YAMLElement.Object [
+                mapping "k" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(raw, style = ScalarStyle.Plain)) ])
+                mapping "j" (plainNode "1")
+            ]
+        Expect.equal (Reader.read (plainScalarInput lines)) expected "every line in order, and the sibling behind it"
 ]
 
 let private performanceTests = testList "Scanner performance" [
@@ -1198,7 +1295,13 @@ let private performanceTests = testList "Scanner performance" [
             "the unclosed quotes stay literal and the closed strings are replaced"
 
     testCase "the time grows linearly with the number of lines" <| fun _ ->
-        expectLinear malformedInput
+        expectLinear "The tokenizer" (Persil.tokenize >> ignore) countLineBreaks malformedInput
+
+    testCase "the time grows linearly with the lines of a plain scalar" <| fun _ ->
+        expectLinear "The tokenizer" (Persil.tokenize >> ignore) countLineBreaks plainScalarInput
+
+    testCase "the read time grows linearly with the lines of a plain scalar" <| fun _ ->
+        expectLinear "The read" (Preprocessing.read >> ignore) (Persil.tokenize >> ignore) plainScalarInput
 
     testCase "one unclosed quote in front of a long input" <| fun _ ->
         // The first probe runs to the end of the input and every later probe reuses its result.

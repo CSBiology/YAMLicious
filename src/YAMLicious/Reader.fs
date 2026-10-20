@@ -11,7 +11,7 @@ let private restoreScalarPlaceholderValue (entry: StringMapEntry) =
     match entry.Kind with
     | QuotedStringKind.SingleQuotedString -> entry.Value
     // A separate case, because Fable Python loses the first case of a merged pattern over three cases.
-    | QuotedStringKind.EscapedPlainString -> entry.Value
+    | QuotedStringKind.PlainScalar -> entry.Value
     | QuotedStringKind.DoubleQuotedString ->
         // Double-quoted scalars need escape processing for the decoded value.
         Escapes.unescapeDoubleQuoted entry.Value
@@ -155,7 +155,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 match entry.Kind with
                 | QuotedStringKind.SingleQuotedString -> Some ScalarStyle.SingleQuoted
                 | QuotedStringKind.DoubleQuotedString -> Some ScalarStyle.DoubleQuoted
-                | QuotedStringKind.EscapedPlainString -> None
+                | QuotedStringKind.PlainScalar -> if entry.Value.Contains("\n") then Some ScalarStyle.Plain else None
             value, style
         | None ->
             let value = restoreStringReplace stringDict raw

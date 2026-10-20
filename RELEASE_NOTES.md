@@ -45,7 +45,7 @@
 * A multiline quoted scalar before a block scalar no longer corrupts the double-quoted strings that follow it. Earlier versions turned `c: "z"` into the value `"z"` with its quotes.
 * `''` reads as the empty string.
 * A quote inside a plain scalar is text, as in YAML 1.2.2. `o["k"]`, `a, "b"` and `$(inputs["my-input"].path)` keep their quotes. Earlier versions read them as `o[k]`, `a, b` and `$(inputs[my-input].path)`. A quote opens a quoted scalar only where a node can start, and a `,`, `[` or `{` in a plain scalar outside a flow collection is text.
-* A line indented deeper than the node of a plain scalar continues that scalar, as in YAML 1.2.2. A quote, `- `, `? |` or a bracket on such a line is text and opens no quoted scalar, flow collection or block scalar.
+* A line indented deeper than the node of a plain scalar continues that scalar, as in YAML 1.2.2. A quote, `- `, `? |` or a bracket on such a line is text and opens no quoted scalar, flow collection or block scalar. The scanner turns a plain scalar that spans several lines into one token, like a quoted scalar, so no later stage builds a node from its lines. A comment behind its last line is the comment of the value.
 * The node of a plain scalar is the block node that contains it. A value on a line of its own, as in `valueFrom:` followed by `$(f(inputs.a,` and `"x", 1))` on indented lines, belongs to its parent, so the lines below it continue the scalar and their quotes stay text. The same holds behind a lone `-`, at the root and behind `---`. A line that holds only a tag or an anchor leaves the value to the node in front of it.
 * A comment ends a plain scalar, so a deeper line behind it, as in `k: a # c` followed by `  b`, is an error. A colon followed by a blank on a line that continues a plain scalar is an error too, because a plain scalar cannot hold a mapping key.
 * A plain scalar cannot start with `%`, `@` or a backquote, wherever a node starts. This covers `k: %x`, `- %x`, `[%bad]`, `{@a: 1}` and a `%YAML` line inside the content of a document. The error names the line.
@@ -85,7 +85,7 @@
 * `Syntax.LineValue.dashColumns` returns the columns of the `-` entry indicators at the start of a line.
 * `Preprocessing.read` gives every `-` entry indicator of a compact entry its own `Line "-"` element, and the node behind it nests in the following `Intendation`.
 * `Decode.Helper.withoutComments` removes the comments from a `YAMLElement.Object` or a `YAMLElement.Sequence`.
-* `YAMLiciousTypes.QuotedStringKind` gains the case `EscapedPlainString` for plain text in the shape of a placeholder. A match over `QuotedStringKind` must handle it.
+* `YAMLiciousTypes.QuotedStringKind` gains the case `PlainScalar`. It holds the text of a plain scalar that spans several lines and plain text in the shape of a placeholder. A match over `QuotedStringKind` must handle it.
 
 ### 1.0.2 (Released 2026-07-23)
 * Fix a reader bug where a lone apostrophe inside a plain scalar — a legal, non-delimiting character in plain and double-quoted scalars — caused the double-quote extraction pass to consume the remainder of the document, dropping every subsequent quoted token (notably double-quoted keys). Apostrophes are now treated as ordinary characters in the double-quote pass, and an unclosed quote of either kind no longer swallows the rest of the input.
