@@ -271,6 +271,15 @@ Hello World: 42"""
         )
         let expected = "hi"
         Expect.equal actual expected ""
+    testCase "Decode.list skips a comment after the last item of a nested sequence" <| fun _ ->
+        let ele = "r:\n  a:\n    - 1\n    # end"
+        let actual = ele |> Decode.read |> Decode.object (fun get ->
+            get.Required.Field "r" (Decode.object (fun get2 ->
+                get2.Required.Field "a" (Decode.list Decode.int)
+            ))
+        )
+        let expected = [1]
+        Expect.equal actual expected ""
 ]
 
 let tests_validationPackages = testList "ValidationPackages" [

@@ -20,8 +20,8 @@ let private withIndent (indent: int) (line: string) =
 /// A full-line comment belongs to the node that follows it. Giving it the indentation of the
 /// next content line puts it into that node's block, so the indentation pass below treats
 /// comments like any other line. Comments with no content after them stay in the last block,
-/// at most as deep as its final content line. Comments before a flow closer keep their place
-/// inside the flow collection.
+/// at most as deep as its final content line. A comment before a flow closer takes the
+/// indentation of the previous entry, which keeps it inside the flow collection.
 let private alignCommentLines (lines: string list) =
     let lastContentIndent =
         lines
@@ -37,7 +37,15 @@ let private alignCommentLines (lines: string list) =
         | line :: rest when Placeholder.isCommentOnlyLine line ->
             let aligned =
                 match nextContent with
-                | Some next when isFlowCloserLine next -> line
+                | Some next when isFlowCloserLine next ->
+                    let closerIndent = Line.countLeadingSpaces next
+                    let previousIndent =
+                        rest
+                        |> List.tryFind isContentLine
+                        |> Option.map Line.countLeadingSpaces
+                    match previousIndent with
+                    | Some p when p > closerIndent -> withIndent p line
+                    | _ -> line
                 | Some next -> withIndent (Line.countLeadingSpaces next) line
                 | None -> withIndent (min lastContentIndent (Line.countLeadingSpaces line)) line
             loop rest nextContent (aligned :: acc)

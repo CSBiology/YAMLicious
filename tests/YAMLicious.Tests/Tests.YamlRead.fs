@@ -2158,5 +2158,89 @@ expression: >
         Expect.stringContains rewritten "sanitize(entry)" "sanitize helper should survive roundtrip"
         Expect.stringContains rewritten "allowedFields" "allowedFields array should survive roundtrip"
         Expect.equal written rewritten "Write output should be stable across roundtrips"
+
+    testCase "Commented-out block scalar header does not protect the following lines" <| fun _ ->
+        let yaml = "a:\n# old: |\n  b: 1 # trailing\n  d: 2"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Comment(" old: |")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1", " trailing"))]
+                    )
+                    YAMLElement.Mapping(
+                        YAMLContent.create("d"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A header inside a comment should not open a block scalar."
+
+    testCase "Commented-out block scalar header inside a CWL requirements block" <| fun _ ->
+        let yaml = "requirements:\n#  InitialWorkDirRequirement: |\n  DockerRequirement:\n    dockerPull: x\n    # pinned version\n    b: 2"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("requirements"),
+                YAMLElement.Object [
+                    YAMLElement.Comment("  InitialWorkDirRequirement: |")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("DockerRequirement"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("dockerPull"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x"))]
+                            )
+                            YAMLElement.Comment(" pinned version")
+                            YAMLElement.Mapping(
+                                YAMLContent.create("b"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A commented-out block scalar header should leave the following comments and entries alone."
+
+    testCase "Comment before a dedented flow closer stays in the flow collection" <| fun _ ->
+        let yaml = "data:\n  [\n    a,\n    b\n# last\n  ]\nz: 1"
+        Expect.isTrue (try (Reader.read yaml |> ignore; true) with _ -> false) "Reading should not throw."
+        let data, z =
+            yaml
+            |> Decode.read
+            |> Decode.object (fun get ->
+                let data = get.Required.Field "data" (Decode.list Decode.string)
+                let z = get.Required.Field "z" Decode.int
+                data, z
+            )
+        Expect.equal data ["a"; "b"] "The comment should not add or drop flow items."
+        Expect.equal z 1 "The key after the flow sequence should keep its value."
+
+    testCase "Commented-out last entry of a multi-line flow sequence" <| fun _ ->
+        let yaml = "baseCommand:\n  [\n    python,\n#   old,\n  ]"
+        let actual =
+            yaml
+            |> Decode.read
+            |> Decode.object (fun get -> get.Required.Field "baseCommand" (Decode.list Decode.string))
+        Expect.equal actual ["python"] "The commented-out entry should not appear in the list."
+
+    testCase "Comment that ends a block scalar before more indented text is rejected" <| fun _ ->
+        Expect.throws (fun () -> Reader.read "a: >-\n  text\n# c\n  more\n" |> ignore) "A comment line ends a block scalar, so the more indented text after it is invalid."
+
+    testCase "Hash directly after a flow closer is read as a plain scalar" <| fun _ ->
+        let yaml = "Say: [Hello, World]# 420 blaze it"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("Say"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("[Hello, World]# 420 blaze it"))]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A hash without leading whitespace belongs to the plain scalar."
 ]
 

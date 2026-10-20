@@ -260,6 +260,15 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
     sb.ToString()
 
 
+let private tryFindCommentStart (line: string) =
+    let mutable i = 0
+    let mutable found = -1
+    while found < 0 && i < line.Length do
+        if line.[i] = '#' && CommentMarker.startsAt line i then
+            found <- i
+        i <- i + 1
+    found
+
 let private detectBlockScalarContentLines (yamlString: string) =
     let normalized = Line.normalizeNewlines yamlString
     let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
@@ -277,12 +286,21 @@ let private detectBlockScalarContentLines (yamlString: string) =
             else
                 openBlockIndent <- None
         | None ->
-            match BlockScalar.tryDetectHeaderIndent lines.[i] with
-            | Some indent ->
-                openBlockIndent <- Some indent
+            let line = lines.[i]
+            if line.TrimStart().StartsWith("#") then
                 i <- i + 1
-            | None ->
-                i <- i + 1
+            else
+                // Header detection ignores a trailing comment, so `k: 1 # x: |` opens no block scalar.
+                let code =
+                    match tryFindCommentStart line with
+                    | -1 -> line
+                    | idx -> line.Substring(0, idx)
+                match BlockScalar.tryDetectHeaderIndent code with
+                | Some indent ->
+                    openBlockIndent <- Some indent
+                    i <- i + 1
+                | None ->
+                    i <- i + 1
 
     protectedLines |> Seq.toList |> Set.ofList
 
@@ -297,15 +315,6 @@ let stringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
 
 let singleQuotedStringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
     singleQuotedStringCleanUpWithProtected dict Set.empty s
-
-let private tryFindCommentStart (line: string) =
-    let mutable i = 0
-    let mutable found = -1
-    while found < 0 && i < line.Length do
-        if line.[i] = '#' && CommentMarker.startsAt line i then
-            found <- i
-        i <- i + 1
-    found
 
 /// Replaces every comment with a `<c f=N/>` placeholder. This runs after the quoted-string
 /// passes, so a `#` inside quotes is already hidden. The pass skips block scalar content

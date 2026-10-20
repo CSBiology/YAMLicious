@@ -1,3 +1,12 @@
+### 2.0.0 (Unreleased)
+* A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`. Inside block scalar content a `#` is always text.
+* Invalid input such as `[a]#c` (no space before `#`) is now read as the plain scalar `[a]#c`. Earlier versions read a comment.
+* A full-line comment belongs to the node that follows it. Comments directly under a nested key no longer fail with "Unknown pattern".
+* Comments between sequence items are `YAMLElement.Comment` entries of the sequence. Earlier versions wrapped them in `Object [Comment ...]`, which looked like an extra item.
+* All `Decode` functions skip comments.
+* The writer emits comment entries of a sequence as comment lines and writes plain scalars like `a#b` without quotes.
+* `Persil.CommentMatchPattern` is removed.
+
 ### 1.0.2 (Released 2026-07-23)
 * Fix a reader bug where a lone apostrophe inside a plain scalar — a legal, non-delimiting character in plain and double-quoted scalars — caused the double-quote extraction pass to consume the remainder of the document, dropping every subsequent quoted token (notably double-quoted keys). Apostrophes are now treated as ordinary characters in the double-quote pass, and an unclosed quote of either kind no longer swallows the rest of the input.
 

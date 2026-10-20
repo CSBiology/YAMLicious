@@ -102,6 +102,13 @@ let private isCommentOrBlankElement e =
     | YamlComment _ -> true
     | _ -> isBlankLineElement e
 
+let rec private containsCommentLine (eles: PreprocessorElement list) =
+    eles
+    |> List.exists (function
+        | YamlComment _ -> true
+        | Intendation children -> containsCommentLine children
+        | _ -> false)
+
 /// Splits the items of a block sequence from the elements that follow it. Comments after the
 /// last item stay outside the sequence because a full-line comment belongs to the next node.
 let private splitSequenceItems (eles: PreprocessorElement list) =
@@ -246,6 +253,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         match Syntax.BlockScalar.parseHeader props.Value with
         | Some header ->
+            if containsCommentLine block then
+                failwithf "A comment line ends a block scalar, so the more indented content after it is invalid: %A" block
             let lines = flattenBlockScalarContent block
             let value = Syntax.BlockScalar.buildContent header.Style header.Chomp headerIndent header.Indent lines
             let comment = restoreCommentReplace commentDict commentId

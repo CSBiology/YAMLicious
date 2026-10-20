@@ -270,4 +270,8 @@ let Main = testList "YamlWrite" [
             let reparsed = Reader.read (write parsed None)
             let label = input.Replace("\n", "\\n")
             Expect.equal reparsed parsed $"Round trip should keep the tree for: {label}"
+
+    testCase "Trailing comment after a nested sequence round-trips" <| fun _ ->
+        let s = "r:\n  a:\n    - 1\n    # end"
+        Expect.equal (Reader.read (Writer.write (Reader.read s) None)) (Reader.read s) "The trailing comment should survive write and read."
 ]
