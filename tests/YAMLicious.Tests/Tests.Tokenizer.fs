@@ -439,6 +439,109 @@ let private documentScannerTests = testList "Directives and document markers in 
         Expect.equal (stringsOf actual) [0, single "x --- y"] "an indented marker is text"
 ]
 
+let private quoteScannerTests = testList "Quotes in the scanner" [
+    testCase "a quote behind a bracket in a plain scalar is text" <| fun _ ->
+        // yaml@2.6.1: {"k":"o[\"k\"]"}, {"k":"$(o['k'] || [1, 2])"} and {"k":"$(inputs[\"my-input\"].path)"}
+        for input in [ "k: o[\"k\"]"; "k: $(o['k'] || [1, 2])"; "k: $(inputs[\"my-input\"].path)" ] do
+            let actual = expectLines input input [code]
+            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+
+    testCase "a quote behind a comma in a plain scalar is text" <| fun _ ->
+        // yaml@2.6.1: {"k":"a, \"b\""}
+        let actual = expectLines "k: a, \"b\"" "k: a, \"b\"" [code]
+        Expect.equal actual.StringMap.Count 0 "the comma is text, so the quote is text"
+
+    testCase "a quote behind a brace in a plain scalar is text" <| fun _ ->
+        // yaml@2.6.1 rejects this input with BLOCK_AS_IMPLICIT_KEY, because the `: ` ends a plain scalar
+        // that would be an implicit key. The quote sits inside that plain scalar.
+        let actual = expectLines "k: x {\"a\": 1}" "k: x {\"a\": 1}" [code]
+        Expect.equal actual.StringMap.Count 0 "no string"
+
+    testCase "a quote in a single-line flow collection opens a scalar" <| fun _ ->
+        // yaml@2.6.1: {"k":["a","b"]}, {"k":{"a":"b"}}, {"k":["x","y, z"]} and [["a","b"]]
+        let cases =
+            [ ("k: [\"a\", 'b']", "k: [<s f=0/>, <s f=1/>]", [ (0, dquote "a"); (1, single "b") ])
+              ("k: {\"a\": \"b\"}", "k: {<s f=0/>: <s f=1/>}", [ (0, dquote "a"); (1, dquote "b") ])
+              ("k: [x, \"y, z\"]", "k: [x, <s f=0/>]", [ (0, dquote "y, z") ])
+              ("- [\"a\", \"b\"]", "- [<s f=0/>, <s f=1/>]", [ (0, dquote "a"); (1, dquote "b") ]) ]
+        for (input, text, strings) in cases do
+            let actual = expectLines input text [code]
+            Expect.equal (stringsOf actual) strings $"strings of {input}"
+
+    testCase "a quote behind a property at a node start opens a scalar" <| fun _ ->
+        // yaml@2.6.1: {"k":"x"}
+        let actual = expectLines "k: !!str \"x\"" "k: !!str <s f=0/>" [code]
+        Expect.equal (stringsOf actual) [0, dquote "x"] "the string"
+
+    testCase "an indicator character or a tag-like word inside a plain scalar starts no node" <| fun _ ->
+        // yaml@2.6.1: {"k":"a- \"b\""}, {"k":"a? \"b\""}, {"k":"a:\"b\""} and {"k":"a !b \"c\""}
+        for input in [ "k: a- \"b\""; "k: a? \"b\""; "k: a:\"b\""; "k: a !b \"c\"" ] do
+            let actual = expectLines input input [code]
+            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+]
+
+let private continuationScannerTests = testList "Plain scalar continuation lines in the scanner" [
+    let expectText (input: string) =
+        let lineCount = input.Split([| '\n' |]).Length
+        expectLines input input (List.replicate lineCount code)
+
+    testCase "a quote on a continuation line is text" <| fun _ ->
+        // yaml@2.6.1: {"k":"$(inputs.a + \"x\")"}, {"k":"$(f(inputs.a, \"x\", 1))"}, {"k":"a \"b\""}, {"k":"a 'b' c"},
+        // ["a \"b\""], "a \"b\"" and {"k":"a b \"c\""}
+        for input in [ "k: $(inputs.a +\n  \"x\")"; "k: $(f(inputs.a,\n  \"x\", 1))"; "k: a\n  \"b\""; "k: a\n  'b' c"; "- a\n  \"b\""; "a\n  \"b\""; "k: a\n  b\n  \"c\"" ] do
+            let actual = expectText input
+            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+
+    testCase "a dash, a bracket or a brace on a continuation line is text" <| fun _ ->
+        // yaml@2.6.1: {"k":"a - b"}, {"k":"a [b"}, {"k":"a {b"}, {"k":"a - \"b\""}, {"k":"a [\"b\", c]"} and {"k":"a {\"b\"}"}
+        for input in [ "k: a\n  - b"; "k: a\n  [b"; "k: a\n  {b"; "k: a\n  - \"b\""; "k: a\n  [\"b\", c]"; "k: a\n  {\"b\"}" ] do
+            let actual = expectText input
+            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+
+    testCase "a continuation line that looks like a block scalar header opens no block" <| fun _ ->
+        // yaml@2.6.1: [{"k":"v ? |"},"b"]
+        let actual = expectText "- k: v\n      ? |\n- b"
+        Expect.equal (blockIdsOf actual) [-1; -1; -1] "no block"
+
+    testCase "a comment ends the plain scalar" <| fun _ ->
+        // yaml@2.6.1 rejects the input with BAD_INDENT and MISSING_CHAR. The scanner reads the line
+        // behind the comment as a new node.
+        let actual = expectLines "k: a # c\n  \"b\"" "k: a <c f=0/>\n  <s f=0/>" [code; code]
+        Expect.equal (stringsOf actual) [0, dquote "b"] "the string"
+        Expect.equal (commentsOf actual) [0, " c"] "the comment"
+
+    testCase "no plain scalar is open behind a quoted scalar or a bare key" <| fun _ ->
+        // yaml@2.6.1 rejects `k: "a"\n  "b"` with BAD_INDENT and MISSING_CHAR, and reads the second input as {"k":"b"}.
+        let afterQuote = expectLines "k: \"a\"\n  \"b\"" "k: <s f=0/>\n  <s f=1/>" [code; code]
+        Expect.equal (stringsOf afterQuote) [0, dquote "a"; 1, dquote "b"] "both strings"
+        let afterKey = expectLines "k:\n  \"b\"" "k:\n  <s f=0/>" [code; code]
+        Expect.equal (stringsOf afterKey) [0, dquote "b"] "the string"
+
+    testCase "a blank line keeps the plain scalar open" <| fun _ ->
+        // yaml@2.6.1: {"k":"a\n\"b\""}
+        let input = "k: a\n\n  \"b\""
+        let actual = expectLines input input [code; blank; code]
+        Expect.equal actual.StringMap.Count 0 "no string"
+
+    testCase "a line that is not deeper than the owner of the scalar is no continuation" <| fun _ ->
+        // yaml@2.6.1 rejects the first four inputs and reads the fifth as [{"k":"v \"b\""}].
+        // The owner is the key column in `k: a` and `- k: v`, and the column of the last dash in `- a` and `- - a`.
+        for (input, text) in [ ("k: a\n\"b\"", "k: a\n<s f=0/>"); ("- a\n\"b\"", "- a\n<s f=0/>"); ("- - a\n  \"b\"", "- - a\n  <s f=0/>"); ("- k: v\n  \"b\"", "- k: v\n  <s f=0/>") ] do
+            let actual = expectLines input text [code; code]
+            Expect.equal (stringsOf actual) [0, dquote "b"] $"the string in {input}"
+        let deeper = expectText "- k: v\n   \"b\""
+        Expect.equal deeper.StringMap.Count 0 "a line deeper than the key continues the scalar"
+
+    testCase "the scalar ends at the next line that is not deeper" <| fun _ ->
+        // yaml@2.6.1: {"k":"a \"b\"","m":"z","n":"x\n"}
+        let actual =
+            expectLines
+                "k: a\n  \"b\"\nm: \"z\"\nn: |\n  x\n"
+                "k: a\n  \"b\"\nm: <s f=0/>\nn: |\n  x\n"
+                [code; code; code; header; body; blank]
+        Expect.equal (stringsOf actual) [0, dquote "z"] "the string behind the scalar"
+]
+
 let private pipelineTests = testList "Persil.pipeline" [
     let linesOf (prepared: Persil.PreparedYaml) =
         prepared.Lines |> Array.map (fun line -> line.Text, line.Kind) |> List.ofArray
@@ -821,6 +924,8 @@ let Main = testList "Tokenizer" [
     headerTests
     blockScannerTests
     documentScannerTests
+    quoteScannerTests
+    continuationScannerTests
     pipelineTests
     documentsTests
     lineDataTests

@@ -17,6 +17,11 @@ let private hasAnyComment (element: YAMLElement) =
         | _ -> false
     loop element
 
+let private plainMapping (key: string) (value: string) =
+    YAMLElement.Object [
+        YAMLElement.Mapping(YAMLContent.create(key), YAMLElement.Object [YAMLElement.Value(YAMLContent.create(value))])
+    ]
+
 let Main = testList "YamlRead" [
     testCase "Value" <| fun _ ->
         let yaml = "Hello World"
@@ -2433,5 +2438,62 @@ expression: >
                 e.Message
         Expect.stringContains message "(# c)" "The error should print the comment text."
         Expect.stringContains message "(Scalar line 1; comment line 3; content line 4.)" "The error should print the source lines."
+
+    testCase "Quotes behind a bracket in a plain value are text" <| fun _ ->
+        // yaml@2.6.1: {"k":"o[\"k\"]"}, {"k":"$(o['k'] || [1, 2])"} and {"k":"$(inputs[\"my-input\"].path)"}
+        for (yaml, value) in [ ("k: o[\"k\"]", "o[\"k\"]"); ("k: $(o['k'] || [1, 2])", "$(o['k'] || [1, 2])"); ("k: $(inputs[\"my-input\"].path)", "$(inputs[\"my-input\"].path)") ] do
+            Expect.equal (Reader.read yaml) (plainMapping "k" value) $"The quotes in {yaml} are part of the value."
+
+    testCase "Quotes behind a comma or a brace in a plain value are text" <| fun _ ->
+        // yaml@2.6.1: {"k":"a, \"b\""} and {"k":"x {\"a\", 'b'}"}. The input `k: x {"a": 1}` is invalid
+        // there (BLOCK_AS_IMPLICIT_KEY), so a valid input with a brace stands in for it.
+        Expect.equal (Reader.read "k: a, \"b\"") (plainMapping "k" "a, \"b\"") "comma"
+        Expect.equal (Reader.read "k: x {\"a\", 'b'}") (plainMapping "k" "x {\"a\", 'b'}") "brace"
+
+    testCase "Quotes in single-line flow collections stay quoted scalars" <| fun _ ->
+        // yaml@2.6.1: {"k":["a","b"]}, {"k":{"a":"b"}}, {"k":["x","y, z"]} and [["a","b"]]
+        let quoted (style: ScalarStyle) (value: string) = YAMLElement.Object [YAMLElement.Value(YAMLContent.create(value, style=style))]
+        let inMapping (value: YAMLElement) = YAMLElement.Object [YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Object [value])]
+        let doubled = ScalarStyle.DoubleQuoted
+        Expect.equal
+            (Reader.read "k: [\"a\", 'b']")
+            (inMapping (YAMLElement.Sequence [quoted doubled "a"; quoted ScalarStyle.SingleQuoted "b"]))
+            "sequence with both quote kinds"
+        Expect.equal
+            (Reader.read "k: {\"a\": \"b\"}")
+            (inMapping (YAMLElement.Mapping(YAMLContent.create("a", style=doubled), quoted doubled "b")))
+            "mapping"
+        Expect.equal
+            (Reader.read "k: [x, \"y, z\"]")
+            (inMapping (YAMLElement.Sequence [YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x"))]; quoted doubled "y, z"]))
+            "a comma inside a quoted item"
+        Expect.equal
+            (Reader.read "- [\"a\", \"b\"]")
+            (YAMLElement.Object [YAMLElement.Sequence [YAMLElement.Object [YAMLElement.Sequence [quoted doubled "a"; quoted doubled "b"]]]])
+            "sequence in a sequence"
+
+    testCase "A quote behind a property at a node start is a quoted scalar" <| fun _ ->
+        // yaml@2.6.1: {"k":"x"}
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("k"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x", tag="tag:yaml.org,2002:str", style=ScalarStyle.DoubleQuoted))]
+            )
+        ]
+        Expect.equal (Reader.read "k: !!str \"x\"") expected "The tag and the quotes are kept."
+
+    testCase "Decode.string keeps the quotes of a CWL expression" <| fun _ ->
+        // yaml@2.6.1: {"valueFrom":"$(inputs[\"my-input\"].path)"}
+        let yaml = "valueFrom: $(inputs[\"my-input\"].path)"
+        let actual = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "valueFrom" Decode.string)
+        Expect.equal actual "$(inputs[\"my-input\"].path)" "The index key keeps its quotes."
+
+    testCase "Decode.string folds a plain CWL expression over two lines" <| fun _ ->
+        // yaml@2.6.1: {"valueFrom":"$(inputs.a + \"x\")"} and {"valueFrom":"$(f(inputs.a, \"x\", 1))"}.
+        // The closing quote of the first input is not at a token boundary, so only the second one
+        // needs the continuation rule.
+        let decode (yaml: string) = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "valueFrom" Decode.string)
+        Expect.equal (decode "valueFrom: $(inputs.a +\n  \"x\")") "$(inputs.a + \"x\")" "The line break folds into a space and the quotes stay."
+        Expect.equal (decode "valueFrom: $(f(inputs.a,\n  \"x\", 1))") "$(f(inputs.a, \"x\", 1))" "A quote behind a comma on the second line stays."
 ]
 

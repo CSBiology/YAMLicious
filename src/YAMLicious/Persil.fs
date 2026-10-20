@@ -94,6 +94,9 @@ let private Failed = -1
 [<Literal>]
 let private Unresolved = -1
 
+[<Literal>]
+let private NoPlain = -1
+
 /// One pass over a newline-normalized string. The scanner owns the lexical decisions: where quoted
 /// scalars, comments, directives, document markers and block scalar bodies are.
 ///
@@ -133,13 +136,23 @@ type private Scanner(s: string) =
     let mutable codeLength = -1
 
     // The lexical context of the line, which the quote rules and the property rule read.
-    // `prevSig` is the last character that is not a blank. `tokenFirst` is the first character of the
-    // token it belongs to. A tag or an anchor may precede a quote, as in `!!str "x"`.
-    let mutable prevSig = '\n'
-    let mutable tokenFirst = ' '
-    let mutable prevSep = true
-    // True where a node may start, so a tag or an anchor there is one token.
+    // True where a node may start. A quote opens a scalar there and a tag or an anchor there is one
+    // token. Anywhere else a quote is text of a plain scalar, as in `o["k"]`. A property leaves the
+    // flag set, so the quote in `!!str "x"` opens a scalar.
     let mutable atNodeStart = true
+    // The number of flow collections that are open on this line. Inside one, a quote can open a scalar
+    // behind `[`, `{`, `,` and `:`. Outside one, a comma or a bracket in a plain scalar is text. The
+    // depth restarts at 0 on every emitted line, because the Reader reads no flow collection over
+    // several lines. A line inside a flow collection starts at a node start, so its first quote still
+    // opens a scalar, while a quote behind a comma in the middle of such a line is text.
+    let mutable flowDepth = 0
+
+    // The indentation of the node that owns the plain scalar that the lines so far left open, or
+    // NoPlain. A nonblank line indented deeper than that node continues the scalar (YAML 1.2.2 7.3.3),
+    // so only a comment is special on it. Blank lines keep the scalar open and every other line closes it.
+    let mutable plainOwner = NoPlain
+    // True while the line in progress continues that scalar.
+    let mutable continuation = false
 
     // The block scalar in progress. The content indentation stays Unresolved until the first
     // body line with more than spaces sets it.
@@ -254,22 +267,11 @@ type private Scanner(s: string) =
             doubleEnds.[pending.[k]] <- result
         result
 
-    /// The start rule for a quote: it opens a scalar at the start of a line, after an indicator and
-    /// after a tag or an anchor. It does not open one inside a word, as in `don't` or `rock 'n' roll`.
-    let startsToken () =
-        match prevSig with
-        | '\n' | ':' | '-' | ',' | '[' | '{' | '?' -> true
-        | _ -> tokenFirst = '!' || tokenFirst = '&'
-
     let nextIsBlank (k: int) =
         k >= n || s.[k] = ' ' || s.[k] = '\t' || s.[k] = '\n'
 
     let appendPlain (c: char) =
         line.Append(c) |> ignore
-        prevSig <- c
-        if prevSep then
-            tokenFirst <- c
-            prevSep <- false
         atNodeStart <- false
         hasCode <- true
         i <- i + 1
@@ -277,8 +279,6 @@ type private Scanner(s: string) =
     /// Appends a character that ends a token. `startsNode` tells whether a node may start behind it.
     let appendSeparator (c: char) (startsNode: bool) =
         line.Append(c) |> ignore
-        prevSig <- c
-        prevSep <- true
         atNodeStart <- startsNode
         hasCode <- true
         i <- i + 1
@@ -298,9 +298,6 @@ type private Scanner(s: string) =
                 { Value = raw; Kind = QuotedStringKind.DoubleQuotedString }
         strings.Add(stringId, entry)
         line.Append("<s f=" + string stringId + "/>") |> ignore
-        prevSig <- s.[opening]
-        tokenFirst <- s.[opening]
-        prevSep <- false
         atNodeStart <- false
         hasCode <- true
         i <- next
@@ -323,16 +320,14 @@ type private Scanner(s: string) =
         let stringId = strings.Count
         strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.EscapedPlainString })
         line.Append("<s f=" + string stringId + "/>") |> ignore
-        prevSig <- '>'
-        if prevSep then
-            tokenFirst <- '<'
-            prevSep <- false
         atNodeStart <- false
         hasCode <- true
         i <- stop
 
+    /// A quote opens a scalar only where a node may start. It does not open one inside a word, as in
+    /// `don't` or `rock 'n' roll`, and not inside a plain scalar either, as in `o["k"]` or `a, "b"`.
     let tryQuote (isSingle: bool) =
-        if startsToken () then
+        if atNodeStart then
             let next = if isSingle then probeSingle i else probeDouble i
             if next > 0 then
                 commitString isSingle i next
@@ -362,7 +357,7 @@ type private Scanner(s: string) =
         let mutable kind = lineKind
         let mutable opened = NoBlock
         let codeEnd = if lineComment = NoComment then text.Length else codeLength
-        if hasCode && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
+        if hasCode && not continuation && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
             match BlockScalar.tryParseHeaderCode (text.Substring(0, codeEnd)) with
             | Some found ->
                 opened <- blockCount
@@ -387,6 +382,17 @@ type private Scanner(s: string) =
         | LineKind.DocumentStart -> inPrelude <- false
         | LineKind.Code -> if hasCode then inPrelude <- false
         | _ -> ()
+
+        // A comment ends the scalar. A continuation line and a blank line leave the owner as it is. Any
+        // other line opens a scalar when its value is a plain scalar, and closes the open one otherwise.
+        if lineComment <> NoComment then
+            plainOwner <- NoPlain
+        elif not continuation then
+            if kind = LineKind.Code && flowDepth = 0 then
+                let value = LineValue.find text
+                plainOwner <- if LineValue.startsPlain text value.Start then value.Owner else NoPlain
+            elif kind <> LineKind.Blank then
+                plainOwner <- NoPlain
 
         records.Add(mkLine text kind opened lineNumber lineComment codeEnd)
 
@@ -439,7 +445,6 @@ type private Scanner(s: string) =
                     lineDone <- true
                 | ' ' | '\t' ->
                     line.Append(c) |> ignore
-                    prevSep <- true
                     i <- i + 1
                 | '\'' ->
                     if not (tryQuote true) then appendPlain c
@@ -448,14 +453,23 @@ type private Scanner(s: string) =
                 | '#' ->
                     if CommentMarker.startsAt s i then takeComment () else appendPlain c
                 | '[' | '{' ->
-                    appendSeparator c atNodeStart
+                    // A bracket in the middle of a plain scalar is text, as in `o[1]`.
+                    if atNodeStart || flowDepth > 0 then
+                        flowDepth <- flowDepth + 1
+                        appendSeparator c true
+                    else
+                        appendPlain c
+                | ']' | '}' ->
+                    if flowDepth > 0 then flowDepth <- flowDepth - 1
+                    appendPlain c
                 | ',' ->
-                    appendSeparator c true
+                    if flowDepth > 0 then appendSeparator c true else appendPlain c
                 | '<' ->
                     let stop = placeholderEnd i
                     if stop > 0 then commitLiteralPlaceholder stop else appendPlain c
                 | ':' ->
-                    appendSeparator c (nextIsBlank (i + 1))
+                    // In a flow collection a colon needs no blank behind it, as in `{"a":"b"}`.
+                    appendSeparator c (flowDepth > 0 || nextIsBlank (i + 1))
                 | '-' | '?' ->
                     appendSeparator c (atNodeStart && nextIsBlank (i + 1))
                 | '!' | '&' ->
@@ -464,15 +478,23 @@ type private Scanner(s: string) =
                         let e = Property.endIndex s i
                         for k in i .. e - 1 do
                             line.Append(s.[k]) |> ignore
-                        prevSig <- s.[e - 1]
-                        tokenFirst <- c
-                        prevSep <- false
                         hasCode <- true
                         i <- e
                     else
                         appendPlain c
                 | _ ->
                     appendPlain c
+
+    /// True when the line at the cursor is nonblank and indented deeper than the owner of the open
+    /// plain scalar.
+    let continuesPlain () =
+        let mutable k = i
+        while k < n && s.[k] = ' ' do
+            k <- k + 1
+        let indent = k - i
+        while k < n && isBlankChar s.[k] do
+            k <- k + 1
+        plainOwner <> NoPlain && indent > plainOwner && k < n && s.[k] <> '\n'
 
     /// Scans one emitted line, starting at a physical line start.
     let scanLine () =
@@ -482,17 +504,15 @@ type private Scanner(s: string) =
         hasCode <- false
         lineComment <- NoComment
         codeLength <- -1
-        prevSig <- '\n'
-        tokenFirst <- ' '
-        prevSep <- true
-        atNodeStart <- true
+        continuation <- continuesPlain ()
+        atNodeStart <- not continuation
+        flowDepth <- 0
 
         if i < n && s.[i] = '%' && inPrelude then
             scanDirective ()
         else
             if i < n && (s.[i] = '-' || s.[i] = '.') && markerAt i then
                 lineKind <- if s.[i] = '-' then LineKind.DocumentStart else LineKind.DocumentEnd
-                prevSig <- s.[i]
                 for _ in 1 .. 3 do
                     line.Append(s.[i]) |> ignore
                 i <- i + 3

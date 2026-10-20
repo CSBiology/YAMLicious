@@ -109,6 +109,83 @@ module Property =
                 i <- i + 1
             i
 
+module LineValue =
+
+    let internal isBlankChar (c: char) = c = ' ' || c = '\t'
+
+    let internal skipBlanks (s: string) (start: int) =
+        let mutable i = start
+        while i < s.Length && isBlankChar s.[i] do
+            i <- i + 1
+        i
+
+    /// Skips every tag and anchor from `start`, together with the blanks after each one.
+    let internal skipProperties (s: string) (start: int) =
+        let mutable i = start
+        while i < s.Length && (s.[i] = '!' || s.[i] = '&') do
+            i <- skipBlanks s (Property.endIndex s i)
+        i
+
+    /// True for the `-`, `?` and `:` that start a sequence entry, an explicit key or an explicit value.
+    let private isEntryIndicator (s: string) (i: int) =
+        (s.[i] = '-' || s.[i] = '?' || s.[i] = ':') && (i + 1 >= s.Length || isBlankChar s.[i + 1])
+
+    /// Where the value of a line starts and who owns it. `Start` is the index behind the entry
+    /// indicators, the key and the properties, or the length of the line when nothing follows them.
+    type Found =
+        { Start: int
+          /// The indentation of the node that owns the value. In `- key: value` it is the column of the
+          /// key. For a value behind `-`, `?` or `:`, as in `- value` or `? value`, it is the column of
+          /// the last of those indicators. A line without any of these has its own indentation. Properties
+          /// in front of the value do not move it.
+          Owner: int }
+
+    /// Walks the line from its start. The code must hold quoted scalars as placeholders and no comment,
+    /// so the walk never searches for quotes or hashes. It follows an optional `---`, any number of
+    /// entry indicators and properties, and then the first `:` followed by a blank or the end of the
+    /// line, which separates an implicit key from its value. A flow collection or a block scalar header
+    /// right behind the indicators has no key.
+    let find (line: string) : Found =
+        let mutable p = skipBlanks line 0
+        let mutable owner = Line.countLeadingSpaces line
+        if line.StartsWith("---") && (line.Length = 3 || isBlankChar line.[3]) then
+            p <- skipBlanks line 3
+        let mutable hasIndicator = false
+        while p < line.Length && isEntryIndicator line p do
+            owner <- p
+            hasIndicator <- true
+            p <- skipBlanks line (p + 1)
+        // A value that follows an indicator belongs to the node of the last indicator. A key that
+        // follows it starts a mapping of its own, which owns the value of the key.
+        let keyColumn = if hasIndicator then p else owner
+        p <- skipProperties line p
+
+        let startsNode = p < line.Length && (line.[p] = '[' || line.[p] = '{' || line.[p] = '|' || line.[p] = '>')
+        if p < line.Length && not startsNode then
+            // The first `:` followed by a blank or the end of the line separates a key from its value.
+            // A colon inside a verbatim tag or a plain word such as `a:b` does not count.
+            let mutable q = p
+            while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
+                q <- q + 1
+            if q < line.Length then
+                { Start = skipProperties line (skipBlanks line (q + 1)); Owner = keyColumn }
+            else
+                { Start = p; Owner = owner }
+        else
+            { Start = p; Owner = owner }
+
+    /// True when the value that starts at `start` is a plain scalar. The characters `[ ] { } , # & * ! | >`,
+    /// the quotes, the reserved `%` and `@` and the backquote cannot start one. A placeholder in
+    /// `<s f=N/>` form is a quoted scalar.
+    let startsPlain (line: string) (start: int) =
+        if start >= line.Length then
+            false
+        else
+            match line.[start] with
+            | '[' | ']' | '{' | '}' | ',' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' -> false
+            | '<' -> not (start + 4 < line.Length && line.[start + 1] = 's' && line.[start + 2] = ' ' && line.[start + 3] = 'f' && line.[start + 4] = '=')
+            | _ -> true
+
 module BlockScalar =
 
     type Header =
@@ -169,27 +246,8 @@ module BlockScalar =
           /// Properties in front of the header do not move it.
           Baseline: int }
 
-    let private isBlankChar (c: char) = c = ' ' || c = '\t'
-
-    let private skipBlanks (s: string) (start: int) =
-        let mutable i = start
-        while i < s.Length && isBlankChar s.[i] do
-            i <- i + 1
-        i
-
-    /// Skips every tag and anchor from `start`, together with the blanks after each one.
-    let private skipProperties (s: string) (start: int) =
-        let mutable i = start
-        while i < s.Length && (s.[i] = '!' || s.[i] = '&') do
-            i <- skipBlanks s (Property.endIndex s i)
-        i
-
     let stripProperties (s: string) =
-        s.Substring(skipProperties s (skipBlanks s 0))
-
-    /// True for the `-`, `?` and `:` that start a sequence entry, an explicit key or an explicit value.
-    let private isEntryIndicator (s: string) (i: int) =
-        (s.[i] = '-' || s.[i] = '?' || s.[i] = ':') && (i + 1 >= s.Length || isBlankChar s.[i + 1])
+        s.Substring(LineValue.skipProperties s (LineValue.skipBlanks s 0))
 
     let private isHeaderStart (s: string) (i: int) =
         i < s.Length && (s.[i] = '|' || s.[i] = '>')
@@ -211,41 +269,13 @@ module BlockScalar =
         if last < 0 || (line.[last] <> '|' && line.[last] <> '>') then
             None
         else
-            let mutable p = skipBlanks line 0
-            let mutable owner = Line.countLeadingSpaces line
-            if line.StartsWith("---") && (line.Length = 3 || isBlankChar line.[3]) then
-                p <- skipBlanks line 3
-            let mutable hasIndicator = false
-            while p < line.Length && isEntryIndicator line p do
-                owner <- p
-                hasIndicator <- true
-                p <- skipBlanks line (p + 1)
-            // A header that follows an indicator belongs to the node of the last indicator. A key that
-            // follows it starts a mapping of its own, which owns the header as the value of the key.
-            let keyColumn = if hasIndicator then p else owner
-            p <- skipProperties line p
-
-            let mutable start = -1
-            if isHeaderStart line p then
-                start <- p
-            elif p < line.Length && line.[p] <> '[' && line.[p] <> '{' then
-                // The first `:` followed by a blank or the end of the line separates a key from its
-                // value. A colon inside a verbatim tag or a plain word such as `a:b` does not count.
-                let mutable q = p
-                while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
-                    q <- q + 1
-                if q < line.Length then
-                    let value = skipProperties line (skipBlanks line (q + 1))
-                    if isHeaderStart line value then
-                        start <- value
-                        owner <- keyColumn
-
-            if start < 0 then
-                None
-            else
-                match parseHeader (line.Substring start) with
-                | Some header -> Some { Header = header; Baseline = owner }
+            let value = LineValue.find line
+            if isHeaderStart line value.Start then
+                match parseHeader (line.Substring value.Start) with
+                | Some header -> Some { Header = header; Baseline = value.Owner }
                 | None -> None
+            else
+                None
 
     /// True when a value, as written after a key or a sequence dash, starts a block scalar.
     /// Properties and a trailing comment placeholder do not count.
