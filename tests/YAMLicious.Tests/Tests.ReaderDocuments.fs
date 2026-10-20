@@ -56,11 +56,13 @@ key: value"""
         Expect.equal actual expected "Should handle explicit start marker"
 
     testCase "Single document: Explicit Start with comment" <| fun _ ->
+        // yaml@2.6.1: {"key":"value"}. The comment is no data and stays a comment of the document.
         let yaml = """--- # start
 key: value"""
         let actual = Reader.readDocuments yaml
         let expected = [
             YAMLElement.Object [
+                YAMLElement.Comment(" start")
                 YAMLElement.Mapping(
                     YAMLContent.create("key"),
                     YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
@@ -129,10 +131,11 @@ key: value
         Expect.equal actual expected "Should return mapping doc and sequence doc"
 
     testCase "Three documents with directives" <| fun _ ->
+        // yaml@2.6.1: {"doc1":"v1"}, "doc2" and "doc3". A directive needs the `...` of the document before it.
         let yaml = """%YAML 1.2
 ---
 doc1: v1
----
+...
 %TAG ! t!
 ---
 !foo "doc2"
@@ -207,6 +210,7 @@ baz: qux"""
         let actual = Reader.readDocuments yaml
         let expected = [
             YAMLElement.Object [
+                YAMLElement.Comment(" prelude")
                 YAMLElement.Mapping(
                     YAMLContent.create("foo"),
                     YAMLElement.Object [YAMLElement.Value(YAMLContent.create("bar"))]
@@ -219,7 +223,7 @@ baz: qux"""
                 )
             ]
         ]
-        Expect.equal actual expected "Comments in directive prelude must not create an extra pseudo-document"
+        Expect.equal actual expected "The prelude comment belongs to the first document and creates no document of its own"
 
     testCase "Document markers inside block scalar content do not split documents" <| fun _ ->
         let yaml = """---
@@ -274,6 +278,7 @@ next: v"""
         // yaml@2.6.1 reads each of the three inputs as one document, {"a":1}
         let expected = [
             YAMLElement.Object [
+                YAMLElement.Comment(" lead")
                 YAMLElement.Mapping(
                     YAMLContent.create("a"),
                     YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
@@ -281,7 +286,7 @@ next: v"""
             ]
         ]
         for yaml in [ "# lead\n%YAML 1.2\n---\na: 1\n"; "%YAML 1.2\n# lead\n---\na: 1\n"; "# lead\n---\na: 1\n" ] do
-            Expect.equal (Reader.readDocuments yaml) expected $"The prelude of {yaml} should not become a document of its own."
+            Expect.equal (Reader.readDocuments yaml) expected $"The prelude of {yaml} should stay in the document and create no document of its own."
 
     testCase "A comment between an end marker and the next start marker is no document" <| fun _ ->
         // yaml@2.6.1: two documents, {"a":1} and {"b":2}
@@ -294,6 +299,7 @@ next: v"""
                 )
             ]
             YAMLElement.Object [
+                YAMLElement.Comment(" c")
                 YAMLElement.Mapping(
                     YAMLContent.create("b"),
                     YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
@@ -302,18 +308,54 @@ next: v"""
         ]
         Expect.equal (Reader.readDocuments yaml) expected "The comment is the prelude of the second document"
 
-    testCase "A comment behind a directive does not become content" <| fun _ ->
+    testCase "A comment behind a directive stays a comment of the document" <| fun _ ->
         // yaml@2.6.1: {"a":"x"}
         let yaml = "%YAML 1.2 # c\n---\na: 'x'\n"
         let expected = [
             YAMLElement.Object [
+                YAMLElement.Comment(" c")
                 YAMLElement.Mapping(
                     YAMLContent.create("a"),
                     YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x", style=ScalarStyle.SingleQuoted))]
                 )
             ]
         ]
-        Expect.equal (Reader.readDocuments yaml) expected "Only the directive applies to the document"
+        Expect.equal (Reader.readDocuments yaml) expected "The directive applies to the document and the comment stays in it"
+
+    testCase "A prelude comment stays with the document it introduces" <| fun _ ->
+        // yaml@2.6.1 reads both inputs as the two documents {"a":1} and {"b":2}
+        let first = YAMLElement.Mapping(YAMLContent.create("a"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))])
+        let second = YAMLElement.Mapping(YAMLContent.create("b"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))])
+        Expect.equal
+            (Reader.readDocuments "---\na: 1\n...\n# intro\n---\nb: 2\n")
+            [ YAMLElement.Object [first]; YAMLElement.Object [YAMLElement.Comment(" intro"); second] ]
+            "A comment behind an end marker belongs to the next document"
+        Expect.equal
+            (Reader.readDocuments "---\na: 1\n# tail\n---\nb: 2\n")
+            [ YAMLElement.Object [first; YAMLElement.Comment(" tail")]; YAMLElement.Object [second] ]
+            "A comment behind content belongs to the document of that content"
+
+    testCase "A directive behind a start marker is rejected" <| fun _ ->
+        // yaml@2.6.1 rejects both inputs with BAD_SCALAR_START, because the marker ended the prelude
+        Expect.throws
+            (fun () -> Reader.readDocuments "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" |> ignore)
+            "A directive after a bare start marker is no directive"
+        Expect.throws
+            (fun () -> Reader.readDocuments "---\n# c\n%YAML 1.2\n" |> ignore)
+            "A comment between the marker and the directive changes nothing"
+
+    testCase "A directive behind an end marker applies to the next document" <| fun _ ->
+        // yaml@2.6.1: two documents, {"a":1} and {"b":2}
+        let yaml = "%YAML 1.2\n---\na: 1\n...\n%YAML 1.2\n---\nb: 2\n"
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("a"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))])
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("b"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))])
+            ]
+        ]
+        Expect.equal (Reader.readDocuments yaml) expected "Each document reads its own directive"
 
     testCase "Multiline quotes and block scalars stay inside their own documents" <| fun _ ->
         // yaml@2.6.1: {"a":"x y"}, {"b":"\"hi\"\n"} and {"c":"z"}

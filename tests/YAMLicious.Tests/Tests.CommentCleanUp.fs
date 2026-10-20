@@ -61,11 +61,11 @@ My Key: <c f=0/>
         Expect.encodeEqual actual.Text expected ""
         Expect.dictEqual actual.CommentMap (commentMapOf [0, " This is a comment"; 1, " :::: \"This is also a comment\""]) ""
         Expect.equal (kindsOf actual) [blank; code; code; code; code; blank] "a trailing comment keeps the line code"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<s f=0/>"; Kind = QuotedStringKind.SingleQuotedString }]) "the literal text is the only string"
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<s f=0/>"; Kind = QuotedStringKind.EscapedPlainString }]) "the literal text is the only string"
 
     testCase "Text in the shape of a comment placeholder is text and not a comment" <| fun _ ->
         let actual = expectComments "a: x <c f=0/>\nb: 1 # real\n" "a: x <s f=0/>\nb: 1 <c f=0/>\n" [code; code; blank] [0, " real"]
-        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<c f=0/>"; Kind = QuotedStringKind.SingleQuotedString }]) "the literal text moved into the string table"
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<c f=0/>"; Kind = QuotedStringKind.EscapedPlainString }]) "the literal text moved into the string table"
         Expect.equal (actual.Lines |> Array.map (fun line -> line.CommentId) |> List.ofArray) [Persil.NoComment; 0; Persil.NoComment] "only the second line has a comment"
 
     testCase "Hash without preceding whitespace is not a comment" <| fun _ ->

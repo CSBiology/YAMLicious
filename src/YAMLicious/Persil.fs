@@ -149,7 +149,8 @@ type private Scanner(s: string) =
     let mutable blockBaseline = 0
     let mutable blockContentIndent = Unresolved
 
-    // A directive can only appear before the content of a document.
+    // A directive can only appear at the start of the input or after a `...`. Content and every `---`
+    // end the prelude, so a `%` line behind a `---` is content.
     let mutable inPrelude = true
 
     let copyBuffer = StringBuilder()
@@ -307,7 +308,7 @@ type private Scanner(s: string) =
     let placeholderEnd (k: int) =
         let mutable e = k + 5
         if k + 5 < n && (s.[k + 1] = 'c' || s.[k + 1] = 's') && s.[k + 2] = ' ' && s.[k + 3] = 'f' && s.[k + 4] = '=' then
-            while e < n && s.[e] >= '0' && s.[e] <= '9' do
+            while e < n && Placeholder.isDigit s.[e] do
                 e <- e + 1
             if e > k + 5 && e + 1 < n && s.[e] = '/' && s.[e + 1] = '>' then e + 2 else -1
         else
@@ -315,10 +316,11 @@ type private Scanner(s: string) =
 
     /// A text in the source that has the shape of a placeholder is plain text. Later stages read every
     /// placeholder in the emitted text as the scanner's own, so the text moves into the string table
-    /// and a placeholder replaces it. The Reader restores it as the text it was.
+    /// and a placeholder replaces it. The Reader restores it as the text it was, with the style of a
+    /// plain scalar.
     let commitLiteralPlaceholder (stop: int) =
         let stringId = strings.Count
-        strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.SingleQuotedString })
+        strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.EscapedPlainString })
         line.Append("<s f=" + string stringId + "/>") |> ignore
         prevSig <- '>'
         if prevSep then
@@ -381,7 +383,7 @@ type private Scanner(s: string) =
 
         match lineKind with
         | LineKind.DocumentEnd -> inPrelude <- true
-        | LineKind.DocumentStart -> inPrelude <- not hasCode
+        | LineKind.DocumentStart -> inPrelude <- false
         | LineKind.Code -> if hasCode then inPrelude <- false
         | _ -> ()
 
@@ -530,8 +532,10 @@ let parseTagDirective (line: string) : (string * string) option =
         Some (m.Groups.[1].Value, m.Groups.[2].Value)
     else None
 
-/// The input of Preprocessing: the lines of one document without the directives and the leading
-/// document start marker.
+/// The input of Preprocessing: the lines that follow the prelude of a document, together with the
+/// version and the tag handles that its directives set. `prepareDocuments` returns one value for each
+/// document of an input. `pipeline` returns the whole input as one value, so every document marker
+/// after the first stays a line.
 type PreparedYaml =
     { Lines: TokenLine[]
       StringMap: Dictionary<int, StringMapEntry>
@@ -539,17 +543,22 @@ type PreparedYaml =
       YAMLVersion: YAMLDirective option
       TagHandles: Map<string, string> }
 
+/// The lines from `start` up to but excluding `stop`. Fable Python rejects Array.sub with a start at
+/// the end of the array, so an empty range gets an empty array.
+let private slice (lines: TokenLine[]) (start: int) (stop: int) =
+    if stop > start then Array.sub lines start (stop - start) else Array.empty
+
 /// Removes the empty first and the empty last line, as the split at a line break leaves them. A blank
 /// line that belongs to a block scalar body stays, because chomping counts it.
 let private cut (lines: TokenLine[]) =
     let isEmpty (line: TokenLine) = line.Text = "" && line.Kind = LineKind.Blank
     let start = if lines.Length > 0 && isEmpty lines.[0] then 1 else 0
     let stop = if lines.Length > start && isEmpty lines.[lines.Length - 1] then lines.Length - 1 else lines.Length
-    Array.sub lines start (stop - start)
+    slice lines start stop
 
 /// The line that stays behind when a `---` marker is removed: its inline content, a comment that
 /// follows it, or nothing. A block header keeps the id of its body.
-let internal tryInlineContent (marker: TokenLine) : TokenLine option =
+let private tryInlineContent (marker: TokenLine) : TokenLine option =
     let rest = marker.Text.Substring(3).TrimStart()
     let restCodeLength = marker.CodeLength - (marker.Text.Length - rest.Length)
     if rest = "" then
@@ -561,28 +570,51 @@ let internal tryInlineContent (marker: TokenLine) : TokenLine option =
     else
         Some (mkLine rest LineKind.Code NoBlock marker.SourceLine marker.CommentId restCodeLength)
 
-/// A directive line without its trailing comment.
-let internal withoutTrailingComment (line: TokenLine) =
-    let code = line.Text.Substring(0, line.CodeLength).TrimEnd()
-    mkLine code line.Kind line.BlockId line.SourceLine NoComment code.Length
+let private isPreludeLine (line: TokenLine) =
+    line.Kind = LineKind.Directive || line.Kind = LineKind.CommentOnly || line.Kind = LineKind.Blank
 
-/// Reads the directives in front of the content, removes them and the `---` that ends the prelude
-/// and keeps the comments of the prelude. A comment behind a directive stays as a comment-only line.
-/// The lines may come from a whole tokenized input or from a slice of it. The maps are shared.
-let internal prepare (tokenized: TokenizedYaml) (records: TokenLine[]) : PreparedYaml =
-    let lines = cut records
-    let output = ResizeArray<TokenLine>()
+/// What the lines in front of a document body contribute.
+type private Opening =
+    { Version: YAMLDirective option
+      Handles: Map<string, string>
+      /// The comments and blank lines of the prelude, the comment behind a directive and the content
+      /// behind the start marker.
+      PreludeLines: TokenLine[]
+      /// The index of the first line of the body.
+      BodyStart: int }
+
+/// The first content of a document cannot start with `%`. The `---` ended the prelude, so such a line
+/// is no directive, and YAML 1.2.2 does not let a plain scalar start with `%`. The content is the text
+/// behind the marker or else the first line behind it that is neither a comment nor blank.
+let private failOnDirectiveContent (inlineLine: TokenLine option) (lines: TokenLine[]) (afterMarker: int) =
+    let mutable first = afterMarker
+    while first < lines.Length && (lines.[first].Kind = LineKind.CommentOnly || lines.[first].Kind = LineKind.Blank) do
+        first <- first + 1
+
+    let content =
+        match inlineLine with
+        | Some line when line.Kind <> LineKind.CommentOnly -> Some line
+        | _ -> if first < lines.Length then Some lines.[first] else None
+
+    match content with
+    | Some line when line.Kind = LineKind.Code && line.Text.StartsWith("%") ->
+        failwithf "Line %d: a directive is only allowed at the start of the input or after a document end marker." line.SourceLine
+    | _ -> ()
+
+/// Reads the prelude of the document that starts at line `start`: the directives, comments and blank
+/// lines, then the `---` marker. This is the only place that decides which lines form a prelude. A
+/// directive sets the version or a tag handle and leaves no line. A comment stays a line, also the one
+/// behind a directive or behind the marker. Content behind the marker becomes the first line.
+let private openDocument (lines: TokenLine[]) (start: int) : Opening =
+    let prelude = ResizeArray<TokenLine>()
     let mutable yamlVersion = None
     let mutable tagHandles =
         Map.empty
         |> Map.add "!" "!"
         |> Map.add "!!" "tag:yaml.org,2002:"
 
-    let isPrelude (line: TokenLine) =
-        line.Kind = LineKind.Directive || line.Kind = LineKind.CommentOnly || line.Kind = LineKind.Blank
-
-    let mutable index = 0
-    while index < lines.Length && isPrelude lines.[index] do
+    let mutable index = start
+    while index < lines.Length && isPreludeLine lines.[index] do
         let record = lines.[index]
         if record.Kind = LineKind.Directive then
             let code = record.Text.Substring(0, record.CodeLength)
@@ -595,28 +627,63 @@ let internal prepare (tokenized: TokenizedYaml) (records: TokenLine[]) : Prepare
                 | Some (handle, prefix) -> tagHandles <- Map.add handle prefix tagHandles
                 | None -> ()
             if record.CommentId <> NoComment then
-                output.Add(mkLine (record.Text.Substring record.CodeLength) LineKind.CommentOnly NoBlock record.SourceLine record.CommentId 0)
+                prelude.Add(mkLine (record.Text.Substring record.CodeLength) LineKind.CommentOnly NoBlock record.SourceLine record.CommentId 0)
         else
-            output.Add record
+            prelude.Add record
         index <- index + 1
 
     if index < lines.Length && lines.[index].Kind = LineKind.DocumentStart then
-        match tryInlineContent lines.[index] with
-        | Some inlineLine -> output.Add inlineLine
+        let inlineLine = tryInlineContent lines.[index]
+        match inlineLine with
+        | Some line -> prelude.Add line
         | None -> ()
         index <- index + 1
+        failOnDirectiveContent inlineLine lines index
 
-    for k in index .. lines.Length - 1 do
-        output.Add lines.[k]
+    { Version = yamlVersion
+      Handles = tagHandles
+      PreludeLines = prelude.ToArray()
+      BodyStart = index }
 
-    { Lines = output.ToArray()
+/// The document that opens with `opening` and takes the lines up to but excluding line `stop`.
+let private assemble (tokenized: TokenizedYaml) (lines: TokenLine[]) (opening: Opening) (stop: int) : PreparedYaml =
+    { Lines = Array.append opening.PreludeLines (slice lines opening.BodyStart stop)
       StringMap = tokenized.StringMap
       CommentMap = tokenized.CommentMap
-      YAMLVersion = yamlVersion
-      TagHandles = tagHandles }
+      YAMLVersion = opening.Version
+      TagHandles = opening.Handles }
 
-/// Tokenizes once and prepares the lines of the first document for Preprocessing. The line kinds
-/// stay available for the stages that follow.
+/// Splits a tokenized input into its documents and prepares each one for Preprocessing. A document ends
+/// at a `...` or in front of the next `---`. The scanner classified the markers, so a marker-like line
+/// in a scalar never splits a document.
+///
+/// The comments between the start of the input or a `...` and the next `---` are the prelude of the
+/// document that this `---` starts, and they stay with it. Comments between the content of a document
+/// and the next `---` stay in the earlier document. A document with no line besides blank lines, such
+/// as one that holds only directives, is dropped.
+let prepareDocuments (tokenized: TokenizedYaml) : PreparedYaml list =
+    let lines = cut tokenized.Lines
+    let documents = ResizeArray<PreparedYaml>()
+    let isMarker (line: TokenLine) = line.Kind = LineKind.DocumentStart || line.Kind = LineKind.DocumentEnd
+
+    let mutable index = 0
+    while index < lines.Length do
+        let opening = openDocument lines index
+        let mutable stop = opening.BodyStart
+        while stop < lines.Length && not (isMarker lines.[stop]) do
+            stop <- stop + 1
+
+        let document = assemble tokenized lines opening stop
+        if document.Lines |> Array.exists (fun line -> line.Kind <> LineKind.Blank) then
+            documents.Add document
+        index <- if stop < lines.Length && lines.[stop].Kind = LineKind.DocumentEnd then stop + 1 else stop
+
+    List.ofSeq documents
+
+/// Tokenizes once and prepares the whole input as one document for Preprocessing. It reads the
+/// directives and removes them together with the leading `---`, and the comments of the prelude stay.
+/// Every later marker stays a line. The line kinds stay available for the stages that follow.
 let pipeline (yamlString: string) : PreparedYaml =
     let tokenized = tokenize yamlString
-    prepare tokenized tokenized.Lines
+    let lines = cut tokenized.Lines
+    assemble tokenized lines (openDocument lines 0) lines.Length

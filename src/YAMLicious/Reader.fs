@@ -10,6 +10,8 @@ open System.Collections.Generic
 let private restoreScalarPlaceholderValue (entry: StringMapEntry) =
     match entry.Kind with
     | QuotedStringKind.SingleQuotedString -> entry.Value
+    // A separate case, because Fable Python loses the first case of a merged pattern over three cases.
+    | QuotedStringKind.EscapedPlainString -> entry.Value
     | QuotedStringKind.DoubleQuotedString ->
         // Double-quoted scalars need escape processing for the decoded value.
         Escapes.unescapeDoubleQuoted entry.Value
@@ -21,6 +23,7 @@ let private restoreBlockScalarPlaceholderValue (entry: StringMapEntry) =
         "'" + entry.Value + "'"
     | QuotedStringKind.DoubleQuotedString ->
         "\"" + entry.Value + "\""
+    | QuotedStringKind.EscapedPlainString -> entry.Value
 
 let private tryParseExactPlaceholderIndex (v: string) =
     let m = Regex.Match(v.Trim(), $"^{StringReplacementPattern}$")
@@ -55,12 +58,18 @@ let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list
     | _ ->
         None
 
+/// True when the value written after a sequence dash starts a block scalar. The header can follow the
+/// dash directly, as in `- |`, or follow more entry indicators, as in `- - |` and `- ? |`.
+let rec private startsBlockScalar (value: string) =
+    BlockScalar.isHeaderValue value
+    || ((value.StartsWith("- ") || value.StartsWith("? ")) && startsBlockScalar (value.Substring(2).TrimStart()))
+
 /// Puts the value written after a sequence dash in front of the block that follows it. A block
 /// scalar header keeps that block as one Intendation because the body is a single unit.
 /// Flattening it would turn each body line into a node of its own.
 let private joinSequenceItemValue (value: string option) (block: PreprocessorElement list) =
     match value with
-    | Some header when BlockScalar.isHeaderValue header ->
+    | Some header when startsBlockScalar header ->
         [PreprocessorElement.Line header; PreprocessorElement.Intendation block]
     | Some v ->
         PreprocessorElement.Line v :: block
@@ -166,8 +175,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let flattenBlockScalar (eles: PreprocessorElement list) : string list =
         flattenBlockScalarWithDepth 0 eles
 
-    /// Collects the lines of a block without adding indentation. Plain scalars use it to read their
-    /// continuation lines.
+    /// The lines of a block in order, nested blocks included. Each line keeps the text that
+    /// Preprocessing delivered. `tryCollapsePlainScalarContent` matches the nonblank ones against the
+    /// segments of a plain scalar.
     let rec collectContentLines (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
@@ -191,9 +201,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let value = restoreScalarPlaceholderValue entry
             let style =
                 match entry.Kind with
-                | QuotedStringKind.SingleQuotedString -> ScalarStyle.SingleQuoted
-                | QuotedStringKind.DoubleQuotedString -> ScalarStyle.DoubleQuoted
-            value, Some style
+                | QuotedStringKind.SingleQuotedString -> Some ScalarStyle.SingleQuoted
+                | QuotedStringKind.DoubleQuotedString -> Some ScalarStyle.DoubleQuoted
+                | QuotedStringKind.EscapedPlainString -> None
+            value, style
         | None ->
             let value = restoreStringReplace stringDict raw
             // Keep plain scalars style-neutral for backward compatibility.
@@ -268,6 +279,21 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                    Value = value |}
         | None ->
             None
+
+    /// The content of a block scalar, wherever its header stands: after a key, a sequence dash, an
+    /// explicit key mark or at the root.
+    let readBlockScalarContent (rawHeader: string) (baseCommentId: int option) (block: PreprocessorElement list) =
+        match tryReadBlockScalar rawHeader baseCommentId block with
+        | Some blockScalar ->
+            YAMLContent.create(
+                blockScalar.Value,
+                ?comment = blockScalar.Comment,
+                ?anchor = blockScalar.Props.Anchor,
+                ?tag = blockScalar.Props.Tag,
+                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
+            )
+        | None ->
+            failwithf "Invalid block scalar header: %s" rawHeader
 
     let tryGetPlainScalarSegments (element: YAMLElement) =
         let isAllowedSegment (allowMetadata: bool) (content: YAMLContent) =
@@ -693,12 +719,26 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                  let result = loopRead handles subLvl []
                  result
 
-             match rest with
-             | Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
+             // The value behind a key that owns no indented lines. Without a value the key maps to nothing.
+             let readMapping (keyContent: YAMLContent) (afterKey: PreprocessorElement list) =
+                match afterKey with
+                | ExplicitValue v::Intendation iList::tail ->
+                    let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
+                    loopRead handles tail (YAMLElement.Mapping(keyContent, parseValue fullValue)::acc)
+                | ExplicitValue v::tail ->
+                    loopRead handles tail (YAMLElement.Mapping(keyContent, parseValue v)::acc)
+                | _ ->
+                    // Orphan explicit key or unexpected sequence
+                    loopRead handles afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil)::acc)
+
+             match k, rest with
+             | Some header, Intendation body::afterBody when BlockScalar.isHeaderValue header ->
+                readMapping (readBlockScalarContent header None body) afterBody
+             | _, Intendation keyBody::ExplicitValue v::Intendation iList::tail ->
                 let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
                 let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
                 let keyContent = createScalarContent fullKey None
-                
+
                 let separator = if v.TrimStart().StartsWith("[") || v.TrimStart().StartsWith("{") then " " else "\n"
                 let fullValue = v + separator + (flattenBlockScalar iList |> String.concat separator)
                 let valueElement = parseValue fullValue
@@ -709,40 +749,11 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                         valueElement
                     )
                 loopRead handles tail (current::acc)
-             | Intendation keyBody::ExplicitValue v::tail ->
+             | _, Intendation keyBody::ExplicitValue v::tail ->
                 let simplifiedKey = flattenBlockScalar keyBody |> String.concat "\n"
                 let fullKey = match k with Some s -> s + (if s <> "" then "\n" else "") + simplifiedKey | None -> simplifiedKey
                 let keyContent = createScalarContent fullKey None
-                
-                let valueElement = parseValue v
 
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | ExplicitValue v::Intendation iList::tail ->
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
-                
-                let fullValue = v + "\n" + (flattenBlockScalar iList |> String.concat "\n")
-                let valueElement = parseValue fullValue
-
-                let current =
-                    YAMLElement.Mapping (
-                        keyContent,
-                        valueElement
-                    )
-                loopRead handles tail (current::acc)
-             | ExplicitValue v::tail ->
-                let keyContent =
-                    match k with
-                    | Some s -> createScalarContent s None
-                    | None -> YAMLContent.create("")
-                
                 let valueElement = parseValue v
 
                 let current =
@@ -752,17 +763,11 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     )
                 loopRead handles tail (current::acc)
              | _ ->
-                // Orphan explicit key or unexpected sequence
                 let keyContent =
                     match k with
                     | Some s -> createScalarContent s None
                     | None -> YAMLContent.create("")
-                let current = 
-                    YAMLElement.Mapping (
-                        keyContent,
-                        YAMLElement.Nil
-                    )
-                loopRead handles rest (current::acc)
+                readMapping keyContent rest
         | Key v::Intendation yamlAstList::rest -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
             let keyContent = createScalarContent v.Key c
@@ -829,25 +834,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
-            match tryReadBlockScalar v.Value None block with
-            | Some blockScalar ->
-                let keyContent = createScalarContent v.Key None
-                let current =
-                    YAMLElement.Mapping(
-                        keyContent,
-                        YAMLElement.Value(
-                            YAMLContent.create(
-                                blockScalar.Value,
-                                ?comment = blockScalar.Comment,
-                                ?anchor = blockScalar.Props.Anchor,
-                                ?tag = blockScalar.Props.Tag,
-                                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
-                            )
-                        )
-                    )
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid block scalar header: %s" v.Value
+            let keyContent = createScalarContent v.Key None
+            let current = YAMLElement.Mapping(keyContent, YAMLElement.Value(readBlockScalarContent v.Value None block))
+            loopRead handles rest (current::acc)
         | KeyValue v::Intendation block::rest ->
             let keyContent = createScalarContent v.Key None
             let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
@@ -882,21 +871,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead handles rest (current::acc)
         // Root-level block scalar
         | YamlValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
-            match tryReadBlockScalar v.Value v.Comment block with
-            | Some blockScalar ->
-                let current =
-                    YAMLElement.Value(
-                        YAMLContent.create(
-                            blockScalar.Value,
-                            ?comment = blockScalar.Comment,
-                            ?anchor = blockScalar.Props.Anchor,
-                            ?tag = blockScalar.Props.Tag,
-                            style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
-                        )
-                    )
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid block scalar header: %s" v.Value
+            let current = YAMLElement.Value(readBlockScalarContent v.Value v.Comment block)
+            loopRead handles rest (current::acc)
         | YamlValue v::Intendation block::rest ->
             let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
             let current =
@@ -937,81 +913,7 @@ let private readAst (ast: Preprocessor) =
 let read (yaml: string) =
     readAst (Preprocessing.read yaml)
 
-let private flushDocument (documents: ResizeArray<Persil.TokenLine[]>) (current: ResizeArray<Persil.TokenLine>) =
-    if current.Count > 0 then
-        documents.Add(current.ToArray())
-        current.Clear()
-
-/// The comments and blank lines before the `---` of a document are not part of its content. The
-/// directives stay, because they apply to the document.
-let private keepDirectives (current: ResizeArray<Persil.TokenLine>) =
-    let directives = ResizeArray<Persil.TokenLine>()
-    for line in current do
-        if line.Kind = Persil.LineKind.Directive then
-            directives.Add line
-    current.Clear()
-    current.AddRange directives
-
-/// Splits the lines of one tokenized input at the document markers that the scanner classified.
-/// The scanner recognizes a marker only at column 0 and keeps quoted scalars from crossing it,
-/// so a marker-like line in a scalar or a block scalar body never shows up as a marker here.
-///
-/// A `---` ends the current document when that document has content or has already started with its
-/// own `---`. Otherwise it starts the document that the lines before it introduce, which then
-/// drops its comments. A `---` that only follows directives keeps them for the next document, and
-/// a `...` always ends the document.
-let private splitDocuments (lines: Persil.TokenLine[]) =
-    let documents = ResizeArray<Persil.TokenLine[]>()
-    let current = ResizeArray<Persil.TokenLine>()
-    let mutable started = false
-    let mutable hasContent = false
-    let mutable hasDirective = false
-
-    for line in lines do
-        match line.Kind with
-        | Persil.LineKind.DocumentEnd ->
-            flushDocument documents current
-            started <- false
-            hasContent <- false
-            hasDirective <- false
-        | Persil.LineKind.DocumentStart ->
-            if hasContent || (started && not hasDirective) then
-                flushDocument documents current
-                hasDirective <- false
-            else
-                keepDirectives current
-            started <- true
-            hasContent <- false
-            match Persil.tryInlineContent line with
-            | Some inlineLine ->
-                if inlineLine.Kind <> Persil.LineKind.CommentOnly then
-                    current.Add inlineLine
-                    hasContent <- true
-            | None -> ()
-        | Persil.LineKind.Directive ->
-            current.Add(Persil.withoutTrailingComment line)
-            hasDirective <- true
-        | Persil.LineKind.Code
-        | Persil.LineKind.BlockHeader ->
-            current.Add line
-            hasContent <- true
-        | Persil.LineKind.BlockBody
-        | Persil.LineKind.CommentOnly
-        | Persil.LineKind.Blank ->
-            current.Add line
-
-    flushDocument documents current
-    documents
-
 let readDocuments (yaml: string) : YAMLElement list =
-    let tokenized = Persil.tokenize yaml
-    splitDocuments tokenized.Lines
-    |> Seq.filter (fun document ->
-        document |> Array.exists (fun line -> line.Kind <> Persil.LineKind.Blank)
-    )
-    |> Seq.map (fun document ->
-        Persil.prepare tokenized document
-        |> Preprocessing.readPrepared
-        |> readAst
-    )
-    |> List.ofSeq
+    Persil.tokenize yaml
+    |> Persil.prepareDocuments
+    |> List.map (Preprocessing.readPrepared >> readAst)

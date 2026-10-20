@@ -3,13 +3,13 @@
 [<Literal>]
 let CommentPattern =
     #if FABLE_COMPILER_PYTHON
-    "\<c f=(?P<comment>\d+)\/\>"
+    "\<c f=(?P<comment>[0-9]+)\/\>"
     #endif
     #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-    "<c f=(?<comment>\d+)\/>"
+    "<c f=(?<comment>[0-9]+)\/>"
     #endif
     #if !FABLE_COMPILER
-    "\<c f=(?<comment>\d+)\/\>"
+    "\<c f=(?<comment>[0-9]+)\/\>"
     #endif
 
 let AnchorPattern =
@@ -129,13 +129,13 @@ let JSONCloserPattern = FlowStyleObjectCloserPattern
 [<Literal>]
 let StringReplacementPattern =
     #if FABLE_COMPILER_PYTHON
-    "\<s f=(?P<index>\d+)\/\>"
+    "\<s f=(?P<index>[0-9]+)\/\>"
     #endif
     #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-    "<s f=(?<index>\d+)\/>"
+    "<s f=(?<index>[0-9]+)\/>"
     #endif
     #if !FABLE_COMPILER
-    "\<s f=(?<index>\d+)\/\>"
+    "\<s f=(?<index>[0-9]+)\/\>"
     #endif
 
 [<Literal>]

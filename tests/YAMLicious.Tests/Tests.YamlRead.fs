@@ -654,6 +654,25 @@ meta: value"""
             Expect.isTrue (hasMapping "meta") "meta mapping should decode after commented-out block."
         | other -> failwithf "Expected object, got %A" other
 
+    testCase "A blank line behind a key with a trailing comment opens the block of the key" <| fun _ ->
+        // yaml@2.6.1: {"a":{"b":1}}, {"x":1,"a":{"b":1},"z":2} and {"a":[1]}
+        let keyWithComment = YAMLContent.create("a", comment = " c")
+        let value (text: string) = YAMLElement.Object [YAMLElement.Value(YAMLContent.create(text))]
+        let mapping (key: string) (child: YAMLElement) = YAMLElement.Mapping(YAMLContent.create(key), child)
+        let nested = YAMLElement.Object [mapping "b" (value "1")]
+        Expect.equal
+            (Reader.read "a: # c\n\n  b: 1")
+            (YAMLElement.Object [YAMLElement.Mapping(keyWithComment, nested)])
+            "A mapping behind the blank line"
+        Expect.equal
+            (Reader.read "x: 1\na: # c\n\n  b: 1\nz: 2")
+            (YAMLElement.Object [mapping "x" (value "1"); YAMLElement.Mapping(keyWithComment, nested); mapping "z" (value "2")])
+            "A mapping between two siblings"
+        Expect.equal
+            (Reader.read "a: # c\n\n  - 1")
+            (YAMLElement.Object [YAMLElement.Mapping(keyWithComment, YAMLElement.Object [YAMLElement.Sequence [value "1"]])])
+            "A sequence behind the blank line"
+
     testCase "SequenceSameIndentAsMapping" <| fun _ ->
         let yaml = """
 My Key:
@@ -1012,6 +1031,46 @@ My Key:
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "A comment after the last content line should stay in the last block."
+
+    testCase "Trailing comment between two levels stays in the outer one" <| fun _ ->
+        // yaml@2.6.1: {"a":{"b":{"c":1}}}. The comment at 6 spaces lies between the levels at 4 and 8.
+        let yaml = "a:\n    b:\n        c: 1\n      # note\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [
+                            YAMLElement.Mapping(
+                                YAMLContent.create("c"),
+                                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                            )
+                        ]
+                    )
+                    YAMLElement.Comment(" note")
+                ]
+            )
+        ]
+        Expect.equal (Reader.read yaml) expected "The comment joins the mapping at 4 spaces, which holds b"
+
+    testCase "Trailing comments never reopen a level that an earlier comment closed" <| fun _ ->
+        // yaml@2.6.1: {"a":{"b":1}}. The second comment sits at the level of b but follows the first one.
+        let yaml = "a:\n    b: 1\n  # x\n    # y\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("b"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                    )
+                ]
+            )
+            YAMLElement.Comment(" x")
+            YAMLElement.Comment(" y")
+        ]
+        Expect.equal (Reader.read yaml) expected "Both comments end up in the root mapping, in source order"
 
     testCase "Comment before a dedented key belongs to that key" <| fun _ ->
         let yaml = "a:\n  b: 1\n  # about c\nc: 2"

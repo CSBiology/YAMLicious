@@ -94,7 +94,7 @@ let private headerTests = testList "Block scalar header" [
         expectHeader "  key: |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 2))
         expectHeader "  - |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 2))
         expectHeader "- >+" (Some (BlockScalarStyle.Folded, None, ChompingMode.Keep, 0))
-        expectHeader "- - |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 0))
+        expectHeader "- - |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 2))
         expectHeader "? |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 0))
         expectHeader ": >" (Some (BlockScalarStyle.Folded, None, ChompingMode.Clip, 0))
         expectHeader "a: |   " (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 0))
@@ -139,18 +139,34 @@ let private headerTests = testList "Block scalar header" [
         expectHeader "{a: |" None
         expectHeader "a: { b: >" None
 
-    testCase "a compact mapping reports the indentation of its dash" <| fun _ ->
-        // The effective mapping indentation after the dash is not calculated yet.
-        expectHeader "- key: |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 0))
-        expectHeader "  - key: |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 2))
+    testCase "a compact mapping reports the column of its key" <| fun _ ->
+        expectHeader "- key: |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 2))
+        expectHeader "  - key: |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 4))
+        expectHeader "- &a key: |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 2))
 
-    testCase "tryParseHeaderLine ignores a trailing comment placeholder" <| fun _ ->
-        let actual = Syntax.BlockScalar.tryParseHeaderLine "  a: | <c f=0/>" |> Option.map (fun found -> found.Header.Style, found.Baseline)
-        Expect.equal actual (Some (BlockScalarStyle.Literal, 2)) "header with a comment placeholder"
-        Expect.isNone (Syntax.BlockScalar.tryParseHeaderLine "a: | extra <c f=0/>") "text before the comment"
+    testCase "a header behind entry indicators reports the column of the last indicator" <| fun _ ->
+        expectHeader "- - |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 2))
+        expectHeader "- ? |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 2))
+        expectHeader "  - !!str |" (Some (BlockScalarStyle.Literal, None, ChompingMode.Clip, 2))
+        expectHeader "- &a |2" (Some (BlockScalarStyle.Literal, Some 2, ChompingMode.Clip, 0))
 ]
 
 let private blockScannerTests = testList "Block scalars in the scanner" [
+    testCase "an indentation indicator counts from the key of a compact mapping" <| fun _ ->
+        // yaml@2.6.1: [{"key":"x\n","other":1}], and the input with the body at 3 spaces is invalid (BAD_INDENT)
+        expectLines "- key: |2\n    x\n  other: 1\n" "- key: |2\n    x\n  other: 1\n" [header; body; code; blank] |> ignore
+        expectLines "- key: |2\n   x\n" "- key: |2\n   x\n" [header; code; blank] |> ignore
+
+    testCase "an indentation indicator counts from the dash of a sequence item" <| fun _ ->
+        // yaml@2.6.1: [" x\ny\n"] and [" x\n","z"]
+        expectLines "- |2\n   x\n  y\n" "- |2\n   x\n  y\n" [header; body; body; blank] |> ignore
+        expectLines "- |2\n   x\n- z\n" "- |2\n   x\n- z\n" [header; body; code; blank] |> ignore
+
+    testCase "an indentation indicator counts from the last dash of a nested item" <| fun _ ->
+        // yaml@2.6.1: [["x\n","y"]] for the first input. The second input is invalid (MISSING_CHAR).
+        expectLines "- - |2\n    x\n  - y\n" "- - |2\n    x\n  - y\n" [header; body; code; blank] |> ignore
+        expectLines "- - |\n  x\n" "- - |\n  x\n" [header; code; blank] |> ignore
+
     testCase "a quoted key with a hash and a colon opens a block" <| fun _ ->
         let actual =
             expectLines
@@ -400,9 +416,11 @@ let private documentScannerTests = testList "Directives and document markers in 
         expectLines "a: 1\n%YAML 1.2\n" "a: 1\n%YAML 1.2\n" [code; code; blank] |> ignore
         expectLines "a: |\n  b\n%TAG\n" "a: |\n  b\n%TAG\n" [header; body; code; blank] |> ignore
 
-    testCase "a directive can follow an end marker or an empty start marker" <| fun _ ->
+    testCase "a directive follows an end marker and every start marker ends the prelude" <| fun _ ->
+        // yaml@2.6.1 reads the first input as {"a":1} and {"b":2} and rejects the others (BAD_SCALAR_START)
         expectLines "a: 1\n...\n%YAML 1.2\n---\nb: 2\n" "a: 1\n...\n%YAML 1.2\n---\nb: 2\n" [code; finish; directive; start; code; blank] |> ignore
-        expectLines "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" [start; code; start; directive; start; code; blank] |> ignore
+        expectLines "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" [start; code; start; code; start; code; blank] |> ignore
+        expectLines "---\n%TAG ! t!\n" "---\n%TAG ! t!\n" [start; code; blank] |> ignore
 
     testCase "a marker needs a separator behind it and sits at column 0" <| fun _ ->
         expectLines "---a: 1\n...foo\n --- x\n--- a\n..." "---a: 1\n...foo\n --- x\n--- a\n..." [code; code; code; start; finish] |> ignore
@@ -463,6 +481,43 @@ let private pipelineTests = testList "Persil.pipeline" [
         Expect.equal (linesOf (Persil.pipeline "\n# c\na: 1\n")) ["<c f=0/>", commentOnly; "a: 1", code] "cut"
         let keep = Persil.pipeline "a: |+\n  x\n\n\n"
         Expect.equal (linesOf keep) ["a: |+", header; "  x", body; "", body; "", body] "two blank lines of the body remain"
+]
+
+let private documentsTests = testList "Persil.prepareDocuments" [
+    let linesOf (prepared: Persil.PreparedYaml) =
+        prepared.Lines |> Array.map (fun line -> line.Text, line.Kind) |> List.ofArray
+
+    testCase "every document keeps its own directives" <| fun _ ->
+        // yaml@2.6.1: two documents, {"a":1} and {"b":2}
+        let documents = Persil.prepareDocuments (Persil.tokenize "%YAML 1.2\n---\na: 1\n...\n%TAG !e! tag:e,2000:\n---\nb: 2\n")
+        match documents with
+        | [first; second] ->
+            Expect.equal first.YAMLVersion (Some { Major = 1; Minor = 2 }) "version of the first document"
+            Expect.isFalse (first.TagHandles.ContainsKey "!e!") "the tag handle belongs to the second document"
+            Expect.isNone second.YAMLVersion "the version belongs to the first document"
+            Expect.equal second.TagHandles.["!e!"] "tag:e,2000:" "tag handle of the second document"
+            Expect.equal (linesOf first) ["a: 1", code] "lines of the first document"
+            Expect.equal (linesOf second) ["b: 2", code] "lines of the second document"
+        | other -> failwithf "Expected two documents, got %d" other.Length
+
+    testCase "a start marker does not pass its directives on" <| fun _ ->
+        // yaml@2.6.1: [null, {"b":2}]. The empty first document is dropped.
+        let documents = Persil.prepareDocuments (Persil.tokenize "%YAML 1.2\n---\n---\nb: 2\n")
+        match documents with
+        | [only] ->
+            Expect.isNone only.YAMLVersion "the second document has no directive"
+            Expect.equal (linesOf only) ["b: 2", code] "lines"
+        | other -> failwithf "Expected one document, got %d" other.Length
+
+    testCase "a document that holds only directives is dropped" <| fun _ ->
+        // yaml@2.6.1: [{"a":1}]
+        let documents = Persil.prepareDocuments (Persil.tokenize "a: 1\n...\n%YAML 1.2\n")
+        Expect.equal (documents |> List.map linesOf) [["a: 1", code]] "only the first document remains"
+
+    testCase "a prelude comment is the first line of the document behind it" <| fun _ ->
+        // yaml@2.6.1: two documents, {"a":1} and {"b":2}
+        let documents = Persil.prepareDocuments (Persil.tokenize "a: 1\n...\n# c\n---\nb: 2\n")
+        Expect.equal (documents |> List.map linesOf) [["a: 1", code]; ["<c f=0/>", commentOnly; "b: 2", code]] "lines"
 ]
 
 let private sourceLinesOf (lines: Persil.TokenLine[]) =
@@ -711,6 +766,20 @@ let private readerTests = testList "Reader on scanner output" [
             (Decode.read "a: <c f=0/>\n" |> Decode.object (fun get -> get.Required.Field "a" Decode.string))
             "<c f=0/>"
             "A value that consists of the text only"
+
+    testCase "only ASCII digits make the shape of a placeholder" <| fun _ ->
+        // yaml@2.6.1: {"a":"x <s f=D/>"}, {"a":"x <c f=D/>"} and {"<c f=D/>":1}, where D is U+0661, an Arabic-Indic digit
+        Expect.equal (Reader.read "a: x <s f=\u0661/>\n") (YAMLElement.Object [ mapping "a" (plainNode "x <s f=\u0661/>") ]) "string shape"
+        Expect.equal (Reader.read "a: x <c f=\u0661/>\n") (YAMLElement.Object [ mapping "a" (plainNode "x <c f=\u0661/>") ]) "comment shape"
+        Expect.equal (Reader.read "<c f=\u0661/>: 1\n") (YAMLElement.Object [ mapping "<c f=\u0661/>" (plainNode "1") ]) "key"
+
+    testCase "a placeholder-shaped value reads like a plain scalar and survives the writer" <| fun _ ->
+        // yaml@2.6.1: {"a":"<c f=0/>"} and {"a":"<s f=1/>"}
+        for text in [ "<c f=0/>"; "<s f=1/>" ] do
+            let parsed = Reader.read $"a: {text}\n"
+            Expect.equal parsed (YAMLElement.Object [ mapping "a" (plainNode text) ]) "The value has no style, as in `a: x`"
+            let written = Writer.write parsed None
+            Expect.equal (Reader.read written) parsed $"The writer output {written} reads as the same value"
 ]
 
 let private performanceTests = testList "Scanner performance" [
@@ -753,6 +822,7 @@ let Main = testList "Tokenizer" [
     blockScannerTests
     documentScannerTests
     pipelineTests
+    documentsTests
     lineDataTests
     readerTests
     performanceTests

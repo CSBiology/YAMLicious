@@ -1,25 +1,60 @@
 ### 2.0.0 (Unreleased)
-* A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`. Inside block scalar content a `#` is always text. A comment line that is indented less than the content ends the scalar.
+* A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`.
 * Invalid input such as `[a]#c` (no space before `#`) is now read as the plain scalar `[a]#c`. Earlier versions read a comment.
+* Inside block scalar content a `#` is always text.
+* A comment line that is indented less than the content of a block scalar ends the scalar.
+* Preprocessing reports a comment that ends a block scalar before content deeper than the node of the scalar, with the source lines, as in `A comment line (# c) ends a block scalar, so the more indented content after it is invalid. (Scalar line 1; comment line 3; content line 4.)`.
+* Preprocessing reports more indented content right behind a block scalar, without a comment, as an indentation error with the source lines of the scalar and the content.
 * A full-line comment belongs to the node that follows it. Comments directly under a nested key no longer fail with "Unknown pattern".
 * A comment with no following node in its block stays at the end of that block. After the last item of a sequence it stays in the sequence.
+* A blank line between a key with a trailing comment and its indented block belongs to that block.
+* A comment at the end of the input takes the deepest open level that is at most as indented as the comment. A comment between two levels no longer fails with "Unknown pattern".
 * Comments between sequence items are `YAMLElement.Comment` entries of the sequence. Earlier versions wrapped them in `Object [Comment ...]`, which looked like an extra item.
 * All `Decode` functions skip comments.
-* The writer emits comment entries of a sequence as comment lines and writes plain scalars like `a#b` without quotes.
-* `Persil.CommentMatchPattern` is removed.
+* The writer emits comment entries of a sequence as comment lines.
+* The writer writes plain scalars like `a#b` without quotes.
 * Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
-* The writer puts the body of a block scalar with an explicit indentation indicator (`|2`) at the indicated indentation.
 * The content of a block scalar is indented as deep as its first nonblank line, or as deep as the indentation indicator says counted from the header.
 * An explicit indentation indicator (`|2`) keeps the spaces beyond the indicated indentation as content.
+* An explicit indentation indicator counts from the node that owns the scalar, as in YAML 1.2.2. That is the column of the key in `- key: |2` and the column of the last dash in `- - |2`.
+* A block scalar header after `?`, as in `? |`, reads as a block scalar, also when the body is empty. So does a header behind nested indicators, as in `- - |` or `- ? |`.
+* The writer puts the body of a block scalar with an explicit indentation indicator at the indicated indentation.
+* The writer adds an indentation indicator (`|2`) when the first nonblank line of a block scalar starts with a space. YAML requires it, and other parsers reject the output without it.
 * Keep chomping (`|+`) retains all trailing blank lines of a block scalar.
+* An empty block scalar such as `a: |` reads as the empty string. So does a body of blank lines under clip or strip chomping.
 * A block scalar item such as `- |` in a sequence that is not indented under its key reads correctly.
 * A quoted `#` before a block scalar header, as in `"a #b": |`, no longer breaks the block scalar.
-* A comment line that ends a block scalar and is followed by more indented content is reported as an error that names the comment.
-* The writer adds an indentation indicator (`|2`) when the first nonblank line of a block scalar starts with a space. YAML requires it, and without it other parsers reject the output.
-* New public API: `Syntax.CommentMarker.startsAt` tells whether a `#` starts a comment, and `Decode.Helper.withoutComments` removes the comments from a `YAMLElement.Object` or `YAMLElement.Sequence`.
-* `Syntax.BlockScalar.tryDetectHeaderIndent` and `Syntax.BlockScalar.isHeaderLine` are replaced by `Syntax.BlockScalar.tryParseHeaderLine`, which returns the parsed header.
-* `Persil.tokenize` replaces `Persil.stringCleanUp`, `Persil.singleQuotedStringCleanUp` and `Persil.commentCleanUp`. One scanner finds the quoted scalars, the comments and the block scalar bodies and returns the emitted text, both maps and a kind for each line. `Persil.pipeline` returns these kinds with its lines. `Syntax.BlockScalar.tryParseHeaderLine` returns the header together with its baseline and no longer takes `a: | extra` or a header inside a flow collection for a block scalar. A multiline quoted scalar before a block scalar no longer corrupts the double-quoted strings that follow it, which used to turn `c: "z"` into the value `"z"` with its quotes. `''` reads as the empty string.
-* `Preprocessing` handles a block scalar header and its body as one unit and takes the end of the body from the scanner. A comment between a scalar and more indented content is reported with the source lines, as in `A comment line (# c) ends a block scalar, so the more indented content after it is invalid. (Scalar line 1; comment line 3; content line 4.)`. More indented content right behind a scalar, without a comment, is a separate indentation error. An empty block scalar such as `a: |` reads as the empty string, and so does a body of blank lines under clip or strip chomping. A body line such as `<c f=0/>` is text. Text of the shape `x <c f=0/>` in a plain scalar is plain text. A `[` or `{` at the start of a plain scalar continuation line no longer hides the block scalars after it, because the scanner no longer tracks flow collections across lines. `Persil.TokenLine` carries `SourceLine`, `CommentId` and `CodeLength`.
+* A `|` or `>` behind a `[` or `{` on the same line, as in `a: {b: |`, opens no block scalar. The scanner does not track flow collections across lines.
+* A `[` or `{` at the start of a plain scalar continuation line no longer hides the block scalars after it.
+* A multiline quoted scalar before a block scalar no longer corrupts the double-quoted strings that follow it. Earlier versions turned `c: "z"` into the value `"z"` with its quotes.
+* `''` reads as the empty string.
+* Text in the shape of a placeholder is plain text. This holds for `x <c f=0/>` in a plain scalar and for `<c f=0/>` in a block scalar body.
+* Only ASCII digits make the shape of a placeholder, so text such as `<s f=١/>` with another kind of digit is plain text too.
+* A value that consists of such a text, as in `a: <c f=0/>`, reads with the style of a plain scalar.
+* Directives are allowed at the start of the input and after a `...`. Every `---` ends the prelude, so a `%` line behind a `---` is content.
+* The content of a document cannot start with `%`. The input `---\na: 1\n---\n%TAG ! t!\n---\nb: 2` is rejected, as in YAML 1.2.2.
+* `Reader.readDocuments` keeps the comments of a prelude in the document that its `---` starts. This includes a comment behind a directive and a comment behind the `---`.
+* `Reader.readDocuments` drops a document that holds only directives.
+* `Reader.read` and `Reader.readDocuments` read the prelude of a document with the same code in `Persil`.
+* `Persil.tokenize` replaces `Persil.stringCleanUp` and `Persil.singleQuotedStringCleanUp`. One scanner finds quoted scalars and comments and copies block scalar bodies as they are. It returns a `Persil.TokenizedYaml`.
+* `Persil.commentCleanUp` is removed. `Persil.tokenize` finds the comments.
+* `Persil.StringMatchPattern` and `Persil.SingleQuotedStringPattern` are removed.
+* `Persil.CommentMatchPattern` and `Persil.cut` are removed.
+* `Persil.pipeline` returns a `Persil.PreparedYaml` instead of an anonymous record, and its lines are `Persil.TokenLine` values instead of strings.
+* `Persil.pipeline` prepares the whole input as one document. `Persil.prepareDocuments` splits a `Persil.TokenizedYaml` into one `Persil.PreparedYaml` for each document.
+* `Persil` gains the functions `tokenize` and `prepareDocuments` and the constants `NoBlock` and `NoComment`.
+* `Persil` gains the types `TokenizedYaml`, `TokenLine`, `LineKind` and `PreparedYaml`.
+* `Persil.TokenizedYaml` has the fields `Text`, `Lines`, `StringMap` and `CommentMap`.
+* `Persil.TokenLine` has the fields `Text`, `Kind`, `BlockId`, `SourceLine`, `CommentId` and `CodeLength`.
+* `Persil.LineKind` has the cases `Code`, `CommentOnly`, `Blank`, `Directive`, `DocumentStart`, `DocumentEnd`, `BlockHeader` and `BlockBody`.
+* `Persil.PreparedYaml` has the fields `Lines`, `StringMap`, `CommentMap`, `YAMLVersion` and `TagHandles`.
+* `Syntax.Document` loses `isStart`, `isTopLevelMarker`, `tryInlineContentAfterStartMarker`, `isDirectivePreludeLine` and `isDirectivePreludeOnly`.
+* `Syntax.BlockScalar.tryDetectHeaderIndent` and `Syntax.BlockScalar.isHeaderLine` are replaced by `Syntax.BlockScalar.tryParseHeaderCode`. It takes the code of a line without its comment and returns the parsed header together with its baseline, which is the indentation of the node that owns the scalar. It finds no header in `a: | extra`.
+* `Syntax.BlockScalar.headerTokenFromLine` is removed.
+* `Syntax.BlockScalar` gains `tryParseHeaderCode`, the type `HeaderLine`, `isHeaderValue`, `contentIndent` and `isBodyLine`.
+* `Syntax` gains `CommentMarker.startsAt`, which tells whether a `#` starts a comment, and `Property.endIndex`, which finds the end of a tag or an anchor.
+* `Decode.Helper.withoutComments` removes the comments from a `YAMLElement.Object` or a `YAMLElement.Sequence`.
+* `YAMLiciousTypes.QuotedStringKind` gains the case `EscapedPlainString` for plain text in the shape of a placeholder. A match over `QuotedStringKind` must handle it.
 
 ### 1.0.2 (Released 2026-07-23)
 * Fix a reader bug where a lone apostrophe inside a plain scalar — a legal, non-delimiting character in plain and double-quoted scalars — caused the double-quote extraction pass to consume the remainder of the document, dropping every subsequent quoted token (notably double-quoted keys). Apostrophes are now treated as ordinary characters in the double-quote pass, and an unclosed quote of either kind no longer swallows the rest of the input.

@@ -31,6 +31,10 @@ module CommentMarker =
 
 module Placeholder =
 
+    /// A digit of the number in a placeholder. The scanner, the patterns in Regex and these helpers agree
+    /// on the ASCII digits, so text with another kind of digit stays plain text.
+    let internal isDigit (c: char) = c >= '0' && c <= '9'
+
     let private tryParseInt (s: string) =
         match Int32.TryParse s with
         | true, value -> Some value
@@ -40,7 +44,7 @@ module Placeholder =
         let t = line.Trim()
         if t.StartsWith("<c f=") && t.EndsWith("/>") then
             let value = t.Substring(5, t.Length - 7)
-            if value |> Seq.forall Char.IsDigit then
+            if value |> Seq.forall isDigit then
                 tryParseInt value
             else
                 None
@@ -58,7 +62,7 @@ module Placeholder =
             let valueLength = trimmed.Length - valueStart - 2
             if valueLength >= 1 then
                 let value = trimmed.Substring(valueStart, valueLength)
-                if value |> Seq.forall Char.IsDigit then
+                if value |> Seq.forall isDigit then
                     trimmed.Substring(0, start).TrimEnd(), tryParseInt value
                 else
                     trimmed, None
@@ -77,8 +81,6 @@ module Document =
             true
         else
             Char.IsWhiteSpace(trimmed.[marker.Length])
-
-    let isStart line = isMarker "---" line
 
     let isEnd line = isMarker "..." line
 
@@ -155,12 +157,14 @@ module BlockScalar =
                 else
                     None
 
-    /// A block scalar header on a line, together with the indentation its content counts from.
+    /// A block scalar header on a line, together with the indentation of the node that owns the scalar.
     type HeaderLine =
         { Header: Header
-          /// The structural indentation of the line, not the column of the `|` or `>`. A compact
-          /// `- key: |` reports the indentation of the dash. The deeper indentation of the mapping
-          /// that `key` opens is not calculated yet.
+          /// The indentation of the node that owns the scalar. An explicit indentation indicator counts
+          /// from it, and the content behind the scalar is never indented deeper than it unless it
+          /// belongs to the scalar. In `- key: |` it is the column of the key. For a header behind `-`,
+          /// `?` or `:`, as in `- - |` or `? |`, it is the column of the last of those indicators.
+          /// Properties in front of the header do not move it.
           Baseline: int }
 
     let private isBlankChar (c: char) = c = ' ' || c = '\t'
@@ -190,11 +194,9 @@ module BlockScalar =
 
     /// The block scalar header that ends the code of a line. Quoted scalars must already be
     /// placeholders and the line must not contain comment text, so this function never searches for
-    /// quotes or hashes. It accepts these shapes, each after any number of properties:
-    ///
-    /// - a standalone header, such as `|2`
-    /// - a header after `---`, `-`, `?` or `:`, such as `--- |` or `- >-`
-    /// - a header as the value of an implicit key, such as `key: |` or `- key: |`
+    /// quotes or hashes. Any number of properties may precede the header. The header can stand alone, as
+    /// in `|2`, or follow `---`, `-`, `?` or `:`, as in `--- |` or `- >-`. It can also be the value of an
+    /// implicit key, as in `key: |` or `- key: |`.
     ///
     /// The header must end the code, so `a: | extra` has none. A flow collection never holds one.
     let tryParseHeaderCode (code: string) =
@@ -208,10 +210,17 @@ module BlockScalar =
             None
         else
             let mutable p = skipBlanks line 0
+            let mutable owner = Line.countLeadingSpaces line
             if line.StartsWith("---") && (line.Length = 3 || isBlankChar line.[3]) then
                 p <- skipBlanks line 3
+            let mutable hasIndicator = false
             while p < line.Length && isEntryIndicator line p do
+                owner <- p
+                hasIndicator <- true
                 p <- skipBlanks line (p + 1)
+            // A header that follows an indicator belongs to the node of the last indicator. A key that
+            // follows it starts a mapping of its own, which owns the header as the value of the key.
+            let keyColumn = if hasIndicator then p else owner
             p <- skipProperties line p
 
             let mutable start = -1
@@ -227,19 +236,14 @@ module BlockScalar =
                     let value = skipProperties line (skipBlanks line (q + 1))
                     if isHeaderStart line value then
                         start <- value
+                        owner <- keyColumn
 
             if start < 0 then
                 None
             else
                 match parseHeader (line.Substring start) with
-                | Some header -> Some { Header = header; Baseline = Line.countLeadingSpaces line }
+                | Some header -> Some { Header = header; Baseline = owner }
                 | None -> None
-
-    /// The header that a line of the Preprocessing input opens. Such a line holds the placeholders of
-    /// quoted scalars and may end in a comment placeholder, which is not part of the code.
-    let tryParseHeaderLine (line: string) =
-        let code, _ = Placeholder.splitTrailingComment line
-        tryParseHeaderCode code
 
     /// True when a value, as written after a key or a sequence dash, starts a block scalar.
     /// Properties and a trailing comment placeholder do not count.
@@ -249,9 +253,9 @@ module BlockScalar =
         indicator.StartsWith("|") || indicator.StartsWith(">")
 
     /// YAML 1.2.2 8.1.1.1: the indentation of the content lines of a block scalar. An indentation
-    /// indicator counts from the header's indentation. Without one, the first nonblank line sets it.
-    /// The content is always indented deeper than the header, so a first nonblank line at or below
-    /// the header means the scalar has no content.
+    /// indicator counts from `headerIndent`, the indentation of the node that owns the scalar. Without
+    /// an indicator, the first nonblank line sets it. The content is always indented deeper than that
+    /// node, so a first nonblank line at or below it means the scalar has no content.
     let contentIndent (headerIndent: int) (indicator: int option) (followingLines: string seq) =
         match indicator with
         | Some spaces -> headerIndent + spaces

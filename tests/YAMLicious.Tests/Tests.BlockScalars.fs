@@ -18,6 +18,10 @@ let private mapping (key: string) (value: YAMLElement) =
 
 let private comment (text: string) = YAMLElement.Comment text
 
+/// A literal block scalar as a mapping key.
+let private blockKey (value: string) =
+    YAMLContent.create(value, style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None))
+
 /// The message of the exception that the action throws, or an empty string when it succeeds.
 let private errorOf (action: unit -> unit) =
     try
@@ -47,6 +51,11 @@ let private expectIndentationError (yaml: string) (scalarLine: int) (contentLine
         Expect.stringContains message "A line that is more indented than the node of a block scalar" "The error should describe the indentation."
         Expect.stringContains message locations "The error should name the two source lines."
         Expect.isFalse (message.Contains "comment") "The error should not blame a comment."
+
+/// Asserts that Preprocessing.read accepts the input, which holds for every input whose content stays
+/// within the node of its scalar.
+let private expectNoBoundaryError (yaml: string) =
+    Expect.equal (errorOf (fun () -> Preprocessing.read yaml |> ignore)) "" (sprintf "Preprocessing accepts %A" yaml)
 
 let private unitTests = testList "Block scalar units" [
     testCase "A comment between the header and the content indentation ends the scalar and precedes the next key" <| fun _ ->
@@ -84,6 +93,23 @@ let private unitTests = testList "Block scalar units" [
                 comment " c3"
             ]
         Expect.equal (Reader.read "a:\n  b: |\n      x\n    # c1\n\n  # c2\n\n# c3\n") expected "A comment is no deeper than the header and no deeper than its own indentation"
+
+    testCase "A trailing comment between two levels joins the outer level of a scalar item" <| fun _ ->
+        // yaml@2.6.1: {"k":["x\n"]} and {"k":[""]}. The comment at 2 spaces lies between the root and the dash at 4.
+        Expect.equal
+            (Reader.read "k:\n    - |\n      x\n  # note\n")
+            (YAMLElement.Object [
+                mapping "k" (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "x\n" ] ] ])
+                comment " note"
+            ])
+            "The comment joins the root mapping and keeps its text"
+        Expect.equal
+            (Reader.read "k:\n    - |4-\n\n  # note\n")
+            (YAMLElement.Object [
+                mapping "k" (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ blockScalar BlockScalarStyle.Literal ChompingMode.Strip (Some 4) "" ] ] ])
+                comment " note"
+            ])
+            "A scalar with an indentation indicator and no content opens its level by the header too"
 
     testCase "A comment before a scalar header precedes the key" <| fun _ ->
         // yaml@2.6.1: {"a":"x\n"} and {"top":{"k":1,"s":"body\n"}}
@@ -229,6 +255,31 @@ let private unitTests = testList "Block scalar units" [
         expectIndentationError "a: |\n    text\n  more\n" 1 3
         expectIndentationError "a: |4\n  x\nb: 1\n" 1 2
 
+    testCase "The boundary of a nested sequence item is its own dash" <| fun _ ->
+        // yaml@2.6.1: [["x\n","y"]] for the first input and MISSING_CHAR for the second
+        expectNoBoundaryError "- - |\n     x\n  - y\n"
+        expectIndentationError "- - |\n     x\n   y\n" 1 3
+
+    testCase "The boundary of an explicit key is its question mark" <| fun _ ->
+        // yaml@2.6.1 reads {"x\n":"v"} and [{"x\n":"v"}] for the valid inputs and for the invalid ones too,
+        // because it accepts a colon at a deeper column. The grammar needs the colon at the column of the
+        // question mark, so the line behind the scalar is an error here.
+        expectNoBoundaryError "? |\n   x\n: v\n"
+        expectIndentationError "? |\n   x\n  : v\n" 1 3
+        expectNoBoundaryError "- ? |\n     x\n  : v\n"
+        expectIndentationError "- ? |\n     x\n   : v\n" 1 3
+
+    testCase "A property in front of the header does not move the boundary" <| fun _ ->
+        // yaml@2.6.1: ["x\n","y"] for the valid inputs and MISSING_CHAR for the invalid ones
+        for property in [ "!!str"; "&a" ] do
+            expectNoBoundaryError (sprintf "- %s |\n    x\n- y\n" property)
+            expectIndentationError (sprintf "- %s |\n    x\n  y\n" property) 1 3
+
+    testCase "The boundary behind a document start marker is the column of the marker" <| fun _ ->
+        // yaml@2.6.1: "x\n" for the first input and UNEXPECTED_TOKEN for the second
+        expectNoBoundaryError "--- |\n    x\n...\n"
+        expectIndentationError "--- |\n    x\n  y\n" 1 3
+
     testCase "A comment block after a scalar is no error at the end of the input or before a sibling" <| fun _ ->
         // yaml@2.6.1: {"a":"x\n","b":1}
         let expected = YAMLElement.Object [ mapping "a" (literalBlock "x\n"); comment " c"; comment " d"; mapping "b" (plainNode "1") ]
@@ -277,8 +328,8 @@ let private unitTests = testList "Block scalar units" [
                     (YAMLElement.Object [ mapping "a" (blockScalar style chomp None value); mapping "b" (plainNode "1") ])
                     (sprintf "Style %s with chomping %A" indicator chomp)
 
-    testCase "An empty block scalar reads as the empty string in every position" <| fun _ ->
-        // yaml@2.6.1: {"a":"","b":1}, ["","x"], "" and {"a":""}
+    testCase "An empty block scalar reads as the empty string as mapping value, sequence item, root scalar, explicit key, nested item and explicit key item" <| fun _ ->
+        // yaml@2.6.1: {"a":"","b":1}, ["","x"], "", {"a":""}, {"":null}, {"":"v"}, [[""],"x"] and [{"":null},"x"]
         Expect.equal
             (Reader.read "a: |\nb: 1\n")
             (YAMLElement.Object [ mapping "a" (literalBlock ""); mapping "b" (plainNode "1") ])
@@ -289,6 +340,46 @@ let private unitTests = testList "Block scalar units" [
             "A sequence item"
         Expect.equal (Reader.read "|\n") (YAMLElement.Object [ literalBlock "" ]) "A root scalar"
         Expect.equal (Reader.read "a: |") (YAMLElement.Object [ mapping "a" (literalBlock "") ]) "The end of the input without a line break"
+        Expect.equal
+            (Reader.read "? |\n")
+            (YAMLElement.Object [ YAMLElement.Mapping(blockKey "", YAMLElement.Nil) ])
+            "An explicit key without a value"
+        Expect.equal
+            (Reader.read "? |\n: v\n")
+            (YAMLElement.Object [ YAMLElement.Mapping(blockKey "", plainNode "v") ])
+            "An explicit key with a value"
+        Expect.equal
+            (Reader.read "- - |\n- x\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "" ] ] ]; plainNode "x" ] ])
+            "A nested sequence item"
+        Expect.equal
+            (Reader.read "- ? |\n- x\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Mapping(blockKey "", YAMLElement.Nil) ]; plainNode "x" ] ])
+            "An explicit key in a sequence item"
+
+    testCase "A block scalar header reads its body as an explicit key and as a nested sequence item" <| fun _ ->
+        // yaml@2.6.1: {"x\n":"v"}, {"x\n":null}, [["x\n"]] and [{"x\n":null}]
+        Expect.equal
+            (Reader.read "? |\n  x\n: v\n")
+            (YAMLElement.Object [ YAMLElement.Mapping(blockKey "x\n", plainNode "v") ])
+            "An explicit key with a value"
+        Expect.equal
+            (Reader.read "? |\n  x\n")
+            (YAMLElement.Object [ YAMLElement.Mapping(blockKey "x\n", YAMLElement.Nil) ])
+            "An explicit key without a value"
+        Expect.equal
+            (Reader.read "- - |\n    x\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "x\n" ] ] ] ] ])
+            "A nested sequence item"
+        Expect.equal
+            (Reader.read "- ? |\n    x\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Mapping(blockKey "x\n", YAMLElement.Nil) ] ] ])
+            "An explicit key in a sequence item"
+
+    testCase "A header-shaped continuation line of a plain scalar does not throw" <| fun _ ->
+        // yaml@2.6.1 reads [{"k":"v ? |"},"b"]. The Reader reads the line as an explicit key and keeps
+        // the item, which differs from yaml and is a follow-up.
+        Expect.equal (errorOf (fun () -> Reader.read "- k: v\n      ? |\n- b\n" |> ignore)) "" "The input reads"
 
     testCase "Hash lines and placeholder-shaped text in a body are content" <| fun _ ->
         // yaml@2.6.1: {"a":"# not a comment\n<c f=0/>\n<s f=3/>\n"}
@@ -351,6 +442,18 @@ let private unitTests = testList "Block scalar units" [
             (Preprocessing.read "a: |\nb: 1\n").AST
             (Level [ Line "a: |"; Intendation []; Line "b: 1" ])
             "The empty body is an empty Intendation"
+
+    testCase "The indentation pass reads the body relative to the node that owns the scalar" <| fun _ ->
+        // yaml@2.6.1: [{"key":"x\n"}] and [" x\n"]. The Reader still reads the compact `- key: |2` wrongly,
+        // so this checks the output of the indentation pass.
+        Expect.equal
+            (Preprocessing.read "- key: |2\n    x\n").AST
+            (Level [ Line "- key: |2"; Intendation [ Line "  x" ] ])
+            "The body loses the two spaces of the key column"
+        Expect.equal
+            (Preprocessing.read "- |2\n   x\n").AST
+            (Level [ Line "- |2"; Intendation [ Line "   x" ] ])
+            "The body of a sequence item keeps its spaces because the dash is at column 0"
 
     testCase "The indentation pass keeps a body flat and moves the comment to the next node" <| fun _ ->
         Expect.equal
@@ -431,29 +534,34 @@ let private siblingScalarsInput (scalars: int) =
         sb.Append(sprintf "k%d: |\n  x\n# c\n" i) |> ignore
     sb.ToString()
 
-/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run.
+/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run. Fable has no
+/// Stopwatch, so the clock is the system time, and a window of 10 ms holds many runs of a short action.
 let private sampleMilliseconds (action: unit -> unit) =
     let startTime = System.DateTime.UtcNow
     let mutable runs = 0
     let mutable elapsed = 0.0
-    while elapsed < 100.0 do
+    while elapsed < 10.0 do
         action ()
         runs <- runs + 1
         elapsed <- (System.DateTime.UtcNow - startTime).TotalMilliseconds
     elapsed / float runs
 
-/// The fastest of three samples, which keeps a pause of the garbage collector out of the result.
+/// The fastest of five samples after one sample that warms up the code. The fastest sample keeps a
+/// pause of the garbage collector out of the result.
 let private millisecondsPerRun (action: unit -> unit) =
-    [ sampleMilliseconds action; sampleMilliseconds action; sampleMilliseconds action ] |> List.min
+    sampleMilliseconds action |> ignore
+    [ for _ in 1 .. 5 -> sampleMilliseconds action ] |> List.min
 
 /// Eight times the lines take about eight times as long in a linear pass and about sixty-four times as
-/// long in a quadratic one. The limit sits between both and leaves room for the noise of a short
-/// measurement, such as garbage collection when the input outgrows the cache.
+/// long in a quadratic one. The limit sits between both and leaves room for the noise of a measurement
+/// that takes a few milliseconds.
 let private expectLinear (name: string) (build: int -> string) =
-    let small = millisecondsPerRun (fun () -> Preprocessing.read (build 2000) |> ignore)
-    let large = millisecondsPerRun (fun () -> Preprocessing.read (build 16000) |> ignore)
+    let smallInput = build 2000
+    let largeInput = build 16000
+    let small = millisecondsPerRun (fun () -> Preprocessing.read smallInput |> ignore)
+    let large = millisecondsPerRun (fun () -> Preprocessing.read largeInput |> ignore)
     let ratio = large / small
-    Expect.isTrue (ratio < 24.0) (sprintf "%s: 2000 lines took %.3f ms and 16000 lines took %.3f ms, a ratio of %.2f" name small large ratio)
+    Expect.isTrue (ratio < 32.0) (sprintf "%s: 2000 lines took %.3f ms and 16000 lines took %.3f ms, a ratio of %.2f" name small large ratio)
 
 let private scalingTests = testList "Block scalar scaling" [
     testCase "A body of more than 5000 lines reads as one scalar" <| fun _ ->
