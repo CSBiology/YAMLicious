@@ -2242,5 +2242,32 @@ expression: >
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "A hash without leading whitespace belongs to the plain scalar."
+
+    testCase "Comment after the last item at the end of a block stays in the sequence" <| fun _ ->
+        let yaml = "files:\n  - a\n  # c2"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("files"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                        YAMLElement.Comment(" c2")
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A comment with nothing after it in the block should stay in the sequence."
+
+    testCase "Comment after the last item of a root sequence stays in the sequence" <| fun _ ->
+        let yaml = "- 1\n# end"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                YAMLElement.Comment(" end")
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A trailing comment of a root sequence should stay in the sequence."
 ]
 

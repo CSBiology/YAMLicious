@@ -110,12 +110,17 @@ let rec private containsCommentLine (eles: PreprocessorElement list) =
         | _ -> false)
 
 /// Splits the items of a block sequence from the elements that follow it. Comments after the
-/// last item stay outside the sequence because a full-line comment belongs to the next node.
+/// last item go to the next node in the same block. At the end of a block they stay in the
+/// sequence as trailing entries.
 let private splitSequenceItems (eles: PreprocessorElement list) =
     let run = eles |> List.takeWhile isSequenceElement
-    let trailing = run |> List.rev |> List.takeWhile isCommentOrBlankElement |> List.rev
-    let items = run |> List.take (run.Length - trailing.Length)
-    collectSequenceElements items, trailing @ (eles |> List.skip run.Length)
+    let following = eles |> List.skip run.Length
+    if following.IsEmpty then
+        collectSequenceElements run, []
+    else
+        let trailing = run |> List.rev |> List.takeWhile isCommentOrBlankElement |> List.rev
+        let items = run |> List.take (run.Length - trailing.Length)
+        collectSequenceElements items, trailing @ following
 
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     let rec flattenFlowContent (elements: PreprocessorElement list) : string list =
