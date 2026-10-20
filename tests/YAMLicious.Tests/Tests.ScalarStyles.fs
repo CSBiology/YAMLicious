@@ -287,17 +287,18 @@ let Main =
     testCase "isPlainSafe classifies structurally unsafe strings" <| fun _ ->
         // safe — note ":x" is valid: a leading ':' followed by a non-space is a legal
         // plain-scalar first character, and YAMLicious only splits mappings on ": ".
-        for s in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x" ] do
+        // "a#b" is safe because a '#' only starts a comment at the start or after whitespace.
+        for s in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.cwl#main" ] do
             Expect.isTrue (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-safe"
-        // unsafe — includes "a#b" because YAMLicious treats any '#' as a comment start.
-        for s in [ ""; " padded"; "trailing "; "a: b"; "@id"; "*ref"; "- item"; "x # y"; "a#b"; "'q"; "\"q"; "-"; "line1\nline2" ] do
+        // unsafe: "x # y" would lose " y" as a comment.
+        for s in [ ""; " padded"; "trailing "; "a: b"; "@id"; "*ref"; "- item"; "x # y"; "x\t# y"; "'q"; "\"q"; "-"; "line1\nline2" ] do
             Expect.isFalse (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-unsafe"
 
     testCase "Style-less unsafe scalar auto-selects double-quoted and round-trips" <| fun _ ->
         // Every one of these has no explicit style (mirrors Encode.string) and is not a
         // valid plain scalar, so the writer must emit a double-quoted scalar.
         let cases =
-            [ "a: b"; "@id"; "*ref"; "- item"; "x # y"; "a#b"; ""; " padded"; "trailing "; "'q"; "\"q"; "tab\there" ]
+            [ "a: b"; "@id"; "*ref"; "- item"; "x # y"; ""; " padded"; "trailing "; "'q"; "\"q"; "tab\there" ]
         for value in cases do
             let ast =
                 YAMLElement.Object [
@@ -315,7 +316,7 @@ let Main =
                 failwithf "Unexpected AST for '%s': %A" value other
 
     testCase "Style-less safe scalar stays plain and round-trips" <| fun _ ->
-        let cases = [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x" ]
+        let cases = [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.cwl#main" ]
         for value in cases do
             let ast =
                 YAMLElement.Object [

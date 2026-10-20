@@ -43,8 +43,8 @@ module StyleVerifier =
                         safe <- false // control characters (incl. newline, tab, CR, DEL) need quoting
                     elif c = ':' && (i + 1 >= s.Length || s.[i + 1] = ' ' || s.[i + 1] = '\t') then
                         safe <- false // ": " or a trailing ':' starts a mapping
-                    elif c = '#' then
-                        safe <- false // YAMLicious treats any '#' as the start of a comment
+                    elif c = '#' && CommentMarker.startsAt s i then
+                        safe <- false // " #" starts a comment, "C#" or "a.cwl#main" does not
                     i <- i + 1
                 safe
 
@@ -402,6 +402,8 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                         PreprocessorElement.Line s
                     | YAMLElement.Object [] ->
                         PreprocessorElement.Line "- {}"
+                    | YAMLElement.Comment c ->
+                        PreprocessorElement.Line (Formatting.mkComment c)
                     | anyElse ->
                         PreprocessorElement.Level [
                             PreprocessorElement.Line "-"

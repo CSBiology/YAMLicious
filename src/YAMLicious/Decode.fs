@@ -80,9 +80,30 @@ module Helper =
         | _ ->
             content.Value
 
+    let private isComment (element: YAMLElement) =
+        match element with
+        | YAMLElement.Comment _ -> true
+        | _ -> false
+
+    /// Comments carry no data. Every decoder strips them from the element it receives,
+    /// including the sequence inside `Object [Sequence ...]`, so callers never filter them.
+    let rec withoutComments (value: YAMLElement) =
+        match value with
+        | YAMLElement.Object items ->
+            items
+            |> List.filter (isComment >> not)
+            |> List.map (function
+                | YAMLElement.Sequence _ as sequence -> withoutComments sequence
+                | other -> other
+            )
+            |> YAMLElement.Object
+        | YAMLElement.Sequence items ->
+            items |> List.filter (isComment >> not) |> YAMLElement.Sequence
+        | other -> other
+
 open Helper
 let int (value: YAMLElement) : int =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         match System.Int32.TryParse scalar with
@@ -92,7 +113,7 @@ let int (value: YAMLElement) : int =
 
 let float (value: YAMLElement) : float =
     let Culture = System.Globalization.CultureInfo.InvariantCulture
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         #if FABLE_COMPILER
@@ -105,7 +126,7 @@ let float (value: YAMLElement) : float =
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let char (value: YAMLElement) : char =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         match isString scalar with
@@ -114,7 +135,7 @@ let char (value: YAMLElement) : char =
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a char" anyElse
 
 let bool (value: YAMLElement) : bool =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         match System.Boolean.TryParse scalar with
@@ -123,7 +144,7 @@ let bool (value: YAMLElement) : bool =
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a bool" anyElse
 
 let map (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YAMLElement) : Map<'a, 'b> =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object v -> 
         v |> List.map (fun x -> 
             match x with
@@ -133,7 +154,7 @@ let map (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YAM
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a map" anyElse
 
 let dict (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YAMLElement) : Dictionary<'a, 'b> =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object v -> 
         v |> List.map (fun x -> 
             match x with
@@ -143,7 +164,7 @@ let dict (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YA
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a dictionary" anyElse
 
 let datetime (value: YAMLElement) : DateTime =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         match System.DateTime.TryParse(scalar) with
@@ -152,7 +173,7 @@ let datetime (value: YAMLElement) : DateTime =
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a DateTime" anyElse
 
 let datetimeOffset (value: YAMLElement) : DateTimeOffset =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
         match System.DateTimeOffset.TryParse(scalar) with
@@ -161,7 +182,7 @@ let datetimeOffset (value: YAMLElement) : DateTimeOffset =
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a DateTimeOffset" anyElse
 
 let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         match v.Value with
         | YAML_NULL -> None
@@ -169,17 +190,17 @@ let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
     | anyElse -> Helper.raiseInvalidArg "value" "Expected an option" anyElse
 
 let string (value: YAMLElement) : string =
-    match value with
+    match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> scalarValue v
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a string" anyElse
 
 let tuple2 (decoderA: YAMLElement -> 'a) (decoderB: YAMLElement -> 'b) (value: YAMLElement) : 'a * 'b =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b]] | YAMLElement.Sequence [a; b] -> (decoderA a, decoderB b)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a tuple2" anyElse
 
 let tuple3 (decoderA: YAMLElement -> 'a) (decoderB: YAMLElement -> 'b) (decoderC: YAMLElement -> 'c) (value: YAMLElement) : 'a * 'b * 'c =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c]] | YAMLElement.Sequence [a; b; c] -> (decoderA a, decoderB b, decoderC c)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a tuple3" anyElse
 
@@ -191,7 +212,7 @@ let tuple4
     (value: YAMLElement) 
     : 'a * 'b * 'c * 'd 
     =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c; d]] | YAMLElement.Sequence [a; b; c; d] -> (decoderA a, decoderB b, decoderC c, decoderD d)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a tuple4" anyElse
 
@@ -204,7 +225,7 @@ let tuple5
     (value: YAMLElement) 
     : 'a * 'b * 'c * 'd * 'e 
     =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c; d; e]] | YAMLElement.Sequence [a; b; c; d; e] -> (decoderA a, decoderB b, decoderC c, decoderD d, decoderE e)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a tuple5" anyElse
 
@@ -218,7 +239,7 @@ let tuple6
     (value: YAMLElement) 
     : 'a * 'b * 'c * 'd * 'e * 'f 
     =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c; d; e; f]] 
     | YAMLElement.Sequence [a; b; c; d; e; f] -> 
         (decoderA a, decoderB b, decoderC c, decoderD d, decoderE e, decoderF f)
@@ -235,7 +256,7 @@ let tuple7
     (value: YAMLElement) 
     : 'a * 'b * 'c * 'd * 'e * 'f * 'g 
     =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c; d; e; f; g]] 
     | YAMLElement.Sequence [a; b; c; d; e; f; g] -> 
         (decoderA a, decoderB b, decoderC c, decoderD d, decoderE e, decoderF f, decoderG g)
@@ -253,38 +274,38 @@ let tuple8
     (value: YAMLElement) 
     : 'a * 'b * 'c * 'd * 'e * 'f * 'g * 'h 
     =
-    match value with
+    match withoutComments value with
     | YAMLElement.Object [YAMLElement.Sequence [a; b; c; d; e; f; g; h]] 
     | YAMLElement.Sequence [a; b; c; d; e; f; g; h] -> 
         (decoderA a, decoderB b, decoderC c, decoderD d, decoderE e, decoderF f, decoderG g, decoderH h)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a tuple8" anyElse
 
 let list (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a list =
-    match value with
+    match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] -> 
         v |> List.map decoder
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a list" anyElse
 
 let array (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a [] =
-    match value with
+    match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] -> 
         v |> List.map decoder |> List.toArray
     | anyElse -> Helper.raiseInvalidArg "value" "Expected an array" anyElse
 
 let seq (decoder: YAMLElement -> 'a) (value: YAMLElement) : seq<'a> =
-    match value with
+    match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] -> 
         v |> Seq.map decoder
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a seq" anyElse
 
 let resizearray (decoder: YAMLElement -> 'a) (value: YAMLElement) : ResizeArray<'a> =
-    match value with
+    match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] -> 
         v |> List.map decoder |> ResizeArray
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a resizearray" anyElse
 
 let values (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a list =
-    match value with
+    match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] | YAMLElement.Object v -> 
         v 
         |> List.map (function 
