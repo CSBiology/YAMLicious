@@ -284,7 +284,8 @@ type private Scanner(s: string) =
         i <- i + 1
 
     /// Emits one placeholder for the scalar from `opening` to `next`, the offset behind its closing
-    /// quote. A double-quoted scalar keeps its raw interior, because Escapes decodes it later.
+    /// quote. A double-quoted scalar keeps its raw interior, because Escapes folds its lines and decodes
+    /// its escapes in one pass later.
     let commitString (isSingle: bool) (opening: int) (next: int) =
         let raw = copyRange (opening + 1) (next - 1)
         for c in raw do
