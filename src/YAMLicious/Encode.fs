@@ -15,16 +15,45 @@ module Helper =
         match Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(x, typeof<'a>) with
         | case, _ -> case.Name
 
+/// The YAML 1.2.2 core schema, which decides what a plain scalar means.
+module CoreSchema =
+
+    /// The plain scalars that the tag resolution of the core schema (YAML 1.2.2, section 10.3.2) does not
+    /// leave as strings. The alternatives are the regular expressions of the spec for the tags null, bool,
+    /// int (decimal, octal and hexadecimal) and float (number, infinity and not-a-number).
+    let private nonStringPattern =
+        let alternatives = [
+            "null|Null|NULL|~"
+            "true|True|TRUE|false|False|FALSE"
+            "[-+]?[0-9]+"
+            "0o[0-7]+"
+            "0x[0-9a-fA-F]+"
+            "[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
+            "[-+]?\\.(?:inf|Inf|INF)"
+            "\\.(?:nan|NaN|NAN)"
+        ]
+        "^(?:" + String.concat "|" alternatives + ")$"
+
+    /// True when a reader of the core schema reads the text, written as a plain scalar, as null, a bool, an
+    /// int or a float. The empty string counts, because an empty plain scalar is null. YAML 1.2 does not
+    /// resolve yes, no, on and off, so they are strings here although YAML 1.1 reads them as bools.
+    /// A text with a line break never resolves, so `$` cannot match in front of a final line break.
+    let resolvesToNonString (text: string) =
+        String.IsNullOrEmpty text
+        || (not (text.Contains("\n"))
+            && System.Text.RegularExpressions.Regex.IsMatch(text, nonStringPattern))
+
 let int (value: int) = (YAMLContent.create(string value)) |> YAMLElement.Value
 
 #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
 let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString())) |> YAMLElement.Value
 #else 
-let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString("O", CultureInfo.InvariantCulture))) |> YAMLElement.Value
+let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString("R", CultureInfo.InvariantCulture))) |> YAMLElement.Value
 #endif
 let char (value: char) = YAMLContent.create(string value) |> YAMLElement.Value
 
-let bool (value: bool) = YAMLContent.create(string value) |> YAMLElement.Value
+/// The core schema spells the booleans true and false. The .NET ToString gives True and False.
+let bool (value: bool) = YAMLContent.create(if value then "true" else "false") |> YAMLElement.Value
 
 let inline map (keyEncoder: 'a -> string) (valueEncoder: 'b -> YAMLElement) (value: Map<'a, 'b>) = 
     [
@@ -100,7 +129,11 @@ let inline tuple8
     let a,b,c,d,e,f,g,h = value
     YAMLElement.Sequence [encA a; encB b; encC c; encD d; encE e; encF f; encG g; encH h]
 
-let string (value: string) = (YAMLContent.create(value)) |> YAMLElement.Value
+/// A string node. Text that a core schema reader takes for null, a bool, an int or a float is double-quoted,
+/// so that it reads back as the string. Every other string has no style and the writer picks its form.
+let string (value: string) =
+    let style = if CoreSchema.resolvesToNonString value then Some ScalarStyle.DoubleQuoted else None
+    YAMLContent.create(value, ?style = style) |> YAMLElement.Value
 
 let seq (encoder: 'a -> YAMLElement) (s: seq<'a>) = s |> Seq.map encoder |> List.ofSeq |> YAMLElement.Sequence
 

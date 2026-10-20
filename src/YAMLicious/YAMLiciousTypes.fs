@@ -49,12 +49,10 @@ type StringMapEntry = {
 type WriterOptions = {
     PreserveScalarStyle: bool
     MultilineFallbackStyle: BlockScalarStyle
-    MultilineFallbackChomping: ChompingMode
 } with
     static member Default =
         { PreserveScalarStyle = true
-          MultilineFallbackStyle = BlockScalarStyle.Literal
-          MultilineFallbackChomping = ChompingMode.Strip }
+          MultilineFallbackStyle = BlockScalarStyle.Literal }
 
 type Preprocessor = {
     AST: PreprocessorElement

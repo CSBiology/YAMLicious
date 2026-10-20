@@ -34,7 +34,74 @@ let private expectSingleMappingSequenceValues (ast: YAMLElement) =
 /// A style-less value, as Encode.string creates it. Its first line starts with a space.
 let private leadingSpaceValue = "  leading spaces first line\nnormal second line\n"
 
-let private keepTrailingNewline = { WriterOptions.Default with MultilineFallbackChomping = ChompingMode.Clip }
+/// The written text with "\n" line breaks on every platform. Tests that use it compare the whole text,
+/// so a blank line at its end counts.
+let private writeLf (options: WriterOptions) (ast: YAMLElement) =
+    (Writer.writeWithOptions ast options None).Replace("\r\n", "\n")
+
+let private textMapping (key: string) (value: string) =
+    YAMLElement.Mapping(YAMLContent.create(key), YAMLElement.Value(YAMLContent.create(value)))
+
+let private textItem (value: string) =
+    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value)) ]
+
+/// The scalars of the mapping values or of the sequence items in a document.
+let private readScalars (text: string) =
+    match Reader.read text with
+    | YAMLElement.Object [ YAMLElement.Sequence items ] -> items |> List.map Decode.string
+    | YAMLElement.Object entries ->
+        entries
+        |> List.map (fun entry ->
+            match entry with
+            | YAMLElement.Mapping(_, value) -> Decode.string value
+            | _ -> failwithf "Unexpected entry: %A" entry
+        )
+    | other -> failwithf "Unexpected AST: %A" other
+
+/// Style-less values with the text that Writer.write gives for them under the key k when nothing follows.
+/// The header is the literal one. A kept blank line is the last line of that text, so the texts end in it.
+let private chompingCases = [
+    "a", "k: a\n"
+    "a\n", "k: |\n    a\n"
+    "a\n\n", "k: |+\n    a\n    \n"
+    "a\n\n\n", "k: |+\n    a\n    \n    \n"
+    "\n", "k: |+\n    \n"
+]
+
+let private expectFallbackChomping (options: WriterOptions) (headerChar: string) =
+    for value, literalText in chompingCases do
+        let mappingText = literalText.Replace("|", headerChar)
+        let itemText = "- " + mappingText.Substring(3)
+        let cases = [
+            "mapping value at the end", YAMLElement.Object [ textMapping "k" value ], mappingText, [ value ]
+            "mapping value before a key", YAMLElement.Object [ textMapping "k" value; textMapping "j" "x" ], mappingText + "j: x\n", [ value; "x" ]
+            "sequence item at the end", YAMLElement.Object [ YAMLElement.Sequence [ textItem value ] ], itemText, [ value ]
+            "sequence item before an item", YAMLElement.Object [ YAMLElement.Sequence [ textItem value; textItem "b" ] ], itemText + "- b\n", [ value; "b" ]
+        ]
+        for name, ast, expectedText, expectedValues in cases do
+            let written = writeLf options ast
+            Expect.equal written expectedText (sprintf "%s %A: the text" name value)
+            Expect.equal (readScalars written) expectedValues (sprintf "%s %A: the values read back" name value)
+
+/// The parts of a plain multiline scalar as the Reader returns them.
+let private plainSegments (element: YAMLElement) =
+    match element with
+    | YAMLElement.Value content -> [ content ]
+    | YAMLElement.Object items ->
+        items
+        |> List.map (fun item ->
+            match item with
+            | YAMLElement.Value content -> content
+            | _ -> failwithf "Unexpected element: %A" item
+        )
+    | other -> failwithf "Unexpected element: %A" other
+
+/// The comment sits on the last part, and the parts joined by line breaks are the value.
+let private expectCommentOnLastSegment (segments: YAMLContent list) (value: string) =
+    Expect.equal (segments |> List.map (fun segment -> segment.Value) |> String.concat "\n") value "The parts hold the value"
+    let last = List.last segments
+    Expect.equal last.Comment (Some " note") "The comment is on the last part"
+    Expect.isTrue (segments |> List.take (segments.Length - 1) |> List.forall (fun segment -> segment.Comment.IsNone)) "No other part has a comment"
 
 let Main =
   testList "Scalar Styles" [
@@ -74,12 +141,12 @@ let Main =
             ]
         Expect.equal roundTripped expectedRoundTripped "Reader should restore quote styles from emitted inline sequence"
 
-    testCase "Writer default fallback for style-less multiline uses |-" <| fun _ ->
+    testCase "Writer fallback for a style-less multiline value without a trailing line break uses |-" <| fun _ ->
         let ast =
             YAMLElement.Object [
                 YAMLElement.Mapping(
                     YAMLContent.create("note"),
-                    YAMLElement.Value (YAMLContent.create("line1\nline2\n"))
+                    YAMLElement.Value (YAMLContent.create("line1\nline2"))
                 )
             ]
 
@@ -87,12 +154,12 @@ let Main =
         let expected = """note: |-
     line1
     line2"""
-        Expect.trimEqual actual expected "Style-less multiline values should use default |- fallback"
+        Expect.trimEqual actual expected "Style-less multiline values without a trailing line break should use |-"
 
         let parsed = Reader.read actual
         match parsed with
         | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value value)] ->
-            Expect.equal value.Value "line1\nline2" "Strip fallback should remove trailing newline"
+            Expect.equal value.Value "line1\nline2" "The value should come back unchanged"
             Expect.equal value.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Strip, None))) "Fallback style should be literal strip"
         | _ ->
             failwithf "Unexpected AST after fallback round-trip: %A" parsed
@@ -261,7 +328,7 @@ let Main =
         let ast = YAMLElement.Object [
             YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create(leadingSpaceValue)))
         ]
-        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        let written = Writer.write ast None
         Expect.trimEqual written "k: |2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
         let value = expectSingleMappingValue (Reader.read written)
         Expect.equal value.Value leadingSpaceValue "YAMLicious should read the value back unchanged"
@@ -285,7 +352,7 @@ let Main =
                 ]
             )
         ]
-        let written = Writer.writeWithOptions ast keepTrailingNewline (Some (fun config -> { config with Whitespace = 2 }))
+        let written = Writer.write ast (Some (fun config -> { config with Whitespace = 2 }))
         Expect.trimEqual written "a:\n  k: |2\n      leading spaces first line\n    normal second line" "The body sits two spaces beyond the header plus the content spaces"
         Expect.yamlSemanticEqual (Reader.read written) ast "YAMLicious should read the nested value back unchanged"
 
@@ -296,7 +363,7 @@ let Main =
                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create(leadingSpaceValue))]
             ]
         ]
-        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        let written = Writer.write ast None
         Expect.trimEqual written "- |2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
         let value = expectSingleSequenceItemValue (Reader.read written)
         Expect.equal value.Value leadingSpaceValue "YAMLicious should read the item back unchanged"
@@ -304,7 +371,7 @@ let Main =
     testCase "Writer adds an indentation indicator when the first line of a root value starts with a space" <| fun _ ->
         // yaml@2.6.1 reads the written text back as the original string
         let ast = YAMLElement.Value(YAMLContent.create(leadingSpaceValue))
-        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        let written = Writer.write ast None
         Expect.trimEqual written "|2\n    leading spaces first line\n  normal second line" "The indicator keeps the first line's spaces out of the indentation"
         let value = expectSingleRootValue (Reader.read written)
         Expect.equal value.Value leadingSpaceValue "YAMLicious should read the root value back unchanged"
@@ -313,7 +380,7 @@ let Main =
         let ast = YAMLElement.Object [
             YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value(YAMLContent.create("first\n  second\n")))
         ]
-        let written = Writer.writeWithOptions ast keepTrailingNewline None
+        let written = Writer.write ast None
         Expect.trimEqual written "k: |\n    first\n      second" "Deeper later lines need no indicator"
 
     testCase "Expression block scalar keeps quote delimiters and stays block style on write" <| fun _ ->
@@ -565,4 +632,59 @@ let Main =
         let written = Writer.write ast None
         Expect.trimEqual written "k: [abc, C#, tool.cwl#main, a:b]" "Items without flow indicators should stay unquoted"
         Expect.equal (expectSingleMappingSequenceValues (Reader.read written)) values "Reader should restore all items"
+
+    // yaml@2.6.1 reads `k: $(f(a,\n  "x")) # note` as {"k":"$(f(a, \"x\"))"} and rejects the comment behind
+    // the first line, `k: $(f(a, # note\n  "x"))` (BAD_INDENT, MISSING_CHAR).
+    testCase "Writer puts the comment of a multiline plain mapping value behind its last line" <| fun _ ->
+        let value = "$(f(a,\n\"x\"))"
+        let content = YAMLContent.create(value, comment=" note", style=ScalarStyle.Plain)
+        let ast = YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value content); textMapping "j" "x" ]
+        let written = writeLf WriterOptions.Default ast
+        Expect.equal written "k: $(f(a,\n  \"x\")) # note\nj: x\n" "The comment follows the last line and the next key stays a key"
+        match Reader.read written with
+        | YAMLElement.Object [ YAMLElement.Mapping(_, scalar); YAMLElement.Mapping(_, next) ] ->
+            expectCommentOnLastSegment (plainSegments scalar) value
+            Expect.equal (Decode.string next) "x" "The next key keeps its value"
+        | other -> failwithf "Unexpected AST: %A" other
+
+    // yaml@2.6.1 reads `- $(f(a,\n  "x")) # note` as ["$(f(a, \"x\"))"] and rejects the comment behind the
+    // first line, `- $(f(a, # note\n  "x"))` (MISSING_CHAR, UNEXPECTED_TOKEN).
+    testCase "Writer puts the comment of a multiline plain sequence item behind its last line" <| fun _ ->
+        let value = "$(f(a,\n\"x\"))"
+        let content = YAMLContent.create(value, comment=" note", style=ScalarStyle.Plain)
+        let ast = YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Value content ]; textItem "x" ] ]
+        let written = writeLf WriterOptions.Default ast
+        Expect.equal written "- $(f(a,\n  \"x\")) # note\n- x\n" "The comment follows the last line and the next item stays an item"
+        match Reader.read written with
+        | YAMLElement.Object [ YAMLElement.Sequence [ scalar; next ] ] ->
+            expectCommentOnLastSegment (plainSegments scalar) value
+            Expect.equal (Decode.string next) "x" "The next item keeps its value"
+        | other -> failwithf "Unexpected AST: %A" other
+
+    // yaml@2.6.1 reads each written text back as the value, with or without the key or item that follows it.
+    // The values are "a", "a\n", "a\n\n", "a\n\n\n" and "\n". The kept blank lines are the last lines of the text.
+    testCase "Writer chomps a style-less multiline value by its trailing line breaks" <| fun _ ->
+        expectFallbackChomping WriterOptions.Default "|"
+
+    // yaml@2.6.1 reads the folded texts back as the same values as the literal ones above.
+    testCase "Writer chomps a folded fallback by the trailing line breaks too" <| fun _ ->
+        expectFallbackChomping { WriterOptions.Default with MultilineFallbackStyle = BlockScalarStyle.Folded } ">"
+
+    // yaml@2.6.1 reads `k: |-\n    a\n` as {"k":"a"} and `k: |+\n    a\n` as {"k":"a\n"}.
+    testCase "Writer keeps the chomping of an explicit block style that the value contradicts" <| fun _ ->
+        let block (chomp: ChompingMode) (value: string) =
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("k"),
+                    YAMLElement.Value(YAMLContent.create(value, style=ScalarStyle.Block(BlockScalarStyle.Literal, chomp, None)))
+                )
+            ]
+        let writtenStrip = writeLf WriterOptions.Default (block ChompingMode.Strip "a\n\n")
+        Expect.equal writtenStrip "k: |-\n    a\n" "Strip stays although the value ends in two line breaks"
+        let readStrip = expectSingleMappingValue (Reader.read writtenStrip)
+        Expect.equal readStrip.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Strip, None))) "The header is read as written"
+        let writtenKeep = writeLf WriterOptions.Default (block ChompingMode.Keep "a")
+        Expect.equal writtenKeep "k: |+\n    a\n" "Keep stays although the value has no line break"
+        let readKeep = expectSingleMappingValue (Reader.read writtenKeep)
+        Expect.equal readKeep.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Keep, None))) "The header is read as written"
   ]

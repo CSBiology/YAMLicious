@@ -88,6 +88,7 @@ author_emails:
 
 open Fable.Pyxpecto
 open YAMLicious
+open YAMLicious.YAMLiciousTypes
 
 let tests_decode = testList "min decode" [
     testCase "integer" <| fun _ ->
@@ -410,7 +411,59 @@ author_emails:
         Expect.trimEqual actual expected ""
 ]
 
+let private writeValue (element: YAMLElement) =
+    let document = YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create("k"), element) ]
+    (Writer.write document None).Replace("\r\n", "\n")
+
+let private readValue (decoder: YAMLElement -> 'a) (text: string) =
+    text |> Decode.read |> Decode.object (fun get -> get.Required.Field "k" decoder)
+
+let tests_encode_scalars = testList "Encode scalars" [
+    // yaml@2.6.1 reads each of these texts as null, a bool, an int or a float when it is plain, and as the
+    // string itself when it is double-quoted. A plain .inf and .nan are floats, and 007 is the int 7.
+    testCase "Encode.string double-quotes the texts that the core schema reads as null, bool, int or float" <| fun _ ->
+        let lookalikes =
+            [ "null"; "Null"; "NULL"; "~"; ""
+              "true"; "True"; "TRUE"; "false"; "False"; "FALSE"
+              "1"; "-1"; "+1"; "007"; "0o17"; "0x1F"
+              "1.5"; "-1.5"; ".5"; "5."; "1e3"; "1.5E-3"; "-.5e+2"
+              ".inf"; "-.inf"; "+.inf"; ".Inf"; ".INF"; ".nan"; ".NaN"; ".NAN" ]
+        for text in lookalikes do
+            let encoded = Encode.string text
+            Expect.equal encoded (YAMLElement.Value(YAMLContent.create(text, style=ScalarStyle.DoubleQuoted))) $"'{text}' has the double-quoted style"
+            let written = writeValue encoded
+            Expect.equal written $"k: \"{text}\"\n" $"'{text}' is written in quotes"
+            Expect.equal (readValue Decode.string written) text $"'{text}' reads back as the string"
+
+    // yaml@2.6.1 reads each of these plain texts as the string itself. YAML 1.2 does not resolve yes, no, on
+    // and off, so they stay plain although YAML 1.1 reads them as bools.
+    testCase "Encode.string leaves the other strings without a style" <| fun _ ->
+        let strings = [ "abc"; "1a"; "true1"; "nulls"; "1.0.0"; "0x"; "yes"; "no"; "on"; "off" ]
+        for text in strings do
+            let encoded = Encode.string text
+            Expect.equal encoded (YAMLElement.Value(YAMLContent.create(text))) $"'{text}' has no style"
+            let written = writeValue encoded
+            Expect.equal written $"k: {text}\n" $"'{text}' is written plain"
+            Expect.equal (readValue Decode.string written) text $"'{text}' reads back as the string"
+
+    // yaml@2.6.1 reads `k: true` and `k: false` as the bools.
+    testCase "Encode.bool writes true and false" <| fun _ ->
+        Expect.equal (writeValue (Encode.bool true)) "k: true\n" "true"
+        Expect.equal (writeValue (Encode.bool false)) "k: false\n" "false"
+        Expect.equal (readValue Decode.bool "k: true\n") true "Decode.bool reads true"
+        Expect.equal (readValue Decode.bool "k: false\n") false "Decode.bool reads false"
+
+    // yaml@2.6.1 reads `k: 5`, `k: -5` and `k: 1.5` as the numbers.
+    testCase "Encode.int and Encode.float stay unquoted" <| fun _ ->
+        Expect.equal (writeValue (Encode.int 5)) "k: 5\n" "int"
+        Expect.equal (writeValue (Encode.int -5)) "k: -5\n" "negative int"
+        Expect.equal (writeValue (Encode.float 1.5)) "k: 1.5\n" "float"
+        Expect.equal (Encode.int 5) (YAMLElement.Value(YAMLContent.create("5"))) "The int has no style"
+        Expect.equal (Encode.float 1.5) (YAMLElement.Value(YAMLContent.create("1.5"))) "The float has no style"
+]
+
 let Main = testList "EncoderDecoder" [
     tests_decode
     tests_validationPackages
+    tests_encode_scalars
 ]

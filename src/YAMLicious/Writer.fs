@@ -142,13 +142,23 @@ module Formatting =
         | Some line when line.StartsWith(" ") -> Some continuationPrefix.Length
         | _ -> None
 
+    /// The chomping under which a block scalar reads back as the value. A value without a trailing line
+    /// break needs Strip. One trailing line break reads back under Clip, and more under Keep. A value of
+    /// only line breaks has no content line to clip behind, so it needs Keep as well.
+    let private chompingFor (value: string) =
+        let normalized = Line.normalizeNewlines value
+        let trailingBreaks = normalized.Length - normalized.TrimEnd([| '\n' |]).Length
+        if trailingBreaks = 0 then ChompingMode.Strip
+        elif trailingBreaks = 1 && trailingBreaks < normalized.Length then ChompingMode.Clip
+        else ChompingMode.Keep
+
     let resolveBlockStyle (options: WriterOptions) (content: YAMLContent) =
         let style, chomp, indent =
             match options.PreserveScalarStyle, content.Style with
             | true, Some (ScalarStyle.Block (style, chomp, indent)) ->
                 style, chomp, indent
             | _ ->
-                options.MultilineFallbackStyle, options.MultilineFallbackChomping, None
+                options.MultilineFallbackStyle, chompingFor content.Value, None
         match indent with
         | Some _ -> style, chomp, indent
         | None -> style, chomp, requiredIndentIndicator content.Value
@@ -239,37 +249,34 @@ module Formatting =
     let private plainMultilineLines (content: YAMLContent) =
         Line.normalizeNewlines content.Value |> splitPreservingEmpty
 
-    let private mkPlainMultilineNode (mkHeader: string -> string) (lines: string list) =
-        let firstLine, remainingLines =
-            match lines with
-            | firstLine :: rest -> firstLine, rest
-            | [] -> "", []
-
-        let continuationLines =
-            remainingLines
-            |> List.map (fun line -> PreprocessorElement.Line (continuationPrefix + line))
-
-        PreprocessorElement.Level (
-            PreprocessorElement.Line (mkHeader firstLine) :: continuationLines
+    /// A comment ends a plain scalar, so it goes behind the last line. Behind the first line it would
+    /// cut the value short.
+    let private mkPlainMultilineNode (mkFirstLine: string -> string) (content: YAMLContent) (lines: string list) =
+        let lastIndex = List.length lines - 1
+        lines
+        |> List.mapi (fun i line ->
+            let text = if i = 0 then mkFirstLine line else continuationPrefix + line
+            PreprocessorElement.Line (if i = lastIndex then appendComment content text else text)
         )
+        |> PreprocessorElement.Level
 
     let mkPlainMultilineMapping (options: WriterOptions) (key: YAMLContent) (content: YAMLContent) =
         let lines = plainMultilineLines content
-        let mkHeader firstLine =
-            mkMappingKey options key + " " + mkNodePrefix content + firstLine |> appendComment content
-        mkPlainMultilineNode mkHeader lines
+        let mkFirstLine firstLine =
+            mkMappingKey options key + " " + mkNodePrefix content + firstLine
+        mkPlainMultilineNode mkFirstLine content lines
 
     let mkPlainMultilineSequenceItem (options: WriterOptions) (content: YAMLContent) =
         let lines = plainMultilineLines content
-        let mkHeader firstLine =
-            "- " + mkNodePrefix content + firstLine |> appendComment content
-        mkPlainMultilineNode mkHeader lines
+        let mkFirstLine firstLine =
+            "- " + mkNodePrefix content + firstLine
+        mkPlainMultilineNode mkFirstLine content lines
 
     let mkPlainMultilineRoot (options: WriterOptions) (content: YAMLContent) =
         let lines = plainMultilineLines content
-        let mkHeader firstLine =
-            mkNodePrefix content + firstLine |> appendComment content
-        mkPlainMultilineNode mkHeader lines
+        let mkFirstLine firstLine =
+            mkNodePrefix content + firstLine
+        mkPlainMultilineNode mkFirstLine content lines
 
     let tryLegacyPlainMultilineContent (items: YAMLElement list) =
         let isAllowedSegment (allowMetadata: bool) (content: YAMLContent) =

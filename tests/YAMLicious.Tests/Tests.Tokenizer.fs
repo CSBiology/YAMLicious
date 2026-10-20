@@ -72,20 +72,69 @@ let private malformedInput (lines: int) =
         sb.Append(text).Append("\n") |> ignore
     sb.ToString()
 
-/// Runs the tokenizer repeatedly for a fixed time and returns the milliseconds of one run.
-let private sampleMilliseconds (input: string) =
+/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run. Fable has no
+/// Stopwatch, so the clock is the system time, and a window of 50 ms holds many runs of a short action.
+let private sampleMilliseconds (action: unit -> unit) =
     let startTime = System.DateTime.UtcNow
     let mutable runs = 0
     let mutable elapsed = 0.0
-    while elapsed < 100.0 do
-        Persil.tokenize input |> ignore
+    while elapsed < 50.0 do
+        action ()
         runs <- runs + 1
         elapsed <- (System.DateTime.UtcNow - startTime).TotalMilliseconds
     elapsed / float runs
 
-/// The fastest of three samples, which keeps a pause of the garbage collector out of the result.
-let private millisecondsPerRun (input: string) =
-    [ sampleMilliseconds input; sampleMilliseconds input; sampleMilliseconds input ] |> List.min
+/// The lines of the small and the large input in the scaling test. Fable Python runs far slower than
+/// the other targets, so it keeps a shorter large input to hold the time of the suite down.
+let private smallLines = 2000
+#if FABLE_COMPILER_PYTHON
+let private largeLines = 16000
+#else
+let private largeLines = 32000
+#endif
+
+/// The reference of the scaling test, a single pass over the characters of the input. The count goes
+/// to a cell that outlives the call, so the compiler cannot drop the loop.
+let private lineBreakCount = ref 0
+
+let private countLineBreaks (input: string) =
+    let mutable count = 0
+    let mutable i = 0
+    while i < input.Length do
+        if input.[i] = '\n' then count <- count + 1
+        i <- i + 1
+    lineBreakCount.Value <- count
+
+/// Compares how the time of Persil.tokenize grows from the small to the large input with how the time
+/// of one pass over the same text grows. The pass is linear, so a linear tokenizer scores about 1 and a
+/// quadratic one about the ratio of the two sizes. The reference absorbs the cost that a large input
+/// pays for the garbage collector and the caches. Every round measures the four series one after the
+/// other, so a load on the machine hits the tokenizer and the reference alike. The first round warms up
+/// the code and is dropped. The fastest of the five rounds after it keeps a pause of the garbage
+/// collector out of the result.
+let private expectLinear (build: int -> string) =
+    let smallInput = build smallLines
+    let largeInput = build largeLines
+    let actions: (unit -> unit)[] = [|
+        fun () -> Persil.tokenize smallInput |> ignore
+        fun () -> Persil.tokenize largeInput |> ignore
+        fun () -> countLineBreaks smallInput
+        fun () -> countLineBreaks largeInput
+    |]
+    let fastest = Array.create actions.Length infinity
+    for round in 0 .. 5 do
+        for i in 0 .. actions.Length - 1 do
+            let milliseconds = sampleMilliseconds actions.[i]
+            if round > 0 then fastest.[i] <- min fastest.[i] milliseconds
+    let tokenizeRatio = fastest.[1] / fastest.[0]
+    let referenceRatio = fastest.[3] / fastest.[2]
+    let normalized = tokenizeRatio / referenceRatio
+    // The limit is the geometric mean of 1 (linear) and the size ratio (quadratic), the middle on a log scale.
+    let limit = sqrt (float largeLines / float smallLines)
+    Expect.isTrue
+        (normalized < limit)
+        (sprintf "The tokenizer took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. The reference took %.3f ms and %.3f ms, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
+            fastest.[0] smallLines fastest.[1] largeLines tokenizeRatio fastest.[2] fastest.[3] referenceRatio normalized limit)
 
 let private headerTests = testList "Block scalar header" [
     testCase "standalone, mapping value, sequence entry and explicit key positions" <| fun _ ->
@@ -905,12 +954,7 @@ let private performanceTests = testList "Scanner performance" [
             "the unclosed quotes stay literal and the closed strings are replaced"
 
     testCase "the time grows linearly with the number of lines" <| fun _ ->
-        // A quadratic scanner needs about four times as long for twice the lines. Linear needs two times.
-        // The limit sits between both with room for the noise of a short measurement.
-        let small = millisecondsPerRun (malformedInput 5000)
-        let large = millisecondsPerRun (malformedInput 10000)
-        let ratio = large / small
-        Expect.isTrue (ratio < 3.2) (sprintf "5000 lines took %.3f ms and 10000 lines took %.3f ms, a ratio of %.2f" small large ratio)
+        expectLinear malformedInput
 
     testCase "one unclosed quote in front of a long input" <| fun _ ->
         // The first probe runs to the end of the input and every later probe reuses its result.
