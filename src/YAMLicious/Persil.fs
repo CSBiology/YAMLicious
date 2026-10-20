@@ -37,14 +37,6 @@ let SingleQuotedStringPattern =
     #endif
 
 [<Literal>]
-let CommentMatchPattern = 
-    #if FABLE_COMPILER_PYTHON
-    "#(?P<comment>.*)"
-    #else
-    "#(?<comment>.*)"
-    #endif
-
-[<Literal>]
 let NewLineChar = '\n'
 
 let private nextStringIndex (dict: Dictionary<int, StringMapEntry>) =
@@ -210,7 +202,7 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
                 inComment <- false
         else
             match c with
-            | '#' ->
+            | '#' when CommentMarker.startsAt s i ->
                 inComment <- true
                 appendChar c
                 i <- i + 1
@@ -306,17 +298,37 @@ let stringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
 let singleQuotedStringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
     singleQuotedStringCleanUpWithProtected dict Set.empty s
 
-let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
+let private tryFindCommentStart (line: string) =
+    let mutable i = 0
+    let mutable found = -1
+    while found < 0 && i < line.Length do
+        if line.[i] = '#' && CommentMarker.startsAt line i then
+            found <- i
+        i <- i + 1
+    found
+
+/// Replaces every comment with a `<c f=N/>` placeholder. This runs after the quoted-string
+/// passes, so a `#` inside quotes is already hidden. The pass skips block scalar content
+/// because a `#` there is literal text.
+let private commentCleanUpWithProtected (dict: Dictionary<int, string>) (protectedBlockScalarLines: Set<int>) (s: string) =
     let mutable n = 0
-    let regex = Regex(CommentMatchPattern)
-    let matcheval = new MatchEvaluator(fun m ->
-        let v = m.Groups.["comment"].Value
-        let currentN = n
-        n <- n + 1
-        dict.Add(currentN, v)
-        sprintf "<c f=%i/>" currentN
+    s.Split([|NewLineChar|], StringSplitOptions.None)
+    |> Array.mapi (fun lineIndex line ->
+        if protectedBlockScalarLines.Contains lineIndex then
+            line
+        else
+            match tryFindCommentStart line with
+            | -1 -> line
+            | start ->
+                let currentN = n
+                n <- n + 1
+                dict.Add(currentN, line.Substring(start + 1))
+                line.Substring(0, start) + sprintf "<c f=%i/>" currentN
     )
-    regex.Replace(s, matcheval)
+    |> String.concat (string NewLineChar)
+
+let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
+    commentCleanUpWithProtected dict Set.empty s
 
 let cut(yamlString: string) =
     let lines =
@@ -350,11 +362,15 @@ let pipeline (yamlString: string) =
     let commentMap = new Dictionary<int, string>()
     let normalizedContent = Line.normalizeNewlines yamlString
     let protectedBlockScalarLines = detectBlockScalarContentLines normalizedContent
-    let lines =
+    let withoutStrings =
         normalizedContent
         |> singleQuotedStringCleanUpWithProtected stringMap protectedBlockScalarLines  // Handle single-quoted strings first
         |> stringCleanUpWithProtected stringMap protectedBlockScalarLines              // Then handle double-quoted strings
-        |> commentCleanUp commentMap
+    // A multiline quoted string collapses into one placeholder, which shifts line numbers.
+    // Detect the block scalar lines again on the text the comment pass sees.
+    let lines =
+        withoutStrings
+        |> commentCleanUpWithProtected commentMap (detectBlockScalarContentLines withoutStrings)
         |> cut
     let hasDirectivePrelude =
         lines

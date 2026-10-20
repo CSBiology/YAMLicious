@@ -59,7 +59,7 @@ let Main = testList "YamlRead" [
         Expect.equal actual expected ""
 
     testCase "KeyValue InlineSequence + Comment" <| fun _ ->
-        let yaml = "Say: [Hello, World]# 420 blaze it"
+        let yaml = "Say: [Hello, World] # 420 blaze it"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("Say"),

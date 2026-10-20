@@ -15,6 +15,17 @@ module Line =
     let isBlank (line: string) =
         line.Trim() = ""
 
+module CommentMarker =
+
+    /// YAML 1.2.2 [s-b-comment]: `#` starts a comment only at the start of a line or after
+    /// whitespace, so `tool.cwl#main` and `C#` stay part of the scalar.
+    let startsAt (s: string) (index: int) =
+        index = 0
+        ||
+        match s.[index - 1] with
+        | ' ' | '\t' | '\n' -> true
+        | _ -> false
+
 module Placeholder =
 
     let private tryParseInt (s: string) =

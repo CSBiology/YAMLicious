@@ -5,43 +5,59 @@ open System.Text
 open Syntax
 open YAMLiciousTypes
 
-let private isPresentationOnlyLine (line: string) =
-    line.Trim() = "" || Placeholder.isCommentOnlyLine line
+let private isContentLine (line: string) =
+    not (Line.isBlank line || Placeholder.isCommentOnlyLine line)
 
-let private tryFindContentLine (lines: string list) =
-    lines
-    |> List.tryFind (isPresentationOnlyLine >> not)
+let private isFlowCloserLine (line: string) =
+    let withoutComment, _ = Placeholder.splitTrailingComment line
+    match withoutComment.Trim().TrimEnd(',') with
+    | "]" | "}" -> true
+    | _ -> false
 
-let private shouldStayInNestedBlock (currentIntendation: int) (inBlockScalar: bool) (line: string) (rest: string list) =
-    if line.Trim() = "" then
-        if inBlockScalar then
-            match rest |> List.tryFind (fun l -> l.Trim() <> "") with
-            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
-            | None -> true
-        else
-            match rest |> List.tryFind (fun l -> l.Trim() <> "") with
-            | Some nextLine when Placeholder.isCommentOnlyLine nextLine && Line.countLeadingSpaces nextLine <= currentIntendation ->
-                match tryFindContentLine rest with
-                | Some nextContentLine -> Line.countLeadingSpaces nextContentLine > currentIntendation
-                | None -> true
-            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
-            | None -> true
-    elif Placeholder.isCommentOnlyLine line then
-        if inBlockScalar then
-            Line.countLeadingSpaces line > currentIntendation
-        else
-            Line.countLeadingSpaces line > currentIntendation
-            ||
-            match tryFindContentLine rest with
-            | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
-            | None -> true
+let private withIndent (indent: int) (line: string) =
+    System.String(' ', indent) + line.TrimStart()
+
+/// A full-line comment belongs to the node that follows it. Giving it the indentation of the
+/// next content line puts it into that node's block, so the indentation pass below treats
+/// comments like any other line. Comments with no content after them stay in the last block,
+/// at most as deep as its final content line. Comments before a flow closer keep their place
+/// inside the flow collection.
+let private alignCommentLines (lines: string list) =
+    let lastContentIndent =
+        lines
+        |> List.tryFindBack isContentLine
+        |> Option.map Line.countLeadingSpaces
+        |> Option.defaultValue 0
+
+    let rec loop (reversed: string list) (nextContent: string option) (acc: string list) =
+        match reversed with
+        | [] -> acc
+        | line :: rest when isContentLine line ->
+            loop rest (Some line) (line :: acc)
+        | line :: rest when Placeholder.isCommentOnlyLine line ->
+            let aligned =
+                match nextContent with
+                | Some next when isFlowCloserLine next -> line
+                | Some next -> withIndent (Line.countLeadingSpaces next) line
+                | None -> withIndent (min lastContentIndent (Line.countLeadingSpaces line)) line
+            loop rest nextContent (aligned :: acc)
+        | line :: rest ->
+            loop rest nextContent (line :: acc)
+
+    loop (List.rev lines) None []
+
+let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (rest: string list) =
+    if Line.isBlank line then
+        match rest |> List.tryFind (Line.isBlank >> not) with
+        | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
+        | None -> true
     else
         Line.countLeadingSpaces line > currentIntendation
 
-let private splitNestedBlock (currentIntendation: int) (inBlockScalar: bool) (lines: string list) =
+let private splitNestedBlock (currentIntendation: int) (lines: string list) =
     let rec loop acc remaining =
         match remaining with
-        | line :: rest when shouldStayInNestedBlock currentIntendation inBlockScalar line rest ->
+        | line :: rest when shouldStayInNestedBlock currentIntendation line rest ->
             loop (line :: acc) rest
         | _ ->
             List.rev acc, remaining
@@ -86,7 +102,7 @@ let read (yamlStr: string) =
         let previousContentLine () =
             acc
             |> List.tryFind (function
-                | Line line -> line.Trim() <> ""
+                | Line line -> isContentLine line
                 | _ -> true
             )
 
@@ -109,40 +125,21 @@ let read (yamlStr: string) =
         match lines with
         | [] -> acc
         | line :: rest ->
-            let isEmptyLine = line.Trim() = ""
-            let isCommentLine = Placeholder.isCommentOnlyLine line
-
-            if isEmptyLine then
+            if Line.isBlank line then
                 let nextIndentedLine =
                     rest
-                    |> List.tryFind (fun l -> l.Trim() <> "")
+                    |> List.tryFind (Line.isBlank >> not)
 
                 match nextIndentedLine with
                 | Some nextLine when Line.countLeadingSpaces nextLine > currentIntendation && (List.isEmpty acc || inBlockScalar || canStartNestedBlockAfterPresentation ()) ->
                     let nextIntendation = Line.countLeadingSpaces nextLine
                     let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
 
                     let children = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
                     loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
                 | _ ->
                     loop rest currentIntendation inBlockScalar (Line("") :: acc)
-            elif isCommentLine then
-                let nextIndentedLine =
-                    rest |> tryFindContentLine
-
-                match nextIndentedLine with
-                | Some nextLine when Line.countLeadingSpaces nextLine > currentIntendation && canStartNestedBlockAfterPresentation () ->
-                    let nextIntendation = Line.countLeadingSpaces nextLine
-                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar (line :: rest)
-
-                    let children = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
-                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
-                | _ ->
-                    let lineText = stripIndent currentIntendation line
-                    let lineEle = Line(lineText)
-                    loop rest currentIntendation inBlockScalar (lineEle :: acc)
             else
                 let nextIntendation = Line.countLeadingSpaces line
 
@@ -155,13 +152,14 @@ let read (yamlStr: string) =
                         stripIndent nextIntendation line
                     let lineEle = Line(lineText)
                     let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation childInBlockScalar rest
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation rest
 
                     let otherChildren = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
                     let children = lineEle :: otherChildren
                     loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
 
-    let ast = loop (List.ofArray content.Lines) 0 false [] |> List.rev |> Level
+    let lines = content.Lines |> List.ofArray |> alignCommentLines
+    let ast = loop lines 0 false [] |> List.rev |> Level
 
     { AST = ast
       StringMap = content.StringMap
