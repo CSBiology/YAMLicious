@@ -130,14 +130,14 @@ module Formatting =
             .Replace("\u2029", "\\P")
             .Replace("\n", "\\n")
 
-    /// YAML 1.2.2 8.1.1.1 requires an indentation indicator when the first nonblank line of the
-    /// content starts with a space. Without it a reader takes that space as indentation. The
-    /// indicator counts from the header's indentation, so any width is valid. Two spaces match
-    /// the continuation prefix of plain multiline scalars.
+    /// YAML 1.2.2 8.1.1.1 requires an indentation indicator when the first line of the content that
+    /// is not empty starts with a space, also when that line holds only spaces. Without it a reader
+    /// takes that space as indentation. The indicator counts from the header's indentation, so any
+    /// width is valid. Two spaces match the continuation prefix of plain multiline scalars.
     let private requiredIndentIndicator (value: string) =
         let firstContentLine =
             (Line.normalizeNewlines value).Split([| '\n' |], System.StringSplitOptions.None)
-            |> Array.tryFind (Line.isBlank >> not)
+            |> Array.tryFind (fun line -> line <> "")
         match firstContentLine with
         | Some line when line.StartsWith(" ") -> Some continuationPrefix.Length
         | _ -> None

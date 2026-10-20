@@ -142,7 +142,7 @@ type private Scanner(s: string) =
     let mutable atNodeStart = true
 
     // The block scalar in progress. The content indentation stays Unresolved until the first
-    // nonblank body line sets it.
+    // body line with more than spaces sets it.
     let mutable blockCount = 0
     let mutable blockActive = false
     let mutable blockId = NoBlock
@@ -391,8 +391,9 @@ type private Scanner(s: string) =
         records.Add(mkLine text kind opened lineNumber lineComment codeEnd)
 
     /// Copies the line at the cursor into the block scalar in progress when it belongs to the body.
-    /// Blank lines belong to it and leave the content indentation open. A nonblank line sets the
-    /// indentation when it is still open, and a line indented less than that ends the block.
+    /// A line of spaces belongs to it and leaves the content indentation open. A line with other
+    /// characters sets the indentation when it is still open, and a line indented less than that ends
+    /// the block.
     let takeBodyLine () =
         let start = i
         let mutable e = start
@@ -400,12 +401,9 @@ type private Scanner(s: string) =
             e <- e + 1
         let text = copyRange start e
         let isBody =
-            if Line.isBlank text then
-                true
-            else
-                if blockContentIndent = Unresolved then
-                    blockContentIndent <- BlockScalar.contentIndent blockBaseline None (Seq.singleton text)
-                BlockScalar.isBodyLine blockContentIndent text
+            if blockContentIndent = Unresolved && not (Line.isSpacesOnly text) then
+                blockContentIndent <- BlockScalar.contentIndent blockBaseline None (Seq.singleton text)
+            BlockScalar.isBodyLine blockContentIndent text
         if isBody then
             records.Add(mkLine text LineKind.BlockBody blockId (records.Count + 1 + foldedBreaks) NoComment text.Length)
             if e >= n then

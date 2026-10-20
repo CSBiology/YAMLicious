@@ -23,6 +23,10 @@
 * The writer puts the body of a block scalar with an explicit indentation indicator at the indicated indentation.
 * The writer adds an indentation indicator (`|2`) when the first nonblank line of a block scalar starts with a space. YAML requires it, and other parsers reject the output without it.
 * Keep chomping (`|+`) retains all trailing blank lines of a block scalar.
+* A line of spaces in a block scalar that is longer than the content indentation is content, and the spaces beyond the indentation stay. A line with a tab is content too.
+* A folded block scalar (`>`) turns one empty line between two lines into one line break. Earlier versions produced two. Decode folds the empty lines of a multiline plain scalar the same way.
+* A line of spaces in front of the first content line of a block scalar that is longer than that line is an error, as in YAML 1.2.2.
+* The writer adds an indentation indicator (`|2`) when the first line of a block scalar that is not empty holds only spaces.
 * An empty block scalar such as `a: |` reads as the empty string. So does a body of blank lines under clip or strip chomping.
 * A block scalar item such as `- |` in a sequence that is not indented under its key reads correctly.
 * A quoted `#` before a block scalar header, as in `"a #b": |`, no longer breaks the block scalar.

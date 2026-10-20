@@ -491,6 +491,94 @@ let private unitTests = testList "Block scalar units" [
             "Only the real comment is a comment line"
 ]
 
+/// Asserts that Reader.read reads the input as one mapping `k` with the given block scalar.
+let private expectKeyBlock (yaml: string) (style: BlockScalarStyle) (chomp: ChompingMode) (indent: int option) (value: string) =
+    Expect.equal
+        (Reader.read yaml)
+        (YAMLElement.Object [ mapping "k" (blockScalar style chomp indent value) ])
+        (sprintf "Reading %A" yaml)
+
+let private spaceLineTests = testList "Block scalar lines of spaces" [
+    testCase "A literal line of spaces up to the content indentation is an empty line" <| fun _ ->
+        // yaml@2.6.1: "a\n\nb\n" for a line of two spaces and "a\n\n\nb\n" for a line without spaces and a line of one space
+        expectKeyBlock "k: |\n  a\n  \n  b\n" BlockScalarStyle.Literal ChompingMode.Clip None "a\n\nb\n"
+        expectKeyBlock "k: |\n  a\n\n \n  b\n" BlockScalarStyle.Literal ChompingMode.Clip None "a\n\n\nb\n"
+
+    testCase "A literal line of spaces beyond the content indentation keeps the spaces beyond it" <| fun _ ->
+        // yaml@2.6.1: "a\n  \nb\n" for four spaces at a content indentation of two, and {"a":{"k":"x\n  \ny\n","z":1}} for the nested input
+        expectKeyBlock "k: |\n  a\n    \n  b\n" BlockScalarStyle.Literal ChompingMode.Clip None "a\n  \nb\n"
+        Expect.equal
+            (Reader.read "a:\n  k: |\n    x\n      \n    y\n  z: 1\n")
+            (YAMLElement.Object [
+                mapping "a" (YAMLElement.Object [ mapping "k" (literalBlock "x\n  \ny\n"); mapping "z" (plainNode "1") ])
+            ])
+            "The spaces beyond the content indentation stay when the scalar is nested"
+
+    testCase "Trailing lines of spaces follow the chomping" <| fun _ ->
+        // yaml@2.6.1: "a" and "a\n\n " for strip, "a\n\n \n" for clip and "a\n\n \n\n" for keep. A line of three spaces is content, the others are empty.
+        expectKeyBlock "k: |-\n  a\n  \n  \n" BlockScalarStyle.Literal ChompingMode.Strip None "a"
+        expectKeyBlock "k: |-\n  a\n  \n   \n" BlockScalarStyle.Literal ChompingMode.Strip None "a\n\n "
+        expectKeyBlock "k: |\n  a\n  \n   \n" BlockScalarStyle.Literal ChompingMode.Clip None "a\n\n \n"
+        expectKeyBlock "k: |+\n  a\n  \n   \n  \n" BlockScalarStyle.Literal ChompingMode.Keep None "a\n\n \n\n"
+
+    testCase "A folded line of spaces between folded lines is an empty line" <| fun _ ->
+        // yaml@2.6.1: "a\nb\n"
+        expectKeyBlock "k: >\n  a\n  \n  b\n" BlockScalarStyle.Folded ChompingMode.Clip None "a\nb\n"
+
+    testCase "A folded line of spaces beyond the content indentation is a more indented line" <| fun _ ->
+        // yaml@2.6.1: "a\n  \nb\n" and "a\n  x\n  \nb\n"
+        expectKeyBlock "k: >\n  a\n    \n  b\n" BlockScalarStyle.Folded ChompingMode.Clip None "a\n  \nb\n"
+        expectKeyBlock "k: >\n  a\n    x\n    \n  b\n" BlockScalarStyle.Folded ChompingMode.Clip None "a\n  x\n  \nb\n"
+
+    testCase "A folded line of spaces next to a more indented line is an empty line" <| fun _ ->
+        // yaml@2.6.1: "a\n\n  x\nb\n" for the line in front of the more indented line and "a\n  x\n\nb\n" for the line behind it
+        expectKeyBlock "k: >\n  a\n  \n    x\n  b\n" BlockScalarStyle.Folded ChompingMode.Clip None "a\n\n  x\nb\n"
+        expectKeyBlock "k: >\n  a\n    x\n  \n  b\n" BlockScalarStyle.Folded ChompingMode.Clip None "a\n  x\n\nb\n"
+
+    testCase "Lines of spaces in a scalar with an indentation indicator" <| fun _ ->
+        // yaml@2.6.1: "a\n\n  \nb\n" for a line of one space and a line of four, and "  \na\n" for a first line of four spaces
+        expectKeyBlock "k: |2\n  a\n \n    \n  b\n" BlockScalarStyle.Literal ChompingMode.Clip (Some 2) "a\n\n  \nb\n"
+        expectKeyBlock "k: |2\n    \n  a\n" BlockScalarStyle.Literal ChompingMode.Clip (Some 2) "  \na\n"
+
+    testCase "A line of spaces in a sequence item scalar" <| fun _ ->
+        // yaml@2.6.1: ["a\n  \nb\n","c"]
+        Expect.equal
+            (Reader.read "- |\n  a\n    \n  b\n- c\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "a\n  \nb\n" ]; plainNode "c" ] ])
+            "The four spaces at a content indentation of two stay two spaces"
+
+    testCase "A tab is content and never indentation" <| fun _ ->
+        // yaml@2.6.1: "a\n\t\nb\n"
+        expectKeyBlock "k: |\n  a\n  \t\n  b\n" BlockScalarStyle.Literal ChompingMode.Clip None "a\n\t\nb\n"
+
+    testCase "A line of spaces in front of the first content line is empty and no longer than that line" <| fun _ ->
+        // yaml@2.6.1: "\na\n" in both styles. It rejects a line of four spaces in front of a content line with two.
+        expectKeyBlock "k: |\n  \n  a\n" BlockScalarStyle.Literal ChompingMode.Clip None "\na\n"
+        expectKeyBlock "k: >\n  \n  a\n" BlockScalarStyle.Folded ChompingMode.Clip None "\na\n"
+        let message = errorOf (fun () -> Reader.read "k: |\n    \n  a\n" |> ignore)
+        Expect.stringContains message "A line of spaces in front of the first content line" "The input is invalid"
+
+    testCase "A line of spaces survives writing and reading" <| fun _ ->
+        // yaml@2.6.1 reads the written text back as "a\n \nb\n" and as "a\n\n  \nb"
+        let literal (chomp: ChompingMode) (value: string) =
+            YAMLElement.Object [ mapping "k" (blockScalar BlockScalarStyle.Literal chomp None value) ]
+        let oneSpace = literal ChompingMode.Clip "a\n \nb\n"
+        let writtenOneSpace = Writer.write oneSpace None
+        Expect.trimEqual writtenOneSpace "k: |\n    a\n     \n    b" "The line of one space gets the indentation of the body too"
+        Expect.equal (Reader.read writtenOneSpace) oneSpace "The line of one space is not an empty line"
+        let emptyAndSpaces = literal ChompingMode.Strip "a\n\n  \nb"
+        let writtenEmptyAndSpaces = Writer.write emptyAndSpaces None
+        Expect.trimEqual writtenEmptyAndSpaces "k: |-\n    a\n    \n      \n    b" "The empty line gets the indentation only and the line of two spaces gets two more"
+        Expect.equal (Reader.read writtenEmptyAndSpaces) emptyAndSpaces "Both lines come back as they were"
+
+    testCase "Writer adds an indentation indicator when the first line is a line of spaces" <| fun _ ->
+        // yaml@2.6.1 reads the written text back as " \na\n". Without the indicator it rejects the text, because the line of spaces is longer than the first content line.
+        let ast = YAMLElement.Object [ mapping "k" (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None " \na\n") ]
+        let written = Writer.write ast None
+        Expect.trimEqual written "k: |2\n   \n  a" "The indicator keeps the space of the first line out of the indentation"
+        Expect.equal (Reader.read written) (YAMLElement.Object [ mapping "k" (blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) " \na\n") ]) "The first line comes back as a line of one space"
+]
+
 /// An input of the given number of lines, repeated to the size that a run needs. Each generator returns
 /// a document that stresses one part of the indentation pass.
 let private bodyInput (lines: int) =
@@ -1164,5 +1252,6 @@ next: value"""
         Expect.equal actual expected "The blank line before the comment belongs to the scalar and the comment does not"
 
     unitTests
+    spaceLineTests
     scalingTests
   ]

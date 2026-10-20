@@ -189,12 +189,6 @@ let private alignCommentLines (units: InputUnit list) =
 
     loop units [] [] []
 
-/// Removes exactly the indentation of the node that owns the scalar from a body line. Counting
-/// spaces keeps tabs and all deeper indentation, which is content. A blank line shorter than that
-/// indentation loses only the spaces it has.
-let private stripBlockScalarIndent (nodeIndent: int) (line: string) =
-    line.Substring(min nodeIndent (Line.countLeadingSpaces line))
-
 /// Removes the indentation of a node line from the frame it sits in. A line that is less indented than
 /// the frame loses only the spaces it has.
 let private stripIndent (indent: int) (line: string) =
@@ -211,7 +205,7 @@ let private stripIndent (indent: int) (line: string) =
 let private lower (frameIndent: int) (item: InputUnit) (acc: PreprocessorElement list) =
     match item with
     | InputUnit.Scalar block ->
-        let body = block.Body |> List.map (fun line -> Line(stripBlockScalarIndent block.NodeIndent line))
+        let body = block.Body |> List.map (fun line -> Line(BlockScalar.stripIndent block.NodeIndent line))
         Intendation body :: Line(stripIndent frameIndent block.Header.Text) :: acc
     | InputUnit.Code line
     | InputUnit.Comment line -> Line(stripIndent frameIndent line.Text) :: acc

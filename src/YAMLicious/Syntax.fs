@@ -15,8 +15,10 @@ module Line =
             count <- count + 1
         count
 
-    let isBlank (line: string) =
-        line.Trim() = ""
+    /// True for an empty line and for a line of spaces only. A tab is no space, so a line with a tab
+    /// holds content.
+    let isSpacesOnly (line: string) =
+        countLeadingSpaces line = line.Length
 
 module CommentMarker =
 
@@ -254,19 +256,30 @@ module BlockScalar =
 
     /// YAML 1.2.2 8.1.1.1: the indentation of the content lines of a block scalar. An indentation
     /// indicator counts from `headerIndent`, the indentation of the node that owns the scalar. Without
-    /// an indicator, the first nonblank line sets it. The content is always indented deeper than that
-    /// node, so a first nonblank line at or below it means the scalar has no content.
+    /// an indicator, the first line that holds more than spaces sets it, and the lines of spaces in
+    /// front of it must not be longer. The content is always indented deeper than that node, so a
+    /// first such line at or below it means the scalar has no content. A body of lines of spaces only
+    /// takes the length of its longest line, so that all of them stay empty.
     let contentIndent (headerIndent: int) (indicator: int option) (followingLines: string seq) =
         match indicator with
         | Some spaces -> headerIndent + spaces
         | None ->
-            match followingLines |> Seq.tryFind (Line.isBlank >> not) with
-            | Some first -> max (headerIndent + 1) (Line.countLeadingSpaces first)
-            | None -> headerIndent + 1
+            let longestEmpty =
+                followingLines
+                |> Seq.takeWhile Line.isSpacesOnly
+                |> Seq.fold (fun longest line -> max longest line.Length) 0
+            match followingLines |> Seq.tryFind (Line.isSpacesOnly >> not) with
+            | Some first ->
+                let indent = max (headerIndent + 1) (Line.countLeadingSpaces first)
+                if longestEmpty > indent then
+                    failwithf "A line of spaces in front of the first content line of a block scalar is indented with %d spaces, more than the %d spaces of the content." longestEmpty indent
+                indent
+            | None -> max (headerIndent + 1) longestEmpty
 
-    /// Blank lines and lines indented at least as deep as the content indentation form the body.
+    /// Lines of spaces and lines indented at least as deep as the content indentation form the body.
+    /// A line of spaces is empty when it is no longer than the indentation and content otherwise.
     let isBodyLine (indent: int) (line: string) =
-        Line.isBlank line || Line.countLeadingSpaces line >= indent
+        Line.isSpacesOnly line || Line.countLeadingSpaces line >= indent
 
     let applyChomping (chomp: ChompingMode) (content: string) =
         match chomp with
@@ -277,34 +290,48 @@ module BlockScalar =
             let trimmed = content.TrimEnd([|'\r'; '\n'|])
             if trimmed.Length > 0 && content.Length > trimmed.Length then trimmed + "\n" else trimmed
 
+    /// Removes up to `indent` leading spaces from a line. A line of spaces that is no longer than
+    /// `indent` becomes the empty string, which marks an empty line from here on. A longer line of
+    /// spaces keeps the spaces beyond `indent` as content.
     let stripIndent (indent: int) (line: string) =
-        if line.Trim() = "" then
-            ""
-        else
-            let available = Line.countLeadingSpaces line
-            line.Substring(min indent available)
+        line.Substring(min indent (Line.countLeadingSpaces line))
 
+    /// YAML 1.2.2 8.1.3: folds lines that `stripIndent` has processed. The empty string is an empty
+    /// line and every other line is content, also a line of spaces beyond the indentation. A line
+    /// break between two folded lines becomes a space. Empty lines between them drop that break and
+    /// add one line break each. Next to a line that starts with a space or a tab (a more indented
+    /// line), the line break stays and the empty lines add theirs. Empty lines at the end come back
+    /// as line breaks, so that the chomping can count them. Decode folds the lines of a multiline
+    /// plain scalar the same way.
     let foldLines (lines: string list) =
         let isMoreIndented (line: string) =
             line.StartsWith(" ") || line.StartsWith("\t")
 
-        let arr = lines |> List.toArray
         let sb = StringBuilder()
+        let mutable hasContent = false
+        let mutable previous = ""
+        let mutable empties = 0
 
-        for i in 0 .. arr.Length - 1 do
-            let line = arr.[i]
-            if line.Trim() = "" then
-                sb.Append('\n') |> ignore
+        for line in lines do
+            if line = "" then
+                empties <- empties + 1
             else
+                if not hasContent then
+                    sb.Append(System.String('\n', empties)) |> ignore
+                elif isMoreIndented previous || isMoreIndented line then
+                    sb.Append(System.String('\n', empties + 1)) |> ignore
+                elif empties = 0 then
+                    sb.Append(' ') |> ignore
+                else
+                    sb.Append(System.String('\n', empties)) |> ignore
                 sb.Append(line) |> ignore
-                if i < arr.Length - 1 then
-                    let next = arr.[i + 1]
-                    if next.Trim() = "" then
-                        sb.Append('\n') |> ignore
-                    elif isMoreIndented line || isMoreIndented next then
-                        sb.Append('\n') |> ignore
-                    else
-                        sb.Append(' ') |> ignore
+                hasContent <- true
+                previous <- line
+                empties <- 0
+
+        if empties > 0 then
+            // The line break that ends the last content line comes first, then one for each empty line.
+            sb.Append(System.String('\n', if hasContent then empties + 1 else empties)) |> ignore
 
         sb.ToString()
 
