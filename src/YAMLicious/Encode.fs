@@ -18,39 +18,95 @@ module Helper =
 /// The YAML 1.2.2 core schema, which decides what a plain scalar means.
 module CoreSchema =
 
-    /// The plain scalars that the tag resolution of the core schema (YAML 1.2.2, section 10.3.2) does not
-    /// leave as strings. The alternatives are the regular expressions of the spec for the tags null, bool,
-    /// int (decimal, octal and hexadecimal) and float (number, infinity and not-a-number).
+    // The regular expressions of the tag resolution of the core schema (YAML 1.2.2, section 10.3.2) for the
+    // tags null, bool, int (decimal, octal and hexadecimal) and float (number, infinity and not-a-number).
+    let private nullAlternative = "null|Null|NULL|~"
+    let private numberAlternative = "[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
+    let private infinityAlternative = "[-+]?\\.(?:inf|Inf|INF)"
+    let private nanAlternative = "\\.(?:nan|NaN|NAN)"
+
+    let private anchored (alternative: string) = "^(?:" + alternative + ")$"
+
     let private nonStringPattern =
-        let alternatives = [
-            "null|Null|NULL|~"
+        [
+            nullAlternative
             "true|True|TRUE|false|False|FALSE"
             "[-+]?[0-9]+"
             "0o[0-7]+"
             "0x[0-9a-fA-F]+"
-            "[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
-            "[-+]?\\.(?:inf|Inf|INF)"
-            "\\.(?:nan|NaN|NAN)"
+            numberAlternative
+            infinityAlternative
+            nanAlternative
         ]
-        "^(?:" + String.concat "|" alternatives + ")$"
+        |> String.concat "|"
+        |> anchored
+
+    let private nullPattern = anchored nullAlternative
+    let private numberPattern = anchored numberAlternative
+    let private infinityPattern = anchored infinityAlternative
+    let private nanPattern = anchored nanAlternative
+
+    /// A text with a line break never resolves, so `$` cannot match in front of a final line break.
+    let private matches (pattern: string) (text: string) =
+        not (text.Contains("\n"))
+        && System.Text.RegularExpressions.Regex.IsMatch(text, pattern)
+
+    /// True when a reader of the core schema reads the text, written as a plain scalar, as null. The empty
+    /// string counts, because an empty plain scalar is null.
+    let resolvesToNull (text: string) =
+        String.IsNullOrEmpty text || matches nullPattern text
 
     /// True when a reader of the core schema reads the text, written as a plain scalar, as null, a bool, an
-    /// int or a float. The empty string counts, because an empty plain scalar is null. YAML 1.2 does not
-    /// resolve yes, no, on and off, so they are strings here although YAML 1.1 reads them as bools.
-    /// A text with a line break never resolves, so `$` cannot match in front of a final line break.
+    /// int or a float. YAML 1.2 does not resolve yes, no, on and off, so they are strings here although
+    /// YAML 1.1 reads them as bools.
     let resolvesToNonString (text: string) =
-        String.IsNullOrEmpty text
-        || (not (text.Contains("\n"))
-            && System.Text.RegularExpressions.Regex.IsMatch(text, nonStringPattern))
+        String.IsNullOrEmpty text || matches nonStringPattern text
+
+    /// The float that a reader of the core schema takes from the text, or None when the text is not a decimal
+    /// number, an infinity or not-a-number. A text that the number parse of the target accepts but the core
+    /// schema does not, such as NaN or 0x1F, gives None.
+    let tryParseFloat (text: string) : float option =
+        if matches infinityPattern text then
+            Some (if text.[0] = '-' then Double.NegativeInfinity else Double.PositiveInfinity)
+        elif matches nanPattern text then
+            Some Double.NaN
+        elif matches numberPattern text then
+            #if FABLE_COMPILER
+            match Double.TryParse text with // numberstyle and culture return not implemented warning
+            #else
+            match Double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture) with
+            #endif
+            | true, number -> Some number
+            | false, _ -> None
+        else
+            None
+
+    /// The content of a string scalar. Text that a core schema reader takes for null, a bool, an int or a
+    /// float is double-quoted, so that it reads back as the string. Every other text has no style and the
+    /// writer picks its form.
+    let stringContent (text: string) =
+        let style = if resolvesToNonString text then Some ScalarStyle.DoubleQuoted else None
+        YAMLContent.create(text, ?style = style)
 
 let int (value: int) = (YAMLContent.create(string value)) |> YAMLElement.Value
 
-#if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString())) |> YAMLElement.Value
-#else 
-let float (value: float) : YAMLElement = (YAMLContent.create(value.ToString("R", CultureInfo.InvariantCulture))) |> YAMLElement.Value
-#endif
-let char (value: char) = YAMLContent.create(string value) |> YAMLElement.Value
+/// The core schema spells not-a-number as .nan and the infinities as .inf and -.inf, where ToString gives NaN
+/// and Infinity. The JavaScript ToString writes negative zero as 0, so negative zero gets its own spelling.
+/// Every other text is a float of the core schema on all targets, for example 1E+21 on .NET and 1e+21 on
+/// JavaScript and Python.
+let float (value: float) : YAMLElement =
+    let text =
+        if Double.IsNaN value then ".nan"
+        elif Double.IsPositiveInfinity value then ".inf"
+        elif Double.IsNegativeInfinity value then "-.inf"
+        elif value = 0.0 && BitConverter.DoubleToInt64Bits value < 0L then "-0.0"
+        else
+            #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+            value.ToString()
+            #else
+            value.ToString("R", CultureInfo.InvariantCulture)
+            #endif
+    YAMLContent.create text |> YAMLElement.Value
 
 /// The core schema spells the booleans true and false. The .NET ToString gives True and False.
 let bool (value: bool) = YAMLContent.create(if value then "true" else "false") |> YAMLElement.Value
@@ -58,13 +114,13 @@ let bool (value: bool) = YAMLContent.create(if value then "true" else "false") |
 let inline map (keyEncoder: 'a -> string) (valueEncoder: 'b -> YAMLElement) (value: Map<'a, 'b>) = 
     [
         for KeyValue (k, v) in value do 
-            YAMLElement.Mapping (YAMLContent.create(keyEncoder k), valueEncoder v) 
+            YAMLElement.Mapping (CoreSchema.stringContent (keyEncoder k), valueEncoder v) 
     ] 
     |> YAMLElement.Object
 
 let inline dict (keyEncoder: 'a -> string) (valueEncoder: 'b -> YAMLElement) (value: Dictionary<'a, 'b>) = 
     [for KeyValue (k, v) in value do 
-        YAMLElement.Mapping (YAMLContent.create(keyEncoder k), valueEncoder v) 
+        YAMLElement.Mapping (CoreSchema.stringContent (keyEncoder k), valueEncoder v) 
     ] |> YAMLElement.Object
 
 let datetime (value: DateTime) = (YAMLContent.create(value.ToString("O", CultureInfo.InvariantCulture))) |> YAMLElement.Value
@@ -131,9 +187,9 @@ let inline tuple8
 
 /// A string node. Text that a core schema reader takes for null, a bool, an int or a float is double-quoted,
 /// so that it reads back as the string. Every other string has no style and the writer picks its form.
-let string (value: string) =
-    let style = if CoreSchema.resolvesToNonString value then Some ScalarStyle.DoubleQuoted else None
-    YAMLContent.create(value, ?style = style) |> YAMLElement.Value
+let string (value: string) = CoreSchema.stringContent value |> YAMLElement.Value
+
+let char (value: char) = string (value.ToString())
 
 let seq (encoder: 'a -> YAMLElement) (s: seq<'a>) = s |> Seq.map encoder |> List.ofSeq |> YAMLElement.Sequence
 
@@ -152,7 +208,7 @@ let values (encoder: 'a -> string) (values: 'a seq) =
 let inline object (objSeq: #seq<(string*YAMLElement)>) = 
     [
         for (key, v) in objSeq do 
-            YAMLElement.Mapping (YAMLContent.create(key), v) 
+            YAMLElement.Mapping (CoreSchema.stringContent key, v) 
     ]
     |> YAMLElement.Object
 

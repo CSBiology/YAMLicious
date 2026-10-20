@@ -19,6 +19,10 @@
 * The writer picks the chomping of a block scalar for a value without a style from the trailing line breaks of the value, so the value reads back unchanged. Earlier versions wrote `a\n` as `|-` by default and lost the line break. `WriterOptions.MultilineFallbackChomping` is removed.
 * `Encode.string` double-quotes text that the YAML 1.2 core schema reads as null, a bool, an int or a float, such as `true`, `1`, `1.5` or `null`, so that it reads back as a string. `Encode.CoreSchema.resolvesToNonString` exposes the rule.
 * `Encode.bool` writes `true` and `false`. Earlier versions wrote `True` and `False`. `Encode.float` no longer throws on .NET.
+* `Encode.char` and the keys of `Encode.map`, `Encode.dict` and `Encode.object` are double-quoted when the core schema would read them as null, a bool, an int or a float.
+* `Decode.option` reads only a plain `null`, `Null`, `NULL`, `~` or empty scalar as `None`. A quoted or block scalar with that text is a string, so `Encode.option Encode.string (Some "null")` reads back as `Some "null"`.
+* `Encode.float` writes NaN and the infinities as `.nan`, `.inf` and `-.inf`, and negative zero as `-0.0`. `Decode.float` reads exactly the core schema float forms, such as `.NaN`, `+.Inf` or `1e3`, and rejects `NaN` and `Infinity`, which YAML 1.2 reads as strings.
+* `Encode.CoreSchema` gains `resolvesToNull`, `tryParseFloat` and `stringContent`. `Decode.Helper` gains `isNullScalar`.
 * Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
 * The content of a block scalar is indented as deep as its first nonblank line, or as deep as the indentation indicator says counted from the header.
 * An explicit indentation indicator (`|2`) keeps the spaces beyond the indicated indentation as content.

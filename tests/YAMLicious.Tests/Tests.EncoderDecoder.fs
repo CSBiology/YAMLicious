@@ -462,8 +462,106 @@ let tests_encode_scalars = testList "Encode scalars" [
         Expect.equal (Encode.float 1.5) (YAMLElement.Value(YAMLContent.create("1.5"))) "The float has no style"
 ]
 
+let private writeDocument (element: YAMLElement) =
+    (Writer.write element None).Replace("\r\n", "\n")
+
+let private readOption (text: string) = readValue (Decode.option Decode.string) text
+
+let tests_option_null = testList "Encode and Decode option and null" [
+    // yaml@2.6.1 reads `k: "null"` and `k: "~"` as the strings null and ~, and `k: ""` as the empty string.
+    testCase "Encode.option round trips the strings that look like null" <| fun _ ->
+        for text in [ "null"; "~"; "" ] do
+            let written = writeValue (Encode.option Encode.string (Some text))
+            Expect.equal (readOption written) (Some text) $"Some '{text}' reads back as Some '{text}'"
+        Expect.equal (readOption (writeValue (Encode.option Encode.string None))) None "None reads back as None"
+
+    // yaml@2.6.1 reads `k: null`, `k: ~`, `k: Null` and `k: NULL` as null. It reads `k:` as null too. The
+    // reader returns the text `k:` as a scalar for it, so the test builds the empty plain scalar by hand.
+    testCase "Decode.option reads a plain null, ~ and empty value as None" <| fun _ ->
+        for text in [ "null"; "~"; "Null"; "NULL" ] do
+            Expect.equal (readOption $"k: {text}\n") None $"A plain {text} is None"
+        let empty = YAMLElement.Value(YAMLContent.create "")
+        Expect.equal (Decode.option Decode.string empty) None "An empty plain scalar is None"
+
+    // yaml@2.6.1 reads a single-quoted 'null', a double-quoted "~", a single-quoted empty text and a `|-` block
+    // scalar with the line null as strings.
+    testCase "Decode.option reads a quoted or block scalar as a string" <| fun _ ->
+        Expect.equal (readOption "k: 'null'\n") (Some "null") "A single-quoted null is a string"
+        Expect.equal (readOption "k: \"~\"\n") (Some "~") "A double-quoted ~ is a string"
+        Expect.equal (readOption "k: ''\n") (Some "") "A single-quoted empty text is a string"
+        Expect.equal (readOption "k: |-\n  null\n") (Some "null") "A block scalar with the text null is a string"
+]
+
+let private sameFloat (actual: float) (expected: float) =
+    if System.Double.IsNaN expected then
+        System.Double.IsNaN actual
+    else
+        System.BitConverter.DoubleToInt64Bits actual = System.BitConverter.DoubleToInt64Bits expected
+
+let tests_float = testList "Encode and Decode float" [
+    // yaml@2.6.1 reads `k: .nan` as NaN. It reads `k: .inf` as Infinity and `k: -.inf` as -Infinity. It reads
+    // the texts NaN and Infinity, which ToString gives, as strings.
+    testCase "Encode.float writes nan and the infinities in the core schema spelling" <| fun _ ->
+        Expect.equal (writeValue (Encode.float nan)) "k: .nan\n" "nan"
+        Expect.equal (writeValue (Encode.float infinity)) "k: .inf\n" "infinity"
+        Expect.equal (writeValue (Encode.float (-infinity))) "k: -.inf\n" "negative infinity"
+
+    // yaml@2.6.1 reads the text that each target writes as the same number. The finite texts differ by target:
+    // 1E+21 on .NET, 1e+21 on JavaScript and 1000000000000000000000 on Python. It reads all of them as 1e+21.
+    // It reads `-0.0` as -0 and `.nan` as NaN.
+    testCase "Encode.float and Decode.float round trip" <| fun _ ->
+        let values =
+            [ nan; infinity; -infinity; 0.1; 1e21; -0.0; 0.0; 123.0; -1.5; 1e-7; 1e16
+              0.30000000000000004; 5e-324; 1.7976931348623157e308 ]
+        for value in values do
+            let written = writeValue (Encode.float value)
+            Expect.isTrue (sameFloat (readValue Decode.float written) value) $"{value} reads back from {written}"
+
+    // yaml@2.6.1 reads each of these plain texts as the number in the expectation.
+    testCase "Decode.float reads the float forms of the core schema" <| fun _ ->
+        let cases =
+            [ ".nan", nan; ".NaN", nan; ".NAN", nan
+              ".inf", infinity; "+.inf", infinity; "-.inf", -infinity
+              ".Inf", infinity; "+.Inf", infinity; "-.INF", -infinity
+              "1e3", 1000.0; "1E3", 1000.0; ".5", 0.5; "5.", 5.0; "+1.5", 1.5; "-1.5e-3", -0.0015; "7", 7.0 ]
+        for (text, expected) in cases do
+            Expect.isTrue (sameFloat (readValue Decode.float $"k: {text}\n") expected) $"{text} reads as {expected}"
+
+    // yaml@2.6.1 reads each of these plain texts as a string.
+    testCase "Decode.float rejects the texts that the core schema does not read as a float" <| fun _ ->
+        for text in [ "NaN"; "nan"; "Infinity"; "-Infinity"; "inf"; ".nAn"; "+.nan"; "-.nan"; "1_000" ] do
+            Expect.throws (fun _ -> readValue Decode.float $"k: {text}\n" |> ignore) $"{text} is not a float"
+]
+
+let tests_keys_and_chars = testList "Encode char and keys" [
+    // yaml@2.6.1 reads `k: "1"` and `k: "~"` as the strings 1 and ~. It reads the plain 1 and ~ as a number and null.
+    testCase "Encode.char quotes a char that the core schema reads as an int or null" <| fun _ ->
+        Expect.equal (writeValue (Encode.char '1')) "k: \"1\"\n" "'1' is quoted"
+        Expect.equal (writeValue (Encode.char '~')) "k: \"~\"\n" "'~' is quoted"
+        Expect.equal (writeValue (Encode.char 'a')) "k: a\n" "'a' stays plain"
+        Expect.equal (readValue Decode.char "k: \"1\"\n") '1' "'1' reads back"
+        Expect.equal (readValue Decode.char "k: \"~\"\n") '~' "'~' reads back"
+
+    // yaml@2.6.1 with mapAsMap reads the quoted keys "true", "1", "null" and "1.5" as strings. It reads the plain
+    // keys true and 1 as the bool true and the number 1.
+    testCase "Encode.map, Encode.dict and Encode.object keep keys such as true and 1 as strings" <| fun _ ->
+        let map = Encode.map id Encode.int (Map [ "true", 1; "1", 2 ])
+        Expect.equal (writeDocument map) "\"1\": 2\n\"true\": 1\n" "map keys are quoted"
+        let decoded = writeDocument map |> Decode.read |> Decode.map id Decode.int
+        Expect.equal decoded (Map [ "true", 1; "1", 2 ]) "map keys read back"
+        let dictionary = System.Collections.Generic.Dictionary<string, int>()
+        dictionary.Add("true", 1)
+        dictionary.Add("1", 2)
+        Expect.equal (writeDocument (Encode.dict id Encode.int dictionary)) "\"true\": 1\n\"1\": 2\n" "dict keys are quoted"
+        let objectNode = Encode.object [ "null", Encode.int 1; "1.5", Encode.int 2; "name", Encode.int 3 ]
+        Expect.equal (writeDocument objectNode) "\"null\": 1\n\"1.5\": 2\nname: 3\n" "object keys are quoted when they need it"
+]
+
 let Main = testList "EncoderDecoder" [
     tests_decode
     tests_validationPackages
     tests_encode_scalars
+    tests_option_null
+    tests_float
+    tests_keys_and_chars
 ]

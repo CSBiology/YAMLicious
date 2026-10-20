@@ -80,6 +80,13 @@ module Helper =
         | _ ->
             content.Value
 
+    /// Only a plain scalar can be null. A quoted or block scalar with the text null is the string.
+    let isNullScalar (content: YAMLContent) =
+        match content.Style with
+        | None
+        | Some ScalarStyle.Plain -> Encode.CoreSchema.resolvesToNull content.Value
+        | _ -> false
+
     let private isComment (element: YAMLElement) =
         match element with
         | YAMLElement.Comment _ -> true
@@ -112,17 +119,12 @@ let int (value: YAMLElement) : int =
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let float (value: YAMLElement) : float =
-    let Culture = System.Globalization.CultureInfo.InvariantCulture
     match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
         let scalar = scalarValue v
-        #if FABLE_COMPILER
-        match System.Double.TryParse(scalar) with // numberstyle and culture return not implemented warning
-        #else
-        match System.Double.TryParse(scalar, System.Globalization.NumberStyles.Float, Culture) with
-        #endif
-        | true, v -> float v
-        | false, _ -> raiseInvalidArg "value" "Expected an int" scalar
+        match Encode.CoreSchema.tryParseFloat scalar with
+        | Some number -> number
+        | None -> raiseInvalidArg "value" "Expected a float" scalar
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let char (value: YAMLElement) : char =
@@ -184,9 +186,7 @@ let datetimeOffset (value: YAMLElement) : DateTimeOffset =
 let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
     match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        match v.Value with
-        | YAML_NULL -> None
-        | _ -> Some (decoder value)
+        if isNullScalar v then None else Some (decoder value)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected an option" anyElse
 
 let string (value: YAMLElement) : string =
