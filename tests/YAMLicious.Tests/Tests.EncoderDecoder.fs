@@ -280,6 +280,10 @@ Hello World: 42"""
         )
         let expected = [1]
         Expect.equal actual expected ""
+    testCase "Decode.values skips a comment inside a sequence item" <| fun _ ->
+        let actual = Reader.read "- # c\n  value\n- b\n" |> Decode.values Decode.string
+        let expected = ["value"; "b"]
+        Expect.equal actual expected "A comment inside a sequence item should not reach the item decoder."
 ]
 
 let tests_validationPackages = testList "ValidationPackages" [

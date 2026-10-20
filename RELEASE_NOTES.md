@@ -2,6 +2,7 @@
 * A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`. Inside block scalar content a `#` is always text.
 * Invalid input such as `[a]#c` (no space before `#`) is now read as the plain scalar `[a]#c`. Earlier versions read a comment.
 * A full-line comment belongs to the node that follows it. Comments directly under a nested key no longer fail with "Unknown pattern".
+* A comment with no following node in its block stays at the end of that block. After the last item of a sequence it stays in the sequence.
 * Comments between sequence items are `YAMLElement.Comment` entries of the sequence. Earlier versions wrapped them in `Object [Comment ...]`, which looked like an extra item.
 * All `Decode` functions skip comments.
 * The writer emits comment entries of a sequence as comment lines and writes plain scalars like `a#b` without quotes.

@@ -308,7 +308,9 @@ let values (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a list =
     match withoutComments value with
     | YAMLElement.Sequence v | YAMLElement.Object [YAMLElement.Sequence v] | YAMLElement.Object v -> 
         v 
-        |> List.map (function 
+        |> List.map (fun item ->
+            // A sequence item such as `- # c` followed by a value arrives as Object [Comment; Value].
+            match withoutComments item with
             | YAMLElement.Value _ as element -> decoder element
             | YAMLElement.Object [YAMLElement.Value _] as element -> decoder element
             | anyElse -> Helper.raiseInvalidArg "value" "Expected a values" anyElse

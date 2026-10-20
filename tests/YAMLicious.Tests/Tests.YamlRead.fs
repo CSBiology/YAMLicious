@@ -946,7 +946,14 @@ My Key:
 
     testCase "Hash directly after a flow closer is not a comment" <| fun _ ->
         let yaml = "k: [a]#c"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("k"),
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("[a]#c"))]
+            )
+        ]
         let actual = Reader.read yaml
+        Expect.equal actual expected "A hash directly after ] belongs to the plain scalar."
         Expect.isFalse (hasAnyComment actual) "A hash directly after ] should not start a comment."
 
     testCase "Hash inside a literal block scalar is content" <| fun _ ->
@@ -2220,6 +2227,17 @@ expression: >
             )
         Expect.equal data ["a"; "b"] "The comment should not add or drop flow items."
         Expect.equal z 1 "The key after the flow sequence should keep its value."
+        let tree = Reader.read yaml
+        let keepsComment =
+            match tree with
+            | YAMLElement.Object (YAMLElement.Mapping(_, dataValue) :: _) ->
+                match dataValue with
+                | YAMLElement.Sequence items
+                | YAMLElement.Object [YAMLElement.Sequence items] ->
+                    items |> List.contains (YAMLElement.Comment " last")
+                | _ -> false
+            | _ -> false
+        Expect.isTrue keepsComment (sprintf "The comment should be a Comment entry of the sequence under data. Actual tree: %A" tree)
 
     testCase "Commented-out last entry of a multi-line flow sequence" <| fun _ ->
         let yaml = "baseCommand:\n  [\n    python,\n#   old,\n  ]"
@@ -2269,5 +2287,64 @@ expression: >
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "A trailing comment of a root sequence should stay in the sequence."
+
+    testCase "Quoted key with a hash keeps its block scalar content" <| fun _ ->
+        let yaml = "\"a #b\": |\n  'it''s'\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("a #b", style=ScalarStyle.DoubleQuoted),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "'it''s'\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The hash inside the quoted key should not hide the block scalar header."
+
+    testCase "Single-quoted key with a hash keeps its block scalar content" <| fun _ ->
+        let yaml = "'x #y': |\n  'a\n  b'\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("x #y", style=ScalarStyle.SingleQuoted),
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "'a\nb'\n",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The hash inside the single-quoted key should not hide the block scalar header."
+
+    testCase "Commented-out header after a sequence dash opens no block scalar" <| fun _ ->
+        let yaml = "- # note: |\n  k: 'it''s'\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [
+                    YAMLElement.Comment(" note: |")
+                    YAMLElement.Mapping(
+                        YAMLContent.create("k"),
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("it's", style=ScalarStyle.SingleQuoted))]
+                    )
+                ]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The quote pass should run on the line after a commented-out header."
+
+    testCase "Block scalar error names the comment" <| fun _ ->
+        let yaml = "a: >-\n  text\n# c\n  more\n"
+        Expect.throws (fun () -> Reader.read yaml |> ignore) "A comment line ends a block scalar, so the more indented text after it is invalid."
+        let message =
+            try
+                Reader.read yaml |> ignore
+                ""
+            with e ->
+                e.Message
+        Expect.stringContains message "(# c)" "The error should print the comment text."
 ]
 

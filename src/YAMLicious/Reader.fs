@@ -102,12 +102,13 @@ let private isCommentOrBlankElement e =
     | YamlComment _ -> true
     | _ -> isBlankLineElement e
 
-let rec private containsCommentLine (eles: PreprocessorElement list) =
+/// Returns the comment id of the first comment line in the elements, including nested ones.
+let rec private tryFindCommentLine (eles: PreprocessorElement list) : int option =
     eles
-    |> List.exists (function
-        | YamlComment _ -> true
-        | Intendation children -> containsCommentLine children
-        | _ -> false)
+    |> List.tryPick (function
+        | YamlComment comment -> Some comment.Comment
+        | Intendation children -> tryFindCommentLine children
+        | _ -> None)
 
 /// Splits the items of a block sequence from the elements that follow it. Comments after the
 /// last item go to the next node in the same block. At the end of a block they stay in the
@@ -258,8 +259,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         match Syntax.BlockScalar.parseHeader props.Value with
         | Some header ->
-            if containsCommentLine block then
-                failwithf "A comment line ends a block scalar, so the more indented content after it is invalid: %A" block
+            match tryFindCommentLine block with
+            | Some lineCommentId ->
+                failwithf "A comment line (#%s) ends a block scalar, so the more indented content after it is invalid." commentDict.[lineCommentId]
+            | None -> ()
             let lines = flattenBlockScalarContent block
             let value = Syntax.BlockScalar.buildContent header.Style header.Chomp headerIndent header.Indent lines
             let comment = restoreCommentReplace commentDict commentId

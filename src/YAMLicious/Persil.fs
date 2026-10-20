@@ -202,8 +202,9 @@ let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<in
                 inComment <- false
         else
             match c with
-            | '#' when CommentMarker.startsAt s i ->
-                inComment <- true
+            | '#' ->
+                if CommentMarker.startsAt s i then
+                    inComment <- true
                 appendChar c
                 i <- i + 1
             | '\'' when target = QuotedStringKind.SingleQuotedString ->
@@ -269,6 +270,25 @@ let private tryFindCommentStart (line: string) =
         i <- i + 1
     found
 
+/// Like tryFindCommentStart, but skips closed quoted strings. Block scalar detection runs
+/// before the quote passes, so a `#` inside a quoted key such as `"a #b": |` is still raw text.
+let private tryFindCommentStartOutsideQuotes (line: string) =
+    let mutable i = 0
+    let mutable found = -1
+    while found < 0 && i < line.Length do
+        let c = line.[i]
+        if c = '#' && CommentMarker.startsAt line i then
+            found <- i
+        elif (c = '\'' || c = '"') && isTokenBoundaryStart line i then
+            let closed, _, nextIndex =
+                if c = '\'' then parseSingleQuotedSegment line i
+                else parseDoubleQuotedSegment line i
+            // An unclosed quote is an ordinary character.
+            if closed then i <- nextIndex else i <- i + 1
+        else
+            i <- i + 1
+    found
+
 let private detectBlockScalarContentLines (yamlString: string) =
     let normalized = Line.normalizeNewlines yamlString
     let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
@@ -290,9 +310,9 @@ let private detectBlockScalarContentLines (yamlString: string) =
             if line.TrimStart().StartsWith("#") then
                 i <- i + 1
             else
-                // Header detection ignores a trailing comment, so `k: 1 # x: |` opens no block scalar.
+                // Header detection ignores a trailing comment, so `- # note: |` opens no block scalar.
                 let code =
-                    match tryFindCommentStart line with
+                    match tryFindCommentStartOutsideQuotes line with
                     | -1 -> line
                     | idx -> line.Substring(0, idx)
                 match BlockScalar.tryDetectHeaderIndent code with
