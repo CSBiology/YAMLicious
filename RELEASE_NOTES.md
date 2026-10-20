@@ -7,6 +7,8 @@
 * All `Decode` functions skip comments.
 * The writer emits comment entries of a sequence as comment lines and writes plain scalars like `a#b` without quotes.
 * `Persil.CommentMatchPattern` is removed.
+* Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
+* The writer puts the body of a block scalar with an explicit indentation indicator (`|2`) at the indicated indentation.
 
 ### 1.0.2 (Released 2026-07-23)
 * Fix a reader bug where a lone apostrophe inside a plain scalar — a legal, non-delimiting character in plain and double-quoted scalars — caused the double-quote extraction pass to consume the remainder of the document, dropping every subsequent quoted token (notably double-quoted keys). Apostrophes are now treated as ordinary characters in the double-quote pass, and an unclosed quote of either kind no longer swallows the rest of the input.
