@@ -10,16 +10,29 @@ module StyleVerifier =
     let private plainUnsafeLeading =
         Set [| '!'; '&'; '*'; '['; ']'; '{'; '}'; ','; '#'; '|'; '>'; '%'; '@'; '`'; '"'; '\'' |]
 
+    /// Where a plain scalar is written. Inside a flow collection such as `[a, b]` the flow
+    /// indicators end the scalar, so YAML 1.2.2 ns-plain-safe allows fewer characters there.
+    [<RequireQualifiedAccess>]
+    type PlainContext =
+        | Block
+        | Flow
+
+    let private isFlowIndicator (c: char) =
+        c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
+
     /// Decide whether a string can be emitted as a YAML plain (unquoted) scalar without
     /// changing its meaning. This is the *plain-scalar safety* question, which is broader
     /// than "does a double-quoted scalar need to escape a character": a value like "@id"
     /// or "a: b" contains no escape-worthy character yet still breaks or mis-parses when
     /// left unquoted.
     ///
+    /// In Flow context a string containing any of ',', '[', ']', '{' or '}' is also unsafe.
+    /// That covers a ':' followed by one of them.
+    ///
     /// Multiline values (containing '\n') are reported unsafe here; callers that support
     /// block scalars route those to a block scalar before reaching the inline path, so in
     /// practice this only decides plain-vs-double-quoted for single-line scalars.
-    let isPlainSafe (s: string) : bool =
+    let isPlainSafe (context: PlainContext) (s: string) : bool =
         if System.String.IsNullOrEmpty s then
             false // an empty plain scalar parses back as null
         elif s <> s.Trim() then
@@ -45,6 +58,8 @@ module StyleVerifier =
                         safe <- false // ": " or a trailing ':' starts a mapping
                     elif c = '#' && CommentMarker.startsAt s i then
                         safe <- false // " #" starts a comment, "C#" or "a.cwl#main" does not
+                    elif context = PlainContext.Flow && isFlowIndicator c then
+                        safe <- false // "f(a, b)" splits into two items, "a[0]" opens a nested sequence
                     i <- i + 1
                 safe
 
@@ -142,11 +157,11 @@ module Formatting =
     /// safe, otherwise fall back to a double-quoted scalar so the output stays valid YAML.
     /// This mirrors, for single-line scalars, the automatic block-scalar selection that
     /// already happens for style-less multiline values.
-    let private renderUnstyledInline (v: string) =
-        if StyleVerifier.isPlainSafe v then v
+    let private renderUnstyledInline (context: StyleVerifier.PlainContext) (v: string) =
+        if StyleVerifier.isPlainSafe context v then v
         else "\"" + escapeDoubleQuoted v + "\""
 
-    let private scalarToInlineText (options: WriterOptions) (content: YAMLContent) =
+    let private scalarToInlineText (context: StyleVerifier.PlainContext) (options: WriterOptions) (content: YAMLContent) =
         let v = content.Value
         if options.PreserveScalarStyle then
             match content.Style with
@@ -155,12 +170,12 @@ module Formatting =
             // An explicit Plain style is respected verbatim (caller opt-out); a missing
             // style is auto-resolved to plain-or-double-quoted based on content safety.
             | Some ScalarStyle.Plain -> v
-            | _ -> renderUnstyledInline v
+            | _ -> renderUnstyledInline context v
         else
-            renderUnstyledInline v
+            renderUnstyledInline context v
 
     let mkKeyContent (options: WriterOptions) (content: YAMLContent) =
-        mkNodePrefix content + scalarToInlineText options content
+        mkNodePrefix content + scalarToInlineText StyleVerifier.PlainContext.Block options content
 
     let mkMappingKey (options: WriterOptions) (key: YAMLContent) =
         mkKey (mkKeyContent options key)
@@ -181,7 +196,7 @@ module Formatting =
         | _ -> false
 
     let mkInlineContent (options: WriterOptions) (content: YAMLContent) =
-        let inlineScalar = scalarToInlineText options content
+        let inlineScalar = scalarToInlineText StyleVerifier.PlainContext.Block options content
         let combined = mkNodePrefix content + inlineScalar
         appendComment content combined
 
@@ -190,7 +205,7 @@ module Formatting =
             seq
             |> List.map (fun x ->
                 match x with
-                | YAMLElement.Value v -> mkNodePrefix v + scalarToInlineText options v
+                | YAMLElement.Value v -> mkNodePrefix v + scalarToInlineText StyleVerifier.PlainContext.Flow options v
                 | _ -> failwith "Invalid sequence element"
             )
             |> String.concat ", "

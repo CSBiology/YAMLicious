@@ -13,10 +13,12 @@
 * All `Decode` functions skip comments.
 * The writer emits comment entries of a sequence as comment lines.
 * The writer writes plain scalars like `a#b` without quotes.
+* The writer double-quotes an item of a flow sequence that contains `,`, `[`, `]`, `{` or `}`, as YAML 1.2.2 requires inside a flow collection. Earlier versions wrote `[f(a, b)]`, which reads as two items.
+* `StyleVerifier.isPlainSafe` takes a `StyleVerifier.PlainContext` (`Block` or `Flow`) as its first argument.
 * Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
 * The content of a block scalar is indented as deep as its first nonblank line, or as deep as the indentation indicator says counted from the header.
 * An explicit indentation indicator (`|2`) keeps the spaces beyond the indicated indentation as content.
-* An explicit indentation indicator counts from the node that owns the scalar, as in YAML 1.2.2. That is the column of the key in `- key: |2` and the column of the last dash in `- - |2`.
+* An explicit indentation indicator counts from the node that owns the scalar, as in YAML 1.2.2. In `- - |2` that is the column of the last dash.
 * A block scalar header after `?`, as in `? |`, reads as a block scalar, also when the body is empty. So does a header behind nested indicators, as in `- - |` or `- ? |`.
 * The writer puts the body of a block scalar with an explicit indentation indicator at the indicated indentation.
 * The writer adds an indentation indicator (`|2`) when the first nonblank line of a block scalar starts with a space. YAML requires it, and other parsers reject the output without it.
@@ -32,7 +34,7 @@
 * Only ASCII digits make the shape of a placeholder, so text such as `<s f=١/>` with another kind of digit is plain text too.
 * A value that consists of such a text, as in `a: <c f=0/>`, reads with the style of a plain scalar.
 * Directives are allowed at the start of the input and after a `...`. Every `---` ends the prelude, so a `%` line behind a `---` is content.
-* The content of a document cannot start with `%`. The input `---\na: 1\n---\n%TAG ! t!\n---\nb: 2` is rejected, as in YAML 1.2.2.
+* The content of a document cannot start with `%`, as in YAML 1.2.2. `Reader.readDocuments` rejects `---\na: 1\n---\n%TAG ! t!\n---\nb: 2`. `Reader.read` checks only the first document, because it keeps every later marker as a line.
 * `Reader.readDocuments` keeps the comments of a prelude in the document that its `---` starts. This includes a comment behind a directive and a comment behind the `---`.
 * `Reader.readDocuments` drops a document that holds only directives.
 * `Reader.read` and `Reader.readDocuments` read the prelude of a document with the same code in `Persil`.

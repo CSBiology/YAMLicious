@@ -20,6 +20,17 @@ let private expectSingleRootValue (ast: YAMLElement) =
     | YAMLElement.Object [YAMLElement.Value value] -> value
     | _ -> failwithf "Unexpected AST: %A" ast
 
+let private expectSingleMappingSequenceValues (ast: YAMLElement) =
+    match ast with
+    | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Object [YAMLElement.Sequence items])] ->
+        items
+        |> List.map (fun item ->
+            match item with
+            | YAMLElement.Object [YAMLElement.Value value] -> value.Value
+            | _ -> failwithf "Unexpected sequence item: %A" item
+        )
+    | _ -> failwithf "Unexpected AST: %A" ast
+
 /// A style-less value, as Encode.string creates it. Its first line starts with a space.
 let private leadingSpaceValue = "  leading spaces first line\nnormal second line\n"
 
@@ -392,10 +403,26 @@ let Main =
         // plain-scalar first character, and YAMLicious only splits mappings on ": ".
         // "a#b" is safe because a '#' only starts a comment at the start or after whitespace.
         for s in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.cwl#main" ] do
-            Expect.isTrue (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-safe"
+            Expect.isTrue (Writer.StyleVerifier.isPlainSafe Writer.StyleVerifier.PlainContext.Block s) $"'{s}' should be plain-safe"
         // unsafe: "x # y" would lose " y" as a comment.
         for s in [ ""; " padded"; "trailing "; "a: b"; "@id"; "*ref"; "- item"; "x # y"; "x\t# y"; "'q"; "\"q"; "-"; "line1\nline2" ] do
-            Expect.isFalse (Writer.StyleVerifier.isPlainSafe s) $"'{s}' should be plain-unsafe"
+            Expect.isFalse (Writer.StyleVerifier.isPlainSafe Writer.StyleVerifier.PlainContext.Block s) $"'{s}' should be plain-unsafe"
+
+    // yaml@2.6.1 reads k: <s> as the string s for each string in the first list below and k: [<s>] as the
+    // single item s for each string in the second list. For the first list it reads k: [f(a, b)] as the
+    // items "f(a" and "b)", and k: [a[0]], k: [a:]] and k: [x{y}] are parse errors.
+    testCase "isPlainSafe applies the flow indicator rules only in Flow context" <| fun _ ->
+        let block = Writer.StyleVerifier.PlainContext.Block
+        let flow = Writer.StyleVerifier.PlainContext.Flow
+        // "a:]" and "a:," are fine in block context, where only ": " and a trailing ':' end the scalar.
+        for s in [ "f(a, b)"; "function f(a){ return a; }"; "a[0]"; "x{y}"; "a:]"; "a:," ] do
+            Expect.isTrue (Writer.StyleVerifier.isPlainSafe block s) $"'{s}' should be plain-safe in block context"
+            Expect.isFalse (Writer.StyleVerifier.isPlainSafe flow s) $"'{s}' should be plain-unsafe in flow context"
+        for s in [ "abc"; "hello world"; "C#"; "tool.cwl#main"; "a:b"; "3:30"; ":x" ] do
+            Expect.isTrue (Writer.StyleVerifier.isPlainSafe flow s) $"'{s}' should be plain-safe in flow context"
+        // The leading-character, whitespace and ": " rules are the same in both contexts.
+        for s in [ ""; " padded"; "a: b"; "x # y"; "@id"; "- item"; "line1\nline2" ] do
+            Expect.isFalse (Writer.StyleVerifier.isPlainSafe flow s) $"'{s}' should be plain-unsafe in flow context"
 
     testCase "Style-less unsafe scalar auto-selects double-quoted and round-trips" <| fun _ ->
         // Every one of these has no explicit style (mirrors Encode.string) and is not a
@@ -472,4 +499,70 @@ let Main =
         let reparsed = Reader.read written1
         let written2 = Writer.write reparsed None
         Expect.equal written2 written1 "Second write should equal the first (idempotent quoting)"
+
+    // ── Flow sequence items use the flow context of plain-scalar safety ─────────
+
+    // yaml@2.6.1 reads k: ["x.replace(/#/g, \"_\"), y"] as the single item x.replace(/#/g, "_"), y.
+    // The unquoted k: [x.replace(/#/g, "_"), y] is a parse error (Missing , or : between flow sequence items).
+    testCase "Writer double-quotes a flow sequence item that contains commas and quotes" <| fun _ ->
+        let value = "x.replace(/#/g, \"_\"), y"
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("k"),
+                    YAMLElement.Sequence [ YAMLElement.Value (YAMLContent.create(value)) ]
+                )
+            ]
+        let written = Writer.write ast None
+        Expect.trimEqual written "k: [\"x.replace(/#/g, \\\"_\\\"), y\"]" "The item should be double-quoted with escaped inner quotes"
+        Expect.equal (expectSingleMappingSequenceValues (Reader.read written)) [ value ] "Reader should restore the exact item"
+
+    // yaml@2.6.1 reads each quoted form below as one item with the original string. Unquoted,
+    // k: [f(a, b)] gives the items "f(a" and "b)", k: [x: {y}] gives a nested mapping, and
+    // k: [function f(a){ return a; }] and k: [a[0]] are parse errors.
+    testCase "Writer double-quotes flow sequence items that contain flow indicators" <| fun _ ->
+        let cases =
+            [ "f(a, b)", "k: [\"f(a, b)\"]"
+              "function f(a){ return a; }", "k: [\"function f(a){ return a; }\"]"
+              "a[0]", "k: [\"a[0]\"]"
+              "x: {y}", "k: [\"x: {y}\"]" ]
+        for value, expected in cases do
+            let ast =
+                YAMLElement.Object [
+                    YAMLElement.Mapping(
+                        YAMLContent.create("k"),
+                        YAMLElement.Sequence [ YAMLElement.Value (YAMLContent.create(value)) ]
+                    )
+                ]
+            let written = Writer.write ast None
+            Expect.trimEqual written expected $"'{value}' should be double-quoted in a flow sequence"
+            Expect.equal (expectSingleMappingSequenceValues (Reader.read written)) [ value ] $"Reader should restore '{value}'"
+
+    // yaml@2.6.1 reads each expected form below as the original string. The unquoted k: x: {y} is a parse error.
+    testCase "Writer keeps the block rules for flow indicators in a mapping value" <| fun _ ->
+        let cases =
+            [ "f(a, b)", "k: f(a, b)"
+              "function f(a){ return a; }", "k: function f(a){ return a; }"
+              "a[0]", "k: a[0]"
+              "x: {y}", "k: \"x: {y}\"" ]
+        for value, expected in cases do
+            let ast =
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("k"), YAMLElement.Value (YAMLContent.create(value)))
+                ]
+            Expect.trimEqual (Writer.write ast None) expected $"'{value}' should follow the block rules as a mapping value"
+
+    // yaml@2.6.1 reads k: [abc, C#, tool.cwl#main, a:b] as the four items abc, C#, tool.cwl#main and a:b.
+    testCase "Writer keeps flow-safe flow sequence items plain" <| fun _ ->
+        let values = [ "abc"; "C#"; "tool.cwl#main"; "a:b" ]
+        let ast =
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("k"),
+                    YAMLElement.Sequence [ for value in values -> YAMLElement.Value (YAMLContent.create(value)) ]
+                )
+            ]
+        let written = Writer.write ast None
+        Expect.trimEqual written "k: [abc, C#, tool.cwl#main, a:b]" "Items without flow indicators should stay unquoted"
+        Expect.equal (expectSingleMappingSequenceValues (Reader.read written)) values "Reader should restore all items"
   ]
