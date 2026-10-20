@@ -327,7 +327,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | KeyValue _ :: _
         | SequenceMinusOpener _ :: _
         | YamlComment _ :: _
-        | DocumentEnd _ :: _
         | [] ->
             List.rev acc, elements
         | YamlValue v :: rest when v.Value <> "" && v.Comment.IsNone ->
@@ -528,10 +527,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         match restlist with
         | AliasNode alias::rest ->
             loopRead handles rest (YAMLElement.Alias alias::acc)
-        | DocumentEnd::_ ->
-            acc
-            |> List.rev
-            |> YAMLElement.Object
         // Example1: 
         // - My Value 1 <c f=1/>
         //   My Value 2

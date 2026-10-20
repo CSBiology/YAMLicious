@@ -977,20 +977,10 @@ My Key:
         let actual = Reader.read yaml
         Expect.equal actual expected "A hash that does not follow whitespace is part of the scalar."
 
-    testCase "Hash directly after a flow closer is read as a plain scalar" <| fun _ ->
-        let cases = [
-            "k: [a]#c", "k", "[a]#c"
-            "Say: [Hello, World]# 420 blaze it", "Say", "[Hello, World]# 420 blaze it"
-        ]
-        for (yaml, key, scalar) in cases do
-            let expected = YAMLElement.Object [
-                YAMLElement.Mapping(
-                    YAMLContent.create(key),
-                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create(scalar))]
-                )
-            ]
-            let actual = Reader.read yaml
-            Expect.equal actual expected $"A hash without leading whitespace belongs to the plain scalar of {yaml}."
+    testCase "Hash directly after a flow closer is an error" <| fun _ ->
+        // yaml@2.6.1 rejects both inputs with MISSING_CHAR
+        for yaml in [ "k: [a]#c"; "Say: [Hello, World]# 420 blaze it" ] do
+            Expect.throws (fun () -> Reader.read yaml |> ignore) $"A comment needs a blank in front of its hash in {yaml}."
 
     testCase "Hash inside a literal block scalar is content" <| fun _ ->
         let yaml = "s: |\n  line\n  # not a comment\n"

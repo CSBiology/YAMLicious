@@ -22,7 +22,7 @@ let private kindsOf (tokenized: Persil.TokenizedYaml) =
 /// when entries are given.
 let private expectComments (input: string) (text: string) (kinds: Persil.LineKind list) (comments: (int * string) list) =
     let actual = Persil.tokenize input
-    Expect.encodeEqual actual.Text text "text"
+    Expect.encodeEqual (tokenizedText actual) text "text"
     Expect.equal (kindsOf actual) kinds "line kinds"
     Expect.dictEqual actual.CommentMap (commentMapOf comments) "comment map"
     actual
@@ -36,7 +36,7 @@ let Main = testList "CommentCleanUp" [
 <c f=0/>
 """
         let actual = Persil.tokenize s
-        Expect.encodeEqual actual.Text expected ""
+        Expect.encodeEqual (tokenizedText actual) expected ""
         Expect.dictEqual actual.CommentMap (commentMapOf [0, " This is a line comment"]) ""
         Expect.equal (kindsOf actual) [blank; commentOnly; blank] "the line is a comment only"
         Expect.equal actual.StringMap.Count 0 "no strings"
@@ -58,7 +58,7 @@ My Key: <c f=0/>
   My Value3 <c f=1/>
 """
         let actual = Persil.tokenize s
-        Expect.encodeEqual actual.Text expected ""
+        Expect.encodeEqual (tokenizedText actual) expected ""
         Expect.dictEqual actual.CommentMap (commentMapOf [0, " This is a comment"; 1, " :::: \"This is also a comment\""]) ""
         Expect.equal (kindsOf actual) [blank; code; code; code; code; blank] "a trailing comment keeps the line code"
         Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<s f=0/>"; Kind = QuotedStringKind.EscapedPlainString }]) "the literal text is the only string"
@@ -127,9 +127,9 @@ My Key: <c f=0/>
         let separated = expectComments "\"x\" # comment" "<s f=0/> <c f=0/>" [code] [0, " comment"]
         Expect.dictEqual separated.StringMap (stringMapOf [0, { Value = "x"; Kind = QuotedStringKind.DoubleQuotedString }]) "string"
 
-    testCase "a hash glued to a closing quote is text" <| fun _ ->
-        let actual = expectComments "\"x\"#suffix" "<s f=0/>#suffix" [code] []
-        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "x"; Kind = QuotedStringKind.DoubleQuotedString }]) "string"
+    testCase "a hash glued to a closing quote is an error" <| fun _ ->
+        // yaml@2.6.1 rejects the input with MISSING_CHAR
+        Expect.throws (fun () -> Persil.tokenize "\"x\"#suffix" |> ignore) "A comment needs a blank in front of its hash."
 
     testCase "a comment behind an unclosed quote is still found" <| fun _ ->
         expectComments "a: 'open # c\nb: 1 # d\n" "a: 'open <c f=0/>\nb: 1 <c f=1/>\n" [code; code; blank] [0, " c"; 1, " d"] |> ignore

@@ -45,3 +45,7 @@ module Expect =
         let normalizedActual = YAMLElementNormalization.withoutScalarStyle actual
         let normalizedExpected = YAMLElementNormalization.withoutScalarStyle expected
         Expect.equal normalizedActual normalizedExpected message
+
+/// The text of a scanner result: its emitted lines joined with a line break.
+let tokenizedText (tokenized: YAMLicious.Persil.TokenizedYaml) =
+    System.String.Join("\n", tokenized.Lines |> Array.map (fun line -> line.Text))

@@ -73,19 +73,6 @@ module Placeholder =
         else
             trimmed, None
 
-module Document =
-
-    let isMarker (marker: string) (line: string) =
-        let trimmed = line.TrimStart()
-        if not (trimmed.StartsWith(marker)) then
-            false
-        elif trimmed.Length = marker.Length then
-            true
-        else
-            Char.IsWhiteSpace(trimmed.[marker.Length])
-
-    let isEnd line = isMarker "..." line
-
 module Property =
 
     /// The index after the property token that starts at `start`, a `!` tag or a `&` anchor. A token
@@ -149,7 +136,10 @@ module LineValue =
           /// key. For a value behind `-`, `?` or `:`, as in `- value` or `? value`, it is the column of
           /// the last of those indicators. A line without any of these has its own indentation. Properties
           /// in front of the value do not move it.
-          Owner: int }
+          Owner: int
+          /// True when no entry indicator and no implicit key stands in front of the value. The parent node
+          /// owns such a value, which only the caller knows. `Owner` is the indentation of the line then.
+          Bare: bool }
 
     /// Walks the line from its start. The code must hold quoted scalars as placeholders and no comment,
     /// so the walk never searches for quotes or hashes. It follows an optional `---`, any number of
@@ -179,23 +169,11 @@ module LineValue =
             while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
                 q <- q + 1
             if q < line.Length then
-                { Start = skipProperties line (skipBlanks line (q + 1)); Owner = keyColumn }
+                { Start = skipProperties line (skipBlanks line (q + 1)); Owner = keyColumn; Bare = false }
             else
-                { Start = p; Owner = owner }
+                { Start = p; Owner = owner; Bare = not hasIndicator }
         else
-            { Start = p; Owner = owner }
-
-    /// True when the value that starts at `start` is a plain scalar. The characters `[ ] { } , # & * ! | >`,
-    /// the quotes, the reserved `%` and `@` and the backquote cannot start one. A placeholder in
-    /// `<s f=N/>` form is a quoted scalar.
-    let startsPlain (line: string) (start: int) =
-        if start >= line.Length then
-            false
-        else
-            match line.[start] with
-            | '[' | ']' | '{' | '}' | ',' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' -> false
-            | '<' -> not (start + 4 < line.Length && line.[start + 1] = 's' && line.[start + 2] = ' ' && line.[start + 3] = 'f' && line.[start + 4] = '=')
-            | _ -> true
+            { Start = p; Owner = owner; Bare = not hasIndicator }
 
 module BlockScalar =
 

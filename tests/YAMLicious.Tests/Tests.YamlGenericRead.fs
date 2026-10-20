@@ -53,15 +53,13 @@ let Main = testList "YamlGenericRead" [
         ]
         Expect.equal actual.AST expected ""
     testCase "Example Mermaid" <| fun _ ->
+        // yaml@2.6.1 reads the input as the plain scalar "classDiagram Animal <|-- Duck ... }". A line such as
+        // `Animal : +int age` is invalid in it, because a plain scalar cannot hold a mapping key.
         let yaml = """
 classDiagram
     Animal <|-- Duck
     Animal <|-- Fish
     Animal <|-- Zebra
-    Animal : +int age
-    Animal : +String gender
-    Animal: +isMammal()
-    Animal: +mate()
     class Duck{
       +String beakColor
       +swim()
@@ -83,10 +81,6 @@ classDiagram
                 Line "Animal <|-- Duck"
                 Line "Animal <|-- Fish"
                 Line "Animal <|-- Zebra"
-                Line "Animal : +int age"
-                Line "Animal : +String gender"
-                Line "Animal: +isMammal()"
-                Line "Animal: +mate()"
                 Line "class Duck{"
                 Intendation [
                     Line "+String beakColor"
@@ -110,6 +104,8 @@ classDiagram
         ]
         Expect.equal actual.AST expected ""
     testCase "Example Comment + String" <| fun _ ->
+        // yaml@2.6.1: {"My Key":"My Value1 \"# This is not a comment!\" My Value3"}. The lines below the key
+        // continue one plain scalar, so the quotes on the second of them are text.
         let yaml = "
 My Key: # This is a comment
   My Value1 
@@ -120,15 +116,12 @@ My Key: # This is a comment
             Line "My Key: <c f=0/>"
             Intendation [
                 Line "My Value1 "
-                Line "<s f=0/>"
+                Line "\"# This is not a comment!\""
                 Line "My Value3 <c f=1/>"
             ]
         ]
         let expectedCommentDict = new System.Collections.Generic.Dictionary<int, string>(Map [0, " This is a comment"; 1, " :::: \"This is also a comment\""])
-        let expectedStringDict =
-            new System.Collections.Generic.Dictionary<int, StringMapEntry>(
-                Map [0, { Value = "# This is not a comment!"; Kind = QuotedStringKind.DoubleQuotedString }]
-            )
+        let expectedStringDict = new System.Collections.Generic.Dictionary<int, StringMapEntry>()
         Expect.equal actual.AST expected "ast"
         Expect.dictEqual actual.CommentMap expectedCommentDict "comments"
         Expect.dictEqual actual.StringMap expectedStringDict "strings"

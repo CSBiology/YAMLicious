@@ -184,11 +184,6 @@ let (|FlowStyleObjectCloser|_|) (input: PreprocessorElement) =
 // Backward compatibility alias
 let (|JSONCloser|_|) = (|FlowStyleObjectCloser|_|)
 
-let (|DocumentEnd|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s when Document.isEnd s -> Some ()
-    | _ -> None
-
 let (|WithAnchor|_|) (input: string) =
     let m = Regex.Match(input, AnchorPattern)
     if m.Success then Some m.Groups.["anchor"].Value

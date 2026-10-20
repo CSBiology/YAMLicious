@@ -39,7 +39,7 @@ let private normalizeNewlines (s: string) = s.Replace("\r\n", "\n")
 /// Asserts the emitted text, the line kinds and the string map. No example here has a comment.
 let private expectTokens (input: string) (text: string) (kinds: Persil.LineKind list) (entries: (int * StringMapEntry) list) =
     let actual = Persil.tokenize input
-    Expect.equal actual.Text text "text"
+    Expect.equal (tokenizedText actual) text "text"
     Expect.equal (kindsOf actual) kinds "line kinds"
     Expect.dictEqual actual.StringMap (stringMapOf entries) "string map"
     Expect.equal actual.CommentMap.Count 0 "no comments"
@@ -53,7 +53,7 @@ let Main = testList "StringCleanUp" [
         let expected = """
 My Key: <s f=0/> <c f=0/>
 """
-        Expect.equal (normalizeNewlines actual.Text) (normalizeNewlines expected) "content"
+        Expect.equal (normalizeNewlines (tokenizedText actual)) (normalizeNewlines expected) "content"
         Expect.equal (kindsOf actual) [blank; code; blank] "line kinds"
         Expect.dictEqual actual.StringMap (stringMapOf [0, dquote "[{Special character place # |}"]) "string map"
         Expect.dictEqual actual.CommentMap (Dictionary<int, string>(Map [0, " A # in string is allowed!"])) "comment map"
@@ -75,7 +75,7 @@ My Key2: <s f=3/> <c f=3/>
             ]
         let comment = "## A # in string is allowed!"
         let expectedComments = Dictionary<int, string>(Map [0, comment; 1, comment; 2, comment; 3, comment])
-        Expect.equal (normalizeNewlines actual.Text) (normalizeNewlines expected) "content"
+        Expect.equal (normalizeNewlines (tokenizedText actual)) (normalizeNewlines expected) "content"
         Expect.dictEqual actual.StringMap expectedStrings "string map"
         Expect.dictEqual actual.CommentMap expectedComments "comment map keeps every hash after the first"
 
@@ -183,19 +183,19 @@ My Key2: <s f=3/> <c f=3/>
 
     testCase "unclosed single quote does not swallow later strings or comments" <| fun () ->
         let actual = Persil.tokenize "a: 'unclosed\nb: \"x\" # c\nc: 'y'\n"
-        Expect.equal actual.Text "a: 'unclosed\nb: <s f=0/> <c f=0/>\nc: <s f=1/>\n" "text"
+        Expect.equal (tokenizedText actual) "a: 'unclosed\nb: <s f=0/> <c f=0/>\nc: <s f=1/>\n" "text"
         Expect.dictEqual actual.StringMap (stringMapOf [0, dquote "x"; 1, single "y"]) "string map"
         Expect.dictEqual actual.CommentMap (Dictionary<int, string>(Map [0, " c"])) "comment map"
 
     testCase "unclosed double quote at the end of the input does not swallow later strings or comments" <| fun () ->
         let actual = Persil.tokenize "a: \"never closed\nb: 'ok' # c"
-        Expect.equal actual.Text "a: \"never closed\nb: <s f=0/> <c f=0/>" "text"
+        Expect.equal (tokenizedText actual) "a: \"never closed\nb: <s f=0/> <c f=0/>" "text"
         Expect.dictEqual actual.StringMap (stringMapOf [0, single "ok"]) "string map"
         Expect.dictEqual actual.CommentMap (Dictionary<int, string>(Map [0, " c"])) "comment map"
 
     testCase "several unclosed quotes in a row keep every closed string" <| fun () ->
         let actual = Persil.tokenize "a: 'p\nb: \"q\nc: 'r'\nd: \"s\"\n"
-        Expect.equal actual.Text "a: 'p\nb: \"q\nc: <s f=0/>\nd: <s f=1/>\n" "text"
+        Expect.equal (tokenizedText actual) "a: 'p\nb: \"q\nc: <s f=0/>\nd: <s f=1/>\n" "text"
         Expect.dictEqual actual.StringMap (stringMapOf [0, single "r"; 1, dquote "s"]) "string map"
 
     testCase "a closing quote with a bad end boundary leaves the text alone and keeps later strings" <| fun () ->
@@ -210,7 +210,7 @@ My Key2: <s f=3/> <c f=3/>
         // The first `'x'` fails its boundary. The scanner must not read on to the next quote and
         // pair `'x' y\nb: '` as one scalar.
         let actual = Persil.tokenize "a: 'x' y\nb: 'z'\n"
-        Expect.equal actual.Text "a: 'x' y\nb: <s f=0/>\n" "text"
+        Expect.equal (tokenizedText actual) "a: 'x' y\nb: <s f=0/>\n" "text"
         Expect.dictEqual actual.StringMap (stringMapOf [0, single "z"]) "string map"
 
     testCase "quote at the end of the input without a line break" <| fun () ->

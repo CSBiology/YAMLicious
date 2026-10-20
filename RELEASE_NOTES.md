@@ -1,6 +1,6 @@
 ### 2.0.0 (Unreleased)
 * A `#` starts a comment only at the start of a line or after whitespace, as in YAML 1.2.2. Values such as `tool.cwl#main` or `C#` are no longer cut at the `#`.
-* Invalid input such as `[a]#c` (no space before `#`) is now read as the plain scalar `[a]#c`. Earlier versions read a comment.
+* A `#` directly behind a closed quoted scalar or flow collection is an error, as in YAML 1.2.2. `k: "b"#c`, `k: 'b'#c`, `k: [a]#c` and `k: {a: 1}#c` throw with a message that names the line. Earlier versions read a comment. `C#`, `tool.cwl#main` and `a#b` are plain text.
 * Inside block scalar content a `#` is always text.
 * A comment line that is indented less than the content of a block scalar ends the scalar.
 * Preprocessing reports a comment that ends a block scalar before content deeper than the node of the scalar, with the source lines, as in `A comment line (# c) ends a block scalar, so the more indented content after it is invalid. (Scalar line 1; comment line 3; content line 4.)`.
@@ -38,19 +38,24 @@
 * An empty block scalar such as `a: |` reads as the empty string. So does a body of blank lines under clip or strip chomping.
 * A block scalar item such as `- |` in a sequence that is not indented under its key reads correctly.
 * A quoted `#` before a block scalar header, as in `"a #b": |`, no longer breaks the block scalar.
-* A `|` or `>` behind a `[` or `{` on the same line, as in `a: {b: |`, opens no block scalar. The scanner does not track flow collections across lines.
+* A `|` or `>` behind a `[` or `{` on the same line, as in `a: {b: |`, opens no block scalar.
+* A flow collection can span several lines. The scanner keeps its open brackets across lines, so in `k: {` followed by `"a": 1, "b #c": 2` the second key is a string and its `#` stays text. A line inside a flow collection starts with the node-start state of the line before it, and it opens no block scalar.
+* A closer of the other kind, as in `k: [a}`, is an error. So is a flow collection that is still open at the end of the input or at a document marker. Both errors name the line of the opener.
 * A `[` or `{` at the start of a plain scalar continuation line no longer hides the block scalars after it.
 * A multiline quoted scalar before a block scalar no longer corrupts the double-quoted strings that follow it. Earlier versions turned `c: "z"` into the value `"z"` with its quotes.
 * `''` reads as the empty string.
 * A quote inside a plain scalar is text, as in YAML 1.2.2. `o["k"]`, `a, "b"` and `$(inputs["my-input"].path)` keep their quotes. Earlier versions read them as `o[k]`, `a, b` and `$(inputs[my-input].path)`. A quote opens a quoted scalar only where a node can start, and a `,`, `[` or `{` in a plain scalar outside a flow collection is text.
-* A line indented deeper than the node of a plain scalar continues that scalar, as in YAML 1.2.2. A quote, `- `, `? |` or a bracket on such a line is text and opens no quoted scalar, flow collection or block scalar. A comment ends the plain scalar.
+* A line indented deeper than the node of a plain scalar continues that scalar, as in YAML 1.2.2. A quote, `- `, `? |` or a bracket on such a line is text and opens no quoted scalar, flow collection or block scalar.
+* The node of a plain scalar is the block node that contains it. A value on a line of its own, as in `valueFrom:` followed by `$(f(inputs.a,` and `"x", 1))` on indented lines, belongs to its parent, so the lines below it continue the scalar and their quotes stay text. The same holds behind a lone `-`, at the root and behind `---`. A line that holds only a tag or an anchor leaves the value to the node in front of it.
+* A comment ends a plain scalar, so a deeper line behind it, as in `k: a # c` followed by `  b`, is an error. A colon followed by a blank on a line that continues a plain scalar is an error too, because a plain scalar cannot hold a mapping key.
+* A plain scalar cannot start with `%`, `@` or a backquote, wherever a node starts. This covers `k: %x`, `- %x`, `[%bad]`, `{@a: 1}` and a `%YAML` line inside the content of a document. The error names the line.
+* The Reader ends a document only at a `...` at column 0, which the scanner finds. An indented `...`, as in `k:` followed by `  - ...`, is text.
 * A line break in a double-quoted scalar folds as in YAML 1.2.2. The break and the blanks around it become one space, and each empty line becomes a line feed. Earlier versions kept the raw line breaks and the indentation, so `"one` and `  two"` on two lines read as `one\n  two` instead of `one two`.
 * An escaped line break (a `\` at the end of a line) in a double-quoted scalar joins the lines without a space and keeps the blanks in front of the backslash. A blank that an escape such as `\t` produces is content and stays in front of a fold.
 * Text in the shape of a placeholder is plain text. This holds for `x <c f=0/>` in a plain scalar and for `<c f=0/>` in a block scalar body.
 * Only ASCII digits make the shape of a placeholder, so text such as `<s f=١/>` with another kind of digit is plain text too.
 * A value that consists of such a text, as in `a: <c f=0/>`, reads with the style of a plain scalar.
-* Directives are allowed at the start of the input and after a `...`. Every `---` ends the prelude, so a `%` line behind a `---` is content.
-* The content of a document cannot start with `%`, as in YAML 1.2.2. `Reader.readDocuments` rejects `---\na: 1\n---\n%TAG ! t!\n---\nb: 2`. `Reader.read` checks only the first document, because it keeps every later marker as a line.
+* Directives are allowed at the start of the input and after a `...`. Every `---` ends the prelude, so a `%` line behind a `---` is content, which is an error because a plain scalar cannot start with `%`. `Reader.read` and `Reader.readDocuments` both reject `---\na: 1\n---\n%TAG ! t!\n---\nb: 2`.
 * `Reader.readDocuments` keeps the comments of a prelude in the document that its `---` starts. This includes a comment behind a directive and a comment behind the `---`.
 * `Reader.readDocuments` drops a document that holds only directives.
 * `Reader.read` and `Reader.readDocuments` read the prelude of a document with the same code in `Persil`.
@@ -65,16 +70,16 @@
 * `Persil.pipeline` prepares the whole input as one document. `Persil.prepareDocuments` splits a `Persil.TokenizedYaml` into one `Persil.PreparedYaml` for each document.
 * `Persil` gains the functions `tokenize` and `prepareDocuments` and the constants `NoBlock` and `NoComment`.
 * `Persil` gains the types `TokenizedYaml`, `TokenLine`, `LineKind` and `PreparedYaml`.
-* `Persil.TokenizedYaml` has the fields `Text`, `Lines`, `StringMap` and `CommentMap`.
+* `Persil.TokenizedYaml` has the fields `Lines`, `StringMap` and `CommentMap`.
 * `Persil.TokenLine` has the fields `Text`, `Kind`, `BlockId`, `SourceLine`, `CommentId` and `CodeLength`.
 * `Persil.LineKind` has the cases `Code`, `CommentOnly`, `Blank`, `Directive`, `DocumentStart`, `DocumentEnd`, `BlockHeader` and `BlockBody`.
 * `Persil.PreparedYaml` has the fields `Lines`, `StringMap`, `CommentMap`, `YAMLVersion` and `TagHandles`.
-* `Syntax.Document` loses `isStart`, `isTopLevelMarker`, `tryInlineContentAfterStartMarker`, `isDirectivePreludeLine` and `isDirectivePreludeOnly`.
+* `Syntax.Document` is removed, with `isStart`, `isEnd`, `isMarker`, `isTopLevelMarker`, `tryInlineContentAfterStartMarker`, `isDirectivePreludeLine` and `isDirectivePreludeOnly`. The active pattern `RegexActivePatterns.DocumentEnd` is removed too.
 * `Syntax.BlockScalar.tryDetectHeaderIndent` and `Syntax.BlockScalar.isHeaderLine` are replaced by `Syntax.BlockScalar.tryParseHeaderCode`. It takes the code of a line without its comment and returns the parsed header together with its baseline, which is the indentation of the node that owns the scalar. It finds no header in `a: | extra`.
 * `Syntax.BlockScalar.headerTokenFromLine` is removed.
 * `Syntax.BlockScalar` gains `tryParseHeaderCode`, the type `HeaderLine`, `isHeaderValue`, `contentIndent` and `isBodyLine`.
 * `Syntax` gains `CommentMarker.startsAt`, which tells whether a `#` starts a comment, and `Property.endIndex`, which finds the end of a tag or an anchor.
-* `Syntax` gains the module `LineValue`. `LineValue.find` returns where the value of a line starts and the indentation of the node that owns it, and `LineValue.startsPlain` tells whether that value is a plain scalar. The block scalar header parse and the scanner share it.
+* `Syntax` gains the module `LineValue`. `LineValue.find` returns where the value of a line starts, the indentation of the node that owns it, and whether the line holds a bare value without an indicator or a key (`Bare`). The block scalar header parse, the scanner and Preprocessing share it.
 * `Syntax.Line.isBlank` is replaced by `Syntax.Line.isSpacesOnly`. A line with a tab is no longer blank.
 * `Regex.SchemaNamespacePattern` and the active pattern `RegexActivePatterns.SchemaNamespace` are removed.
 * `Syntax.LineValue.dashColumns` returns the columns of the `-` entry indicators at the start of a line.
