@@ -13,6 +13,485 @@ let private literalBlock (value: string) =
 let private plainNode (value: string) =
     YAMLElement.Object [YAMLElement.Value(YAMLContent.create(value))]
 
+let private mapping (key: string) (value: YAMLElement) =
+    YAMLElement.Mapping(YAMLContent.create(key), value)
+
+let private comment (text: string) = YAMLElement.Comment text
+
+/// The message of the exception that the action throws, or an empty string when it succeeds.
+let private errorOf (action: unit -> unit) =
+    try
+        action ()
+        ""
+    with e ->
+        e.Message
+
+/// Asserts that Preprocessing.read and Reader.read reject the input with the comment boundary error.
+let private expectCommentBoundaryError (yaml: string) (commentText: string) (scalarLine: int) (commentLine: int) (contentLine: int) =
+    let locations = sprintf "(Scalar line %d; comment line %d; content line %d.)" scalarLine commentLine contentLine
+    let messages =
+        [ errorOf (fun () -> Preprocessing.read yaml |> ignore)
+          errorOf (fun () -> Reader.read yaml |> ignore) ]
+    for message in messages do
+        Expect.stringContains message (sprintf "A comment line (#%s) ends a block scalar, so the more indented content after it is invalid." commentText) "The error should name the comment."
+        Expect.stringContains message locations "The error should name the three source lines."
+
+/// Asserts that Preprocessing.read and Reader.read reject the input with the indentation error, which
+/// does not name a comment.
+let private expectIndentationError (yaml: string) (scalarLine: int) (contentLine: int) =
+    let locations = sprintf "(Scalar line %d; content line %d.)" scalarLine contentLine
+    let messages =
+        [ errorOf (fun () -> Preprocessing.read yaml |> ignore)
+          errorOf (fun () -> Reader.read yaml |> ignore) ]
+    for message in messages do
+        Expect.stringContains message "A line that is more indented than the node of a block scalar" "The error should describe the indentation."
+        Expect.stringContains message locations "The error should name the two source lines."
+        Expect.isFalse (message.Contains "comment") "The error should not blame a comment."
+
+let private unitTests = testList "Block scalar units" [
+    testCase "A comment between the header and the content indentation ends the scalar and precedes the next key" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n","b":1}
+        let expected = YAMLElement.Object [ mapping "a" (literalBlock "x\n"); comment " c"; mapping "b" (plainNode "1") ]
+        Expect.equal (Reader.read "a: |\n    x\n # c\nb: 1\n") expected "The comment at one space is outside the scalar"
+
+    testCase "Several comments at different indentation keep their order across blank lines" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n","b":1}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (literalBlock "x\n")
+                comment " c1"
+                comment " c2"
+                comment " c3"
+                mapping "b" (plainNode "1")
+            ]
+        Expect.equal (Reader.read "a: |\n    x\n  # c1\n # c2\n\n# c3\nb: 1\n") expected "All three comments follow the scalar in order"
+
+    testCase "Comments and blank lines after a terminating comment stay outside a keep scalar" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n\n\n","b":1}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n\n\n")
+                comment " c"
+                mapping "b" (plainNode "1")
+            ]
+        Expect.equal (Reader.read "a: |+\n  x\n\n\n# c\nb: 1\n") expected "Both blank lines before the comment belong to the scalar"
+
+    testCase "Comments at the end of the input stay in the block of the scalar header" <| fun _ ->
+        // yaml@2.6.1: {"a":{"b":"x\n"}}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (YAMLElement.Object [ mapping "b" (literalBlock "x\n"); comment " c1"; comment " c2" ])
+                comment " c3"
+            ]
+        Expect.equal (Reader.read "a:\n  b: |\n      x\n    # c1\n\n  # c2\n\n# c3\n") expected "A comment is no deeper than the header and no deeper than its own indentation"
+
+    testCase "A comment before a scalar header precedes the key" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n"} and {"top":{"k":1,"s":"body\n"}}
+        Expect.equal
+            (Reader.read "# lead\na: |\n  x\n")
+            (YAMLElement.Object [ comment " lead"; mapping "a" (literalBlock "x\n") ])
+            "The comment is the first entry of the root"
+        Expect.equal
+            (Reader.read "top:\n  k: 1\n  # c\n  s: |\n    body\n")
+            (YAMLElement.Object [
+                mapping "top" (YAMLElement.Object [ mapping "k" (plainNode "1"); comment " c"; mapping "s" (literalBlock "body\n") ])
+            ])
+            "The comment stays in the block of its scalar"
+
+    testCase "A comment after a scalar body belongs to the next sibling or to the dedented node" <| fun _ ->
+        // yaml@2.6.1: {"a":{"s":"body\n","t":1}} and {"a":{"s":"body\n"},"b":1}
+        Expect.equal
+            (Reader.read "a:\n  s: |\n    body\n  # c\n  t: 1\n")
+            (YAMLElement.Object [
+                mapping "a" (YAMLElement.Object [ mapping "s" (literalBlock "body\n"); comment " c"; mapping "t" (plainNode "1") ])
+            ])
+            "A sibling follows the comment in the same block"
+        Expect.equal
+            (Reader.read "a:\n  s: |\n    body\n# c\nb: 1\n")
+            (YAMLElement.Object [
+                mapping "a" (YAMLElement.Object [ mapping "s" (literalBlock "body\n") ])
+                comment " c"
+                mapping "b" (plainNode "1")
+            ])
+            "A dedented node takes the comment into the outer block"
+
+    testCase "A comment at the end of the input stays with the node that owns the scalar" <| fun _ ->
+        // yaml@2.6.1: {"a":{"s":"body\n"}} for both inputs
+        Expect.equal
+            (Reader.read "a:\n  s: |\n    body\n  # c\n")
+            (YAMLElement.Object [ mapping "a" (YAMLElement.Object [ mapping "s" (literalBlock "body\n"); comment " c" ]) ])
+            "A comment at the indentation of the header joins the block of the header"
+        Expect.equal
+            (Reader.read "a:\n  s: |\n    body\n# c\n")
+            (YAMLElement.Object [ mapping "a" (YAMLElement.Object [ mapping "s" (literalBlock "body\n") ]); comment " c" ])
+            "A comment at the root indentation stays in the root"
+
+    testCase "Comments between sequence items that hold scalars keep their place" <| fun _ ->
+        // yaml@2.6.1: {"x":["a\n","b\n"]} and ["a",  "x\n", "b"]
+        Expect.equal
+            (Reader.read "x:\n  - |\n    a\n  # c\n  - |\n    b\n")
+            (YAMLElement.Object [
+                mapping "x" (YAMLElement.Object [
+                    YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "a\n" ]; comment " c"; YAMLElement.Object [ literalBlock "b\n" ] ]
+                ])
+            ])
+            "The comment sits between the two scalar items"
+        Expect.equal
+            (Reader.read "- a\n- |\n  x\n# c\n- b\n")
+            (YAMLElement.Object [
+                YAMLElement.Sequence [ plainNode "a"; YAMLElement.Object [ literalBlock "x\n" ]; comment " c"; plainNode "b" ]
+            ])
+            "A later scalar item is followed by the comment"
+
+    testCase "A comment behind the first scalar item of an indentless sequence stays between the items" <| fun _ ->
+        // yaml@2.6.1: {"key":["x\ny\n","z"]}
+        Expect.equal
+            (Reader.read "key:\n- |\n  x\n  y\n# c\n- z\n")
+            (YAMLElement.Object [
+                mapping "key" (YAMLElement.Object [
+                    YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "x\ny\n" ]; comment " c"; plainNode "z" ]
+                ])
+            ])
+            "The comment sits between the scalar item and the next item"
+
+    testCase "A comment after a root scalar stays behind it" <| fun _ ->
+        // yaml@2.6.1: "x\n"
+        Expect.equal
+            (Reader.read "|\n  x\n# c\n")
+            (YAMLElement.Object [ literalBlock "x\n"; comment " c" ])
+            "The root scalar keeps its comment"
+
+    testCase "A comment behind the header and a comment behind the body are different comments" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n","b":1}
+        let header = YAMLElement.Value(YAMLContent.create("x\n", comment=" hc", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+        Expect.equal
+            (Reader.read "a: | # hc\n  x\n# c\nb: 1\n")
+            (YAMLElement.Object [ mapping "a" header; comment " c"; mapping "b" (plainNode "1") ])
+            "The header comment belongs to the scalar"
+
+    testCase "Tags and anchors on scalars with comments around them" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n","b":"y\n"}, "x\n", "x\n" and ["x\n","y"]
+        let literalWith (tag: string option) (anchor: string option) (value: string) =
+            YAMLElement.Value(YAMLContent.create(value, ?tag=tag, ?anchor=anchor, style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)))
+        Expect.equal
+            (Reader.read "a: !!str |\n  x\n# c\nb: &x |\n  y\n")
+            (YAMLElement.Object [
+                mapping "a" (literalWith (Some "tag:yaml.org,2002:str") None "x\n")
+                comment " c"
+                mapping "b" (literalWith None (Some "x") "y\n")
+            ])
+            "Mapping values keep tag and anchor"
+        Expect.equal
+            (Reader.read "!!str |\n  x\n")
+            (YAMLElement.Object [ literalWith (Some "tag:yaml.org,2002:str") None "x\n" ])
+            "A root scalar keeps its tag"
+        Expect.equal
+            (Reader.read "&a |\n  x\n# c\n")
+            (YAMLElement.Object [ literalWith None (Some "a") "x\n"; comment " c" ])
+            "A root scalar keeps its anchor and the comment follows"
+        Expect.equal
+            (Reader.read "- !!str |\n  x\n- &a >-\n  y\n")
+            (YAMLElement.Object [
+                YAMLElement.Sequence [
+                    YAMLElement.Object [ literalWith (Some "tag:yaml.org,2002:str") None "x\n" ]
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("y", anchor="a", style=ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Strip, None))) ]
+                ]
+            ])
+            "Sequence items keep tag and anchor"
+
+    testCase "A comment line that ends a scalar before more indented content is an error with locations" <| fun _ ->
+        // yaml@2.6.1 rejects every input in this test case with BAD_INDENT
+        expectCommentBoundaryError "a: >-\n  text\n# c\n  more\n" " c" 1 3 4
+        expectCommentBoundaryError "a: |\n    x\n  # c\n   bad\n" " c" 1 3 4
+        expectCommentBoundaryError "x:\n  a: |\n      body\n    # c\n     bad\n" " c" 2 4 5
+
+    testCase "More indented content after a comment is an error at or above the content indentation too" <| fun _ ->
+        expectCommentBoundaryError "a: |\n    x\n  # c\n    bad\n" " c" 1 3 4
+        expectCommentBoundaryError "a: |\n  x\n# c\n    bad\n" " c" 1 3 4
+        expectCommentBoundaryError "a: |2\n    x\n # c\n      bad\n" " c" 1 3 4
+
+    testCase "The error names the first comment after the scalar and the first content line behind them" <| fun _ ->
+        // Blank lines and later comments do not change the report.
+        expectCommentBoundaryError "a: |\n  x\n\n# c1\n   # c2\n\n# c3\n  bad\n" " c1" 1 4 8
+
+    testCase "The source lines count a multiline quoted scalar before the block scalar" <| fun _ ->
+        expectCommentBoundaryError "q: 'a\n  b'\ns: |\n  x\n# c\n  bad\n" " c" 3 5 6
+
+    testCase "The source lines count CRLF line endings" <| fun _ ->
+        expectCommentBoundaryError "a: |\r\n  x\r\n# c\r\n  bad\r\n" " c" 1 3 4
+
+    testCase "A sequence item scalar ends at the dash and rejects content behind a comment" <| fun _ ->
+        // yaml@2.6.1: BAD_INDENT
+        expectCommentBoundaryError "- |\n    x\n  # c\n  - y\n" " c" 1 3 4
+
+    testCase "Content more indented than the node of the scalar is an error without a comment" <| fun _ ->
+        // yaml@2.6.1: BAD_INDENT
+        expectIndentationError "a: |\n    text\n  more\n" 1 3
+        expectIndentationError "a: |4\n  x\nb: 1\n" 1 2
+
+    testCase "A comment block after a scalar is no error at the end of the input or before a sibling" <| fun _ ->
+        // yaml@2.6.1: {"a":"x\n","b":1}
+        let expected = YAMLElement.Object [ mapping "a" (literalBlock "x\n"); comment " c"; comment " d"; mapping "b" (plainNode "1") ]
+        Expect.equal (Reader.read "a: |\n    x\n  # c\n\n  # d\nb: 1\n") expected "A sibling at the indentation of the node is valid"
+        Expect.equal
+            (Reader.read "a: |\n    x\n  # c\n")
+            (YAMLElement.Object [ mapping "a" (literalBlock "x\n"); comment " c" ])
+            "The end of the input is valid"
+
+    testCase "A sibling of a compact mapping scalar after a terminating comment is no boundary error" <| fun _ ->
+        // yaml@2.6.1: [{"k":"text\n","next":1}]. The compact header is still read wrongly later on, so
+        // this checks only that the boundary uses the column of the key and not the column of the dash.
+        Expect.equal (errorOf (fun () -> Preprocessing.read "- k: |\n    text\n# about next\n  next: 1\n" |> ignore)) "" "Preprocessing accepts the input"
+
+    testCase "readDocuments rejects the boundary error too" <| fun _ ->
+        let message = errorOf (fun () -> Reader.readDocuments "a: |\n  x\n# c\n  bad\n---\nb: 1\n" |> ignore)
+        Expect.stringContains message "A comment line (# c) ends a block scalar" "The first document is invalid"
+        Expect.stringContains message "(Scalar line 1; comment line 3; content line 4.)" "The line numbers count from the start of the input"
+
+    testCase "Empty and blank-only bodies keep line breaks only under keep chomping" <| fun _ ->
+        // yaml@2.6.1: an empty body reads as "" for every chomping. Blank lines count under keep only.
+        let styles = [ "|", BlockScalarStyle.Literal; ">", BlockScalarStyle.Folded ]
+        let chompings = [ "-", ChompingMode.Strip; "", ChompingMode.Clip; "+", ChompingMode.Keep ]
+        for (indicator, style) in styles do
+            for (suffix, chomp) in chompings do
+                for blanks in [ 0; 2 ] do
+                    let value = if chomp = ChompingMode.Keep then String.replicate blanks "\n" else ""
+                    let scalar = blockScalar style chomp None value
+                    let header = "a: " + indicator + suffix + "\n" + String.replicate blanks "\n"
+                    Expect.equal
+                        (Reader.read (header + "b: 1\n"))
+                        (YAMLElement.Object [ mapping "a" scalar; mapping "b" (plainNode "1") ])
+                        (sprintf "Followed by a sibling: %A" header)
+                    Expect.equal
+                        (Reader.read header)
+                        (YAMLElement.Object [ mapping "a" scalar ])
+                        (sprintf "At the end of the input: %A" header)
+
+    testCase "Leading and trailing blank lines of a body follow the chomping" <| fun _ ->
+        // yaml@2.6.1: "\nx" for strip, "\nx\n" for clip and "\nx\n\n\n" for keep, with both styles
+        let expectedValues = [ "-", ChompingMode.Strip, "\nx"; "", ChompingMode.Clip, "\nx\n"; "+", ChompingMode.Keep, "\nx\n\n\n" ]
+        for (indicator, style) in [ "|", BlockScalarStyle.Literal; ">", BlockScalarStyle.Folded ] do
+            for (suffix, chomp, value) in expectedValues do
+                Expect.equal
+                    (Reader.read ("a: " + indicator + suffix + "\n\n  x\n\n\nb: 1\n"))
+                    (YAMLElement.Object [ mapping "a" (blockScalar style chomp None value); mapping "b" (plainNode "1") ])
+                    (sprintf "Style %s with chomping %A" indicator chomp)
+
+    testCase "An empty block scalar reads as the empty string in every position" <| fun _ ->
+        // yaml@2.6.1: {"a":"","b":1}, ["","x"], "" and {"a":""}
+        Expect.equal
+            (Reader.read "a: |\nb: 1\n")
+            (YAMLElement.Object [ mapping "a" (literalBlock ""); mapping "b" (plainNode "1") ])
+            "A mapping value"
+        Expect.equal
+            (Reader.read "- |\n- x\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "" ]; plainNode "x" ] ])
+            "A sequence item"
+        Expect.equal (Reader.read "|\n") (YAMLElement.Object [ literalBlock "" ]) "A root scalar"
+        Expect.equal (Reader.read "a: |") (YAMLElement.Object [ mapping "a" (literalBlock "") ]) "The end of the input without a line break"
+
+    testCase "Hash lines and placeholder-shaped text in a body are content" <| fun _ ->
+        // yaml@2.6.1: {"a":"# not a comment\n<c f=0/>\n<s f=3/>\n"}
+        Expect.equal
+            (Reader.read "a: |\n  # not a comment\n  <c f=0/>\n  <s f=3/>\n")
+            (YAMLElement.Object [ mapping "a" (literalBlock "# not a comment\n<c f=0/>\n<s f=3/>\n") ])
+            "Every line is text"
+
+    testCase "A body line that looks like the placeholder of a comment is not the comment of the document" <| fun _ ->
+        // yaml@2.6.1: {"a":"<c f=0/>\n","b":1}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (literalBlock "<c f=0/>\n")
+                mapping "b" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", comment=" real")) ])
+            ]
+        Expect.equal (Reader.read "a: |\n  <c f=0/>\nb: 1 # real\n") expected "The real comment belongs to b and the body keeps its text"
+
+    testCase "A body line that looks like the placeholder of a string is not a string" <| fun _ ->
+        // yaml@2.6.1: {"a":"<s f=0/>\n","b":"q"}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (literalBlock "<s f=0/>\n")
+                mapping "b" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("q", style=ScalarStyle.SingleQuoted)) ])
+            ]
+        Expect.equal (Reader.read "a: |\n  <s f=0/>\nb: 'q'\n") expected "The body keeps its text"
+
+    testCase "A body line shaped like a comment placeholder reads end to end as text" <| fun _ ->
+        // yaml@2.6.1: {"a":"<c f=0/>\n"}
+        let yaml = "a: |\n  <c f=0/>\n"
+        let expected = YAMLElement.Object [ mapping "a" (literalBlock "<c f=0/>\n") ]
+        Expect.equal (Reader.read yaml) expected "Reader.read"
+        Expect.equal (Reader.readDocuments yaml) [ expected ] "Reader.readDocuments"
+        Expect.equal (Decode.read yaml |> Decode.object (fun get -> get.Required.Field "a" Decode.string)) "<c f=0/>\n" "Decode"
+
+    testCase "A lead comment and a hash line at the end of a body do not mix" <| fun _ ->
+        // yaml@2.6.1: {"a":"<c f=0/>\n# d\n"}
+        Expect.equal
+            (Reader.read "# c\na: |\n  <c f=0/>\n  # d\n")
+            (YAMLElement.Object [ comment " c"; mapping "a" (literalBlock "<c f=0/>\n# d\n") ])
+            "The first comment is the document comment and the second is text"
+        // yaml@2.6.1: {"a":"x\n\n# tail\n"}
+        Expect.equal
+            (Reader.read "a: |\n  x\n\n  # tail\n")
+            (YAMLElement.Object [ mapping "a" (literalBlock "x\n\n# tail\n") ])
+            "A hash line at the content indentation after a blank line is text"
+
+    testCase "Header-looking text in a body stays literal in a sequence item and a folded scalar" <| fun _ ->
+        // yaml@2.6.1: ["a: |\n  b\n- c\n"] and {"key":"x: | y\n"}
+        Expect.equal
+            (Reader.read "- |\n  a: |\n    b\n  - c\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ literalBlock "a: |\n  b\n- c\n" ] ] ])
+            "A sequence item body"
+        Expect.equal
+            (Reader.read "key: >\n  x: |\n  y\n")
+            (YAMLElement.Object [ mapping "key" (blockScalar BlockScalarStyle.Folded ChompingMode.Clip None "x: | y\n") ])
+            "A folded body"
+
+    testCase "The indentation pass keeps the header with an empty body" <| fun _ ->
+        Expect.equal
+            (Preprocessing.read "a: |\nb: 1\n").AST
+            (Level [ Line "a: |"; Intendation []; Line "b: 1" ])
+            "The empty body is an empty Intendation"
+
+    testCase "The indentation pass keeps a body flat and moves the comment to the next node" <| fun _ ->
+        Expect.equal
+            (Preprocessing.read "a:\n  s: |\n    body\n  # c\n  t: 1\n").AST
+            (Level [
+                Line "a:"
+                Intendation [
+                    Line "s: |"
+                    Intendation [ Line "  body" ]
+                    Line "<c f=0/>"
+                    Line "t: 1"
+                ]
+            ])
+            "The comment is a line of the block of the header"
+        Expect.equal
+            (Preprocessing.read "a: |\n    x\n  # c\n\n  # d\nb: 1\n").AST
+            (Level [
+                Line "a: |"
+                Intendation [ Line "    x" ]
+                Line "<c f=0/>"
+                Line ""
+                Line "<c f=1/>"
+                Line "b: 1"
+            ])
+            "Comments less indented than the content leave the block of the scalar and take the indentation of the next node"
+
+    testCase "The indentation pass does not align body lines that look like comments" <| fun _ ->
+        Expect.equal
+            (Preprocessing.read "# lead\na: |\n  <c f=0/>\n  # d\n").AST
+            (Level [
+                Line "<c f=0/>"
+                Line "a: |"
+                Intendation [ Line "  <c f=0/>"; Line "  # d" ]
+            ])
+            "Only the real comment is a comment line"
+]
+
+/// An input of the given number of lines, repeated to the size that a run needs. Each generator returns
+/// a document that stresses one part of the indentation pass.
+let private bodyInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("a: |\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("b: 1\n") |> ignore
+    sb.ToString()
+
+let private commentRunInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("root:\n  a: |\n    x\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# c%d\n" i) |> ignore
+        if i % 7 = 0 then sb.Append("\n") |> ignore
+    sb.Append("  b: 1\nc: 2\n") |> ignore
+    sb.ToString()
+
+let private trailingCommentRunInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("root:\n  a: |\n    x\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# c%d\n" i) |> ignore
+    sb.ToString()
+
+let private flowCloserCommentRunInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("a:\n  - [\n    1,\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(sprintf "# c%d\n" i) |> ignore
+    sb.Append("    ]\n") |> ignore
+    sb.ToString()
+
+let private blankRunInput (blanks: int) =
+    "a:\n  b: 1\n" + String.replicate blanks "\n" + "  c: 2\nd: 3\n" + String.replicate blanks "\n"
+
+let private siblingScalarsInput (scalars: int) =
+    let sb = System.Text.StringBuilder()
+    for i in 0 .. scalars / 3 - 1 do
+        sb.Append(sprintf "k%d: |\n  x\n# c\n" i) |> ignore
+    sb.ToString()
+
+/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run.
+let private sampleMilliseconds (action: unit -> unit) =
+    let startTime = System.DateTime.UtcNow
+    let mutable runs = 0
+    let mutable elapsed = 0.0
+    while elapsed < 100.0 do
+        action ()
+        runs <- runs + 1
+        elapsed <- (System.DateTime.UtcNow - startTime).TotalMilliseconds
+    elapsed / float runs
+
+/// The fastest of three samples, which keeps a pause of the garbage collector out of the result.
+let private millisecondsPerRun (action: unit -> unit) =
+    [ sampleMilliseconds action; sampleMilliseconds action; sampleMilliseconds action ] |> List.min
+
+/// Eight times the lines take about eight times as long in a linear pass and about sixty-four times as
+/// long in a quadratic one. The limit sits between both and leaves room for the noise of a short
+/// measurement, such as garbage collection when the input outgrows the cache.
+let private expectLinear (name: string) (build: int -> string) =
+    let small = millisecondsPerRun (fun () -> Preprocessing.read (build 2000) |> ignore)
+    let large = millisecondsPerRun (fun () -> Preprocessing.read (build 16000) |> ignore)
+    let ratio = large / small
+    Expect.isTrue (ratio < 24.0) (sprintf "%s: 2000 lines took %.3f ms and 16000 lines took %.3f ms, a ratio of %.2f" name small large ratio)
+
+let private scalingTests = testList "Block scalar scaling" [
+    testCase "A body of more than 5000 lines reads as one scalar" <| fun _ ->
+        let lines = 5200
+        let expectedValue = String.concat "" [ for i in 0 .. lines - 1 -> sprintf "line %d\n" i ]
+        let expected = YAMLElement.Object [ mapping "a" (literalBlock expectedValue); mapping "b" (plainNode "1") ]
+        Expect.equal (Reader.read (bodyInput lines)) expected "The body keeps every line in order"
+
+    testCase "A run of more than 5000 comments after a scalar keeps its order" <| fun _ ->
+        let comments = 5200
+        match Reader.read (commentRunInput comments) with
+        | YAMLElement.Object [ YAMLElement.Mapping(_, YAMLElement.Object nested); YAMLElement.Mapping(_, _) ] ->
+            let texts = nested |> List.choose (function YAMLElement.Comment text -> Some text | _ -> None)
+            Expect.equal texts.Length comments "Every comment is in the block of the header"
+            Expect.equal (List.head texts) " c0" "The first comment stays first"
+            Expect.equal (List.last texts) (sprintf " c%d" (comments - 1)) "The last comment stays last"
+            Expect.equal (nested |> List.last) (mapping "b" (plainNode "1")) "The sibling follows the comments"
+        | _ -> failwith "The root should hold the mapping of the header and its sibling."
+
+    testCase "The time grows linearly with the lines of a body" <| fun _ ->
+        expectLinear "body" bodyInput
+
+    testCase "The time grows linearly with a run of comments between nodes" <| fun _ ->
+        expectLinear "comments" commentRunInput
+
+    testCase "The time grows linearly with a run of comments at the end of the input" <| fun _ ->
+        expectLinear "trailing comments" trailingCommentRunInput
+
+    testCase "The time grows linearly with a run of comments in front of a flow closer" <| fun _ ->
+        expectLinear "flow closer" flowCloserCommentRunInput
+
+    testCase "The time grows linearly with a run of blank lines" <| fun _ ->
+        expectLinear "blank lines" blankRunInput
+
+    testCase "The time grows linearly with the number of scalars and comments" <| fun _ ->
+        expectLinear "sibling scalars" siblingScalarsInput
+]
+
 let Main =
   testList "Block Scalars" [
     testCase "Explicit indentation preserves leading content spaces" <| fun _ ->
@@ -552,4 +1031,7 @@ next: value"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "The blank line before the comment belongs to the scalar and the comment does not"
+
+    unitTests
+    scalingTests
   ]

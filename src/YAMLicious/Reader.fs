@@ -111,14 +111,6 @@ let private isCommentOrBlankElement e =
     | YamlComment _ -> true
     | _ -> isBlankLineElement e
 
-/// Returns the comment id of the first comment line in the elements. A block scalar body is one
-/// flat block, so there are no nested elements to search.
-let private tryFindCommentLine (eles: PreprocessorElement list) : int option =
-    eles
-    |> List.tryPick (function
-        | YamlComment comment -> Some comment.Comment
-        | _ -> None)
-
 /// Splits the items of a block sequence from the elements that follow it. Comments after the
 /// last item go to the next node in the same block. At the end of a block they stay in the
 /// sequence as trailing entries.
@@ -174,16 +166,23 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let flattenBlockScalar (eles: PreprocessorElement list) : string list =
         flattenBlockScalarWithDepth 0 eles
 
-    /// Collects the lines of a block without adding indentation. A block scalar body arrives as one
-    /// flat block with only the header's indentation removed, so its lines keep their content spaces.
-    /// The scanner copies a body as it is and puts no placeholder into it, so a text such as `<s f=0/>`
-    /// there is content. The lines stay verbatim and nothing restores a placeholder in them.
+    /// Collects the lines of a block without adding indentation. Plain scalars use it to read their
+    /// continuation lines.
     let rec collectContentLines (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
             | Line s -> [s]
             | Intendation children -> collectContentLines children
             | _ -> [])
+
+    /// The lines of a block scalar body. Preprocessing delivers the body as one flat block, with only
+    /// the header's indentation removed and no placeholder restored, because the scanner copies a body
+    /// as it is. A text such as `<c f=0/>` in a body is content, so the lines stay verbatim here too.
+    let blockScalarLines (body: PreprocessorElement list) : string list =
+        body
+        |> List.choose (function
+            | Line s -> Some s
+            | _ -> None)
 
     let restoreScalarWithStyle (raw: string) =
         match tryParseExactPlaceholderIndex raw with
@@ -256,11 +255,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         match Syntax.BlockScalar.parseHeader props.Value with
         | Some header ->
-            match tryFindCommentLine block with
-            | Some lineCommentId ->
-                failwithf "A comment line (#%s) ends a block scalar, so the more indented content after it is invalid." commentDict.[lineCommentId]
-            | None -> ()
-            let lines = collectContentLines block
+            let lines = blockScalarLines block
             // The body is already relative to the header, so the header indentation is 0 here.
             let value = Syntax.BlockScalar.buildContent header.Style header.Chomp 0 header.Indent lines
             let comment = restoreCommentReplace commentDict commentId

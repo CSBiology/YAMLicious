@@ -269,8 +269,9 @@ module BlockScalar =
         | ChompingMode.Strip -> content.TrimEnd([|'\r'; '\n'|])
         | ChompingMode.Keep -> content
         | ChompingMode.Clip ->
+            // Clipping keeps the final line break of content. A scalar of blank lines has no content.
             let trimmed = content.TrimEnd([|'\r'; '\n'|])
-            if content.Length > trimmed.Length then trimmed + "\n" else trimmed
+            if trimmed.Length > 0 && content.Length > trimmed.Length then trimmed + "\n" else trimmed
 
     let stripIndent (indent: int) (line: string) =
         if line.Trim() = "" then
@@ -310,12 +311,14 @@ module BlockScalar =
     let buildContent (style: BlockScalarStyle) (chomp: ChompingMode) (headerIndent: int) (explicitIndent: int option) (lines: string list) =
         let deindentedLines = deindentLines headerIndent explicitIndent lines
         let content =
-            match style with
-            | BlockScalarStyle.Literal ->
-                if List.isEmpty deindentedLines then "" else String.Join("\n", deindentedLines) + "\n"
-            | BlockScalarStyle.Folded ->
-                let folded = foldLines deindentedLines
-                if folded.EndsWith("\n") then folded else folded + "\n"
+            if List.isEmpty deindentedLines then
+                ""
+            else
+                match style with
+                | BlockScalarStyle.Literal -> String.Join("\n", deindentedLines) + "\n"
+                | BlockScalarStyle.Folded ->
+                    let folded = foldLines deindentedLines
+                    if folded.EndsWith("\n") then folded else folded + "\n"
 
         applyChomping chomp content
 

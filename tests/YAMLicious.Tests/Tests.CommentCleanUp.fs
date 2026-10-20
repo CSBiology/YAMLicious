@@ -42,8 +42,9 @@ let Main = testList "CommentCleanUp" [
         Expect.equal actual.StringMap.Count 0 "no strings"
 
     testCase "comments in values and behind values" <| fun _ ->
-        // The `<s f=0/>` in the input is plain text, not a placeholder, because the scanner makes
-        // its own. A quote inside a comment is comment text.
+        // The `<s f=0/>` in the input is plain text, not a placeholder. The scanner moves it into the
+        // string table, so every placeholder in the emitted text is its own. A quote inside a comment
+        // is comment text.
         let s = """
 My Key: # This is a comment
   My Value1
@@ -60,7 +61,12 @@ My Key: <c f=0/>
         Expect.encodeEqual actual.Text expected ""
         Expect.dictEqual actual.CommentMap (commentMapOf [0, " This is a comment"; 1, " :::: \"This is also a comment\""]) ""
         Expect.equal (kindsOf actual) [blank; code; code; code; code; blank] "a trailing comment keeps the line code"
-        Expect.equal actual.StringMap.Count 0 "no strings"
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<s f=0/>"; Kind = QuotedStringKind.SingleQuotedString }]) "the literal text is the only string"
+
+    testCase "Text in the shape of a comment placeholder is text and not a comment" <| fun _ ->
+        let actual = expectComments "a: x <c f=0/>\nb: 1 # real\n" "a: x <s f=0/>\nb: 1 <c f=0/>\n" [code; code; blank] [0, " real"]
+        Expect.dictEqual actual.StringMap (stringMapOf [0, { Value = "<c f=0/>"; Kind = QuotedStringKind.SingleQuotedString }]) "the literal text moved into the string table"
+        Expect.equal (actual.Lines |> Array.map (fun line -> line.CommentId) |> List.ofArray) [Persil.NoComment; 0; Persil.NoComment] "only the second line has a comment"
 
     testCase "Hash without preceding whitespace is not a comment" <| fun _ ->
         expectComments "a: tool.cwl#main # real" "a: tool.cwl#main <c f=0/>" [code] [0, " real"] |> ignore

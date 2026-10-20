@@ -252,13 +252,29 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
         Expect.equal (blockIdsOf actual) [0; 0; 0; 0; -1; -1] "one block"
         Expect.equal (stringsOf actual) [0, single "z"] "strings"
 
-    testCase "a header inside a flow collection opens no block" <| fun _ ->
+    testCase "an unbalanced bracket at the start of a continuation line does not hide the blocks after it" <| fun _ ->
+        // yaml@2.6.1: {"desc":"see the list [draft","script":"echo 'hi'\n","next":{"run":"x # y\n"}}
         let actual =
             expectLines
-                "x: [\n  a,\n  |\n]\nc: 'k'\n"
-                "x: [\n  a,\n  |\n]\nc: <s f=0/>\n"
-                [code; code; code; code; code; blank]
-        Expect.equal (stringsOf actual) [0, single "k"] "the line after the flow collection is read"
+                "desc: see the list\n  [draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
+                "desc: see the list\n  [draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
+                [code; code; header; body; code; header; body; blank]
+        Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1; 1; 1; -1] "both headers open a block"
+        Expect.equal actual.StringMap.Count 0 "the bodies hold no placeholder"
+        Expect.equal actual.CommentMap.Count 0 "the hash in the second body is text"
+
+    testCase "an unbalanced brace or a dash and bracket on a continuation line does not hide the block after it" <| fun _ ->
+        // yaml@2.6.1: {"desc":"see the list {bar","script":"echo 'hi'\n"} and {"desc":"see the list - [bar","script":"echo 'hi'\n"}
+        for continuation in [ "  {bar"; "  - [bar" ] do
+            let input = "desc: see the list\n" + continuation + "\nscript: |\n  echo 'hi'\n"
+            let actual = expectLines input input [code; code; header; body; blank]
+            Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1] $"the header after {continuation.Trim()} opens a block"
+
+    testCase "an unbalanced bracket in a sequence item does not hide the block after it" <| fun _ ->
+        // yaml@2.6.1: ["desc [bar","echo 'hi'\n"]
+        let input = "- desc\n  [bar\n- |\n  echo 'hi'\n"
+        let actual = expectLines input input [code; code; header; body; blank]
+        Expect.equal (blockIdsOf actual) [-1; -1; 0; 0; -1] "the header opens a block"
 
     testCase "a flow mapping with a header-looking value opens no block" <| fun _ ->
         let actual =
@@ -277,7 +293,7 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
         Expect.equal (stringsOf actual) [0, single "|"; 1, dquote ">"] "the bars are strings"
         Expect.equal (commentsOf actual) [0, " one"] "comment"
 
-    testCase "brackets in plain text open no flow collection" <| fun _ ->
+    testCase "brackets in plain text do not hide the block scalars after them" <| fun _ ->
         let actual =
             expectLines
                 "a: foo [bar\nb: |\n  x\nc: x {y\nd: >\n  z\n"
@@ -285,13 +301,13 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
                 [code; header; body; code; header; body; blank]
         Expect.equal (blockIdsOf actual) [-1; 0; 0; -1; 1; 1; -1] "block ids"
 
-    testCase "a bracket behind a tag opens a flow collection" <| fun _ ->
+    testCase "a multiline flow collection behind a tag reads its quotes and the block after it opens" <| fun _ ->
         let actual =
             expectLines
-                "a: !!seq [\n  b: |\n]\nc: 'x'\n"
-                "a: !!seq [\n  b: |\n]\nc: <s f=0/>\n"
-                [code; code; code; code; blank]
-        Expect.equal (stringsOf actual) [0, single "x"] "strings"
+                "a: !!seq [\n  'b',\n  \"c\"\n]\nd: |\n  'x'\n"
+                "a: !!seq [\n  <s f=0/>,\n  <s f=1/>\n]\nd: |\n  'x'\n"
+                [code; code; code; code; header; body; blank]
+        Expect.equal (stringsOf actual) [0, single "b"; 1, dquote "c"] "strings"
 
     testCase "text behind the bar means there is no header" <| fun _ ->
         let actual =
@@ -447,6 +463,50 @@ let private pipelineTests = testList "Persil.pipeline" [
         Expect.equal (linesOf (Persil.pipeline "\n# c\na: 1\n")) ["<c f=0/>", commentOnly; "a: 1", code] "cut"
         let keep = Persil.pipeline "a: |+\n  x\n\n\n"
         Expect.equal (linesOf keep) ["a: |+", header; "  x", body; "", body; "", body] "two blank lines of the body remain"
+]
+
+let private sourceLinesOf (lines: Persil.TokenLine[]) =
+    lines |> Array.map (fun line -> line.SourceLine) |> List.ofArray
+
+let private lineDataTests = testList "Line data" [
+    testCase "every emitted line knows its physical line" <| fun _ ->
+        let actual = Persil.tokenize "a: 1\n\nb: |\n  x\n\n  y\nc: 2\n"
+        Expect.equal (sourceLinesOf actual.Lines) [1; 2; 3; 4; 5; 6; 7; 8] "the last empty line is line 8"
+
+    testCase "a multiline quoted scalar keeps the number of its first line and the lines behind it count on" <| fun _ ->
+        let single = Persil.tokenize "a: 'x\n  y'\nb: 1\n"
+        Expect.equal (sourceLinesOf single.Lines) [1; 3; 4] "single-quoted"
+        let double = Persil.tokenize "a: \"x\n\n  y\"\nb: 1\n"
+        Expect.equal (sourceLinesOf double.Lines) [1; 4; 5] "double-quoted with a blank line inside"
+        let escaped = Persil.tokenize "a: \"x\\\n  y\"\nb: 1\n"
+        Expect.equal (sourceLinesOf escaped.Lines) [1; 3; 4] "double-quoted with an escaped line break"
+        let several = Persil.tokenize "a: 'p\n q'\nb: \"r\n s\"\nc: |\n  z\n"
+        Expect.equal (sourceLinesOf several.Lines) [1; 3; 5; 6; 7] "several multiline scalars before a block scalar"
+
+    testCase "line endings do not change the numbers" <| fun _ ->
+        Expect.equal (sourceLinesOf (Persil.tokenize "a: 1\r\nb: |\r\n  x\r\nc: 2\r\n").Lines) [1; 2; 3; 4; 5] "CRLF"
+        Expect.equal (sourceLinesOf (Persil.tokenize "a: 1\rb: 2\r").Lines) [1; 2; 3] "CR"
+
+    testCase "the preparation keeps the numbers of the lines it keeps" <| fun _ ->
+        Expect.equal (sourceLinesOf (Persil.pipeline "%YAML 1.2\n---\na: 1\n").Lines) [3] "directive and marker removed"
+        Expect.equal (sourceLinesOf (Persil.pipeline "%YAML 1.2 # c\n---\na: 1\n").Lines) [1; 3] "the comment behind a directive stays on its line"
+        Expect.equal (sourceLinesOf (Persil.pipeline "--- # c\na: 1\n").Lines) [1; 2] "the comment behind the marker"
+        Expect.equal (sourceLinesOf (Persil.pipeline "--- |\n  x\n").Lines) [1; 2] "the header behind the marker"
+
+    testCase "a line knows its comment and the length of its code" <| fun _ ->
+        let actual = Persil.tokenize "a: 1 # c\n  # d\nb: 2\nc: |\n  x\n"
+        let data = actual.Lines |> Array.map (fun line -> line.CommentId, line.CodeLength) |> List.ofArray
+        Expect.equal
+            data
+            [ 0, 5; 1, 2; Persil.NoComment, 4; Persil.NoComment, 4; Persil.NoComment, 3; Persil.NoComment, 0 ]
+            "comment ids and code lengths, with the empty last line"
+        Expect.equal actual.Lines.[0].Text "a: 1 <c f=0/>" "text of a trailing comment"
+        Expect.equal (actual.Lines.[0].Text.Substring actual.Lines.[0].CodeLength) "<c f=0/>" "the comment placeholder starts at the code length"
+
+    testCase "the comment of a directive line stays a comment line and the directive loses it" <| fun _ ->
+        let prepared = Persil.pipeline "%YAML 1.2 # c\n---\na: 1\n"
+        let comment = prepared.Lines.[0]
+        Expect.equal (comment.Text, comment.Kind, comment.CommentId, comment.CodeLength) ("<c f=0/>", commentOnly, 0, 0) "comment line"
 ]
 
 let private readerTests = testList "Reader on scanner output" [
@@ -605,6 +665,52 @@ let private readerTests = testList "Reader on scanner output" [
         Expect.equal (Reader.read "--- |\n  x\n") expected "read"
         Expect.equal (Reader.readDocuments "--- |\n  x\n") [expected] "readDocuments"
         Expect.equal (Reader.readDocuments "--- |\n  x \"q\"\n  y 'r'\n") [YAMLElement.Object [literal "x \"q\"\ny 'r'\n"]] "quotes in the body"
+
+    testCase "an unbalanced bracket or brace at the start of a continuation line does not hide the blocks after it" <| fun _ ->
+        // yaml@2.6.1: {"desc":"see the list [draft","script":"echo 'hi'\n","next":{"run":"x # y\n"}} and the same with {bar.
+        // The Reader keeps the line break of a plain multiline scalar and Decode folds it.
+        let plainLines (value: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value, style = ScalarStyle.Plain)) ]
+        for opener in [ "["; "{" ] do
+            let expected =
+                YAMLElement.Object [
+                    mapping "desc" (plainLines ("see the list\n" + opener + "draft"))
+                    mapping "script" (literal "echo 'hi'\n")
+                    mapping "next" (YAMLElement.Object [ mapping "run" (block BlockScalarStyle.Folded ChompingMode.Clip None "x # y\n") ])
+                ]
+            let yaml = "desc: see the list\n  " + opener + "draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n"
+            Expect.equal (Reader.read yaml) expected $"The scalars after the line that starts with {opener}"
+
+    testCase "an unbalanced bracket in a sequence item does not hide the block scalar after it" <| fun _ ->
+        // yaml@2.6.1: ["desc [bar","echo 'hi'\n"]
+        let expected =
+            YAMLElement.Object [
+                YAMLElement.Sequence [
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("desc\n[bar", style = ScalarStyle.Plain)) ]
+                    YAMLElement.Object [ literal "echo 'hi'\n" ]
+                ]
+            ]
+        Expect.equal (Reader.read "- desc\n  [bar\n- |\n  echo 'hi'\n") expected "The second item is a block scalar"
+
+    testCase "text in the shape of a comment placeholder is a value and the real comment stays with its line" <| fun _ ->
+        // yaml@2.6.1: {"a":"x <c f=0/>","b":1}
+        let expected =
+            YAMLElement.Object [
+                mapping "a" (plainNode "x <c f=0/>")
+                mapping "b" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", comment = " real")) ])
+            ]
+        Expect.equal (Reader.read "a: x <c f=0/>\nb: 1 # real\n") expected "Only b has a comment"
+        Expect.equal (Reader.read "a: x <c f=0/>\n") (YAMLElement.Object [ mapping "a" (plainNode "x <c f=0/>") ]) "Without any real comment the text is no key of the comment table"
+
+    testCase "text in the shape of a string placeholder is a value" <| fun _ ->
+        // yaml@2.6.1: ["x <s f=7/>","y"] and {"a":"<c f=0/>"}
+        Expect.equal
+            (Reader.read "- x <s f=7/>\n- y\n")
+            (YAMLElement.Object [ YAMLElement.Sequence [ plainNode "x <s f=7/>"; plainNode "y" ] ])
+            "A string placeholder inside a plain scalar"
+        Expect.equal
+            (Decode.read "a: <c f=0/>\n" |> Decode.object (fun get -> get.Required.Field "a" Decode.string))
+            "<c f=0/>"
+            "A value that consists of the text only"
 ]
 
 let private performanceTests = testList "Scanner performance" [
@@ -647,6 +753,7 @@ let Main = testList "Tokenizer" [
     blockScannerTests
     documentScannerTests
     pipelineTests
+    lineDataTests
     readerTests
     performanceTests
 ]

@@ -2361,9 +2361,11 @@ expression: >
         let actual = Reader.read yaml
         Expect.equal actual expected "The quote pass should run on the line after a commented-out header."
 
-    testCase "Block scalar error names the comment" <| fun _ ->
+    testCase "Block scalar error names the comment and the lines" <| fun _ ->
+        // yaml@2.6.1 rejects the input with BAD_INDENT
         let yaml = "a: >-\n  text\n# c\n  more\n"
         Expect.throws (fun () -> Reader.read yaml |> ignore) "A comment line ends a block scalar, so the more indented text after it is invalid."
+        Expect.throws (fun () -> Preprocessing.read yaml |> ignore) "Preprocessing finds the boundary before the Reader runs."
         let message =
             try
                 Reader.read yaml |> ignore
@@ -2371,5 +2373,6 @@ expression: >
             with e ->
                 e.Message
         Expect.stringContains message "(# c)" "The error should print the comment text."
+        Expect.stringContains message "(Scalar line 1; comment line 3; content line 4.)" "The error should print the source lines."
 ]
 

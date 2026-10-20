@@ -5,90 +5,186 @@ open System.Text
 open Syntax
 open YAMLiciousTypes
 
+/// A block scalar header together with its body. The scanner decides where the body ends, so nothing
+/// in this module measures the indentation of a body line again.
+type private ScalarBlock =
+    { Header: Persil.TokenLine
+      /// The indentation that the content counts from, as the shared header helper reports it.
+      Baseline: int
+      /// The content behind the scalar must not be indented deeper than this.
+      Boundary: int
+      /// The body lines exactly as the scanner copied them.
+      Body: string list }
+
+/// A piece of the input that the comment alignment and the indentation pass handle as a whole. A block
+/// scalar is one unit, so neither pass ever sees one of its body lines.
+[<RequireQualifiedAccess>]
+type private InputUnit =
+    | Code of Persil.TokenLine
+    | Comment of Persil.TokenLine
+    | Blank
+    | Scalar of ScalarBlock
+
 let private isContentLine (line: string) =
     not (Line.isBlank line || Placeholder.isCommentOnlyLine line)
 
-let private isFlowCloserLine (line: string) =
-    let withoutComment, _ = Placeholder.splitTrailingComment line
-    match withoutComment.Trim().TrimEnd(',') with
+let private isFlowCloserLine (line: Persil.TokenLine) =
+    match line.Text.Substring(0, line.CodeLength).Trim().TrimEnd(',') with
     | "]" | "}" -> true
     | _ -> false
 
 let private withIndent (indent: int) (line: string) =
     System.String(' ', indent) + line.TrimStart()
 
-/// Splits the body off a block scalar. The body holds every blank line and every line indented at
-/// least as deep as the content indentation. It ends before the next nonblank line that is indented
-/// less. Blank lines before that line stay in the body so that keep chomping can retain them.
-let private takeBlockScalarBody (headerIndent: int) (indicator: int option) (lines: string list) =
-    let contentIndent = BlockScalar.contentIndent headerIndent indicator lines
-    let rec loop acc remaining =
+/// The indentation of the node a unit starts. A block scalar counts by its header. A blank line starts
+/// no node, so callers never ask for its indentation and the value here has no meaning.
+let private indentOf (item: InputUnit) =
+    match item with
+    | InputUnit.Code line
+    | InputUnit.Comment line -> Line.countLeadingSpaces line.Text
+    | InputUnit.Scalar block -> block.Baseline
+    | InputUnit.Blank -> 0
+
+/// The deepest indentation that content behind a block scalar may have. It is the indentation of the
+/// node that owns the scalar. In `- key: |` that node is the mapping that starts at `key`, so the
+/// dash alone would put the boundary too far left. In `- |` the scalar itself is the sequence item
+/// and the dash is the boundary.
+let private scalarBoundary (header: string) (baseline: int) =
+    let isBlank (c: char) = c = ' ' || c = '\t'
+    let mutable column = baseline
+    let mutable boundary = baseline
+    let mutable inIndicators = true
+    while inIndicators && column < header.Length do
+        let c = header.[column]
+        let endsToken = column + 1 >= header.Length || isBlank header.[column + 1]
+        if (c = '-' || c = '?' || c = ':') && endsToken then
+            boundary <- column
+            column <- column + 1
+            while column < header.Length && isBlank header.[column] do
+                column <- column + 1
+        else
+            inIndicators <- false
+    if BlockScalar.isHeaderValue (header.Substring column) then boundary else column
+
+let private scalarBlock (header: Persil.TokenLine) (body: string list) =
+    let code = header.Text.Substring(0, header.CodeLength)
+    match BlockScalar.tryParseHeaderCode code with
+    | Some found ->
+        { Header = header
+          Baseline = found.Baseline
+          Boundary = scalarBoundary code found.Baseline
+          Body = body }
+    | None ->
+        failwithf "Line %d starts a block scalar but holds no block scalar header: %s" header.SourceLine header.Text
+
+/// Joins every block scalar header with the body lines that the scanner assigned to it. The walk runs
+/// from the last line to the first, so each body is complete when its header comes up and the units
+/// come out in input order without a reversal.
+let private groupUnits (lines: Persil.TokenLine[]) =
+    let mutable units = []
+    let mutable body = []
+    for index = lines.Length - 1 downto 0 do
+        let line = lines.[index]
+        if line.Kind = Persil.LineKind.BlockBody then
+            body <- line.Text :: body
+        elif line.BlockId <> Persil.NoBlock then
+            units <- InputUnit.Scalar(scalarBlock line body) :: units
+            body <- []
+        elif line.Kind = Persil.LineKind.CommentOnly then
+            units <- InputUnit.Comment line :: units
+        elif line.Kind = Persil.LineKind.Blank then
+            units <- InputUnit.Blank :: units
+        else
+            units <- InputUnit.Code line :: units
+    units
+
+/// Rejects content that follows a block scalar and sits deeper than the node that owns the scalar. The
+/// scalar ended before such a line because the line is too shallow for the content, and no sibling or
+/// parent can hold the line. The scanner already decided where each scalar ends, so a comment that
+/// stands between the scalar and the line is not content. The message names the first such comment,
+/// because that comment is the visible reason why the scalar ends. Without a comment the error says
+/// only that the indentation is wrong. The check runs on the original indentation, before the
+/// alignment moves any comment.
+let private checkScalarBoundaries (comments: Dictionary<int, string>) (units: InputUnit list) =
+    let check (scalar: ScalarBlock option) (comment: Persil.TokenLine option) (content: Persil.TokenLine) =
+        match scalar with
+        | Some block ->
+            if Line.countLeadingSpaces content.Text > block.Boundary then
+                match comment with
+                | Some terminator ->
+                    failwithf
+                        "A comment line (#%s) ends a block scalar, so the more indented content after it is invalid. (Scalar line %d; comment line %d; content line %d.)"
+                        comments.[terminator.CommentId] block.Header.SourceLine terminator.SourceLine content.SourceLine
+                | None ->
+                    failwithf
+                        "A line that is more indented than the node of a block scalar, but not enough to continue the scalar, is invalid. (Scalar line %d; content line %d.)"
+                        block.Header.SourceLine content.SourceLine
+        | None -> ()
+
+    // `scalar` is the block scalar that the next content unit follows. `comment` is the first comment
+    // between them. The comments and blank lines after that first comment do not change the outcome.
+    let rec loop (remaining: InputUnit list) (scalar: ScalarBlock option) (comment: Persil.TokenLine option) =
         match remaining with
-        | line :: rest when BlockScalar.isBodyLine contentIndent line ->
-            loop (line :: acc) rest
-        | _ ->
-            List.rev acc, remaining
+        | [] -> ()
+        | InputUnit.Blank :: rest -> loop rest scalar comment
+        | InputUnit.Comment line :: rest ->
+            if scalar.IsSome && comment.IsNone then loop rest scalar (Some line) else loop rest scalar comment
+        | InputUnit.Code line :: rest ->
+            check scalar comment line
+            loop rest None None
+        | InputUnit.Scalar block :: rest ->
+            check scalar comment block.Header
+            loop rest (Some block) None
 
-    loop [] lines
+    loop units None None
 
-/// The indentation of the node that owns the last content line. A block scalar body belongs to
-/// the node of its header, so a trailing comment cannot sit deeper than the header.
-let private lastNodeIndent (lines: string list) =
-    let rec loop (remaining: string list) (indent: int) =
+/// Sets the indentation of a comment. Any other unit stays as it is.
+let private commentAt (indent: int) (item: InputUnit) =
+    match item with
+    | InputUnit.Comment line -> InputUnit.Comment { line with Text = withIndent indent line.Text; CodeLength = indent }
+    | other -> other
+
+/// The indentation for the comments in front of the unit `next`. A comment before a flow closer takes
+/// the indentation of the previous node when that node is deeper than the closer, and the indentation
+/// of the closer otherwise. Either way it stays inside the flow collection.
+let private commentIndentBefore (next: InputUnit) (previousIndent: int) =
+    match next with
+    | InputUnit.Code line ->
+        let indent = Line.countLeadingSpaces line.Text
+        if isFlowCloserLine line && previousIndent > indent then previousIndent else indent
+    | other -> indentOf other
+
+/// A full-line comment belongs to the node that follows it. Giving it the indentation of the next
+/// node puts it into that node's block, so the indentation pass treats it like any other line. The
+/// next node of a block scalar is its header, because the body belongs to the scalar and never holds
+/// a comment. Comments with no node after them stay in the last block, at most as deep as the node of
+/// the final content line. That node is the header for a block scalar.
+///
+/// The pass walks forward and collects the comments and blank lines in front of each node, so each
+/// unit costs a constant number of steps.
+let private alignCommentLines (units: InputUnit list) =
+    // `gap` holds the comments and blank lines since the last node, newest first. `aligned` holds the
+    // result, newest first as well. `previousIndent` is -1 until the first node.
+    let rec loop (remaining: InputUnit list) (gap: InputUnit list) (previousIndent: int) (aligned: InputUnit list) =
         match remaining with
-        | [] -> indent
-        | line :: rest when not (isContentLine line) -> loop rest indent
-        | line :: rest ->
-            let lineIndent = Line.countLeadingSpaces line
-            match BlockScalar.tryParseHeaderLine line with
-            | Some found ->
-                let _, afterBody = takeBlockScalarBody found.Baseline found.Header.Indent rest
-                loop afterBody lineIndent
-            | None -> loop rest lineIndent
+        | [] ->
+            let trailingIndent = max previousIndent 0
+            let clamped =
+                gap
+                |> List.map (fun item ->
+                    match item with
+                    | InputUnit.Comment line -> commentAt (min trailingIndent (Line.countLeadingSpaces line.Text)) item
+                    | other -> other)
+            List.rev (clamped @ aligned)
+        | (InputUnit.Comment _ | InputUnit.Blank as item) :: rest ->
+            loop rest (item :: gap) previousIndent aligned
+        | item :: rest ->
+            let moved =
+                if List.isEmpty gap then gap
+                else List.map (commentAt (commentIndentBefore item previousIndent)) gap
+            loop rest [] (indentOf item) (item :: (moved @ aligned))
 
-    loop lines 0
-
-/// A full-line comment belongs to the node that follows it. Giving it the indentation of the
-/// next content line puts it into that node's block, so the indentation pass below treats
-/// comments like any other line. Comments with no content after them stay in the last block, at
-/// most as deep as the node of its final content line. A comment before a flow closer takes the
-/// indentation of the previous entry when that entry is deeper than the closer, and the
-/// indentation of the closer otherwise. Either way it stays inside the flow collection.
-let private alignCommentLines (lines: string list) =
-    let trailingIndent = lastNodeIndent lines
-
-    let rec loop (reversed: string list) (nextContent: string option) (acc: string list) =
-        match reversed with
-        | [] -> acc
-        | line :: rest when isContentLine line ->
-            loop rest (Some line) (line :: acc)
-        | line :: rest when Placeholder.isCommentOnlyLine line ->
-            let aligned =
-                match nextContent with
-                | Some next when isFlowCloserLine next ->
-                    let closerIndent = Line.countLeadingSpaces next
-                    let previousIndent =
-                        rest
-                        |> List.tryFind isContentLine
-                        |> Option.map Line.countLeadingSpaces
-                    match previousIndent with
-                    | Some p when p > closerIndent -> withIndent p line
-                    | _ -> withIndent closerIndent line
-                | Some next -> withIndent (Line.countLeadingSpaces next) line
-                | None -> withIndent (min trailingIndent (Line.countLeadingSpaces line)) line
-            loop rest nextContent (aligned :: acc)
-        | line :: rest ->
-            loop rest nextContent (line :: acc)
-
-    loop (List.rev lines) None []
-
-let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (rest: string list) =
-    if Line.isBlank line then
-        match rest |> List.tryFind (Line.isBlank >> not) with
-        | Some nextLine -> Line.countLeadingSpaces nextLine > currentIntendation
-        | None -> true
-    else
-        Line.countLeadingSpaces line > currentIntendation
+    loop units [] (-1) []
 
 /// Removes exactly the header's indentation from a body line. Counting spaces keeps tabs and
 /// all deeper indentation, which is content. A blank line shorter than the header loses only the
@@ -96,33 +192,100 @@ let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (re
 let private stripBlockScalarIndent (headerIndent: int) (line: string) =
     line.Substring(min headerIndent (Line.countLeadingSpaces line))
 
-/// Reads a block scalar body as one flat block. Its indentation beyond the header's is content,
-/// so the structural pass neither nests nor interprets the lines. The Reader gets them as they are.
-let private readBlockScalarBody (headerIndent: int) (indicator: int option) (lines: string list) =
-    let body, remaining = takeBlockScalarBody headerIndent indicator lines
-    let bodyLines = body |> List.map (fun bodyLine -> Line(stripBlockScalarIndent headerIndent bodyLine))
-    Intendation bodyLines, remaining
+/// Removes the indentation of a node line from the frame it sits in. A line that is less indented than
+/// the frame loses only the spaces it has.
+let private stripIndent (indent: int) (line: string) =
+    if indent <= 0 then line
+    else
+        let availableIndent = Line.countLeadingSpaces line
+        if availableIndent >= indent then line.Substring(indent)
+        else line.TrimStart()
 
-/// Moves a line onto the reversed accumulator. A block scalar header takes its whole body along,
-/// so an enclosing block never separates the header from the body or from its trailing blank lines.
-let private pushLineWithBody (acc: string list) (line: string) (rest: string list) =
-    match BlockScalar.tryParseHeaderLine line with
-    | Some found ->
-        let body, remaining = takeBlockScalarBody found.Baseline found.Header.Indent rest
-        List.rev body @ (line :: acc), remaining
-    | None ->
-        line :: acc, rest
+/// Turns a unit into elements on the reversed accumulator. A block scalar becomes its header line and
+/// one flat body block. The body is never nested or interpreted, and its indentation beyond the
+/// header's is content. An empty body still yields a block, so that the Reader reads the header as a
+/// block scalar and not as a plain value.
+let private lower (frameIndent: int) (item: InputUnit) (acc: PreprocessorElement list) =
+    match item with
+    | InputUnit.Scalar block ->
+        let body = block.Body |> List.map (fun line -> Line(stripBlockScalarIndent block.Baseline line))
+        Intendation body :: Line(stripIndent frameIndent block.Header.Text) :: acc
+    | InputUnit.Code line
+    | InputUnit.Comment line -> Line(stripIndent frameIndent line.Text) :: acc
+    | InputUnit.Blank -> Line("") :: acc
 
-let private splitNestedBlock (currentIntendation: int) (lines: string list) =
-    let rec loop acc remaining =
+/// Counts the blank units at the start of the list and returns them with the units behind them.
+let rec private skipBlanks (units: InputUnit list) (count: int) =
+    match units with
+    | InputUnit.Blank :: rest -> skipBlanks rest (count + 1)
+    | _ -> count, units
+
+/// Splits the units of the block that is nested deeper than `frameIndent` from the units behind it. A
+/// run of blank lines belongs to the nested block when the unit behind the run is deeper too, or when
+/// nothing follows. A run is judged once as a whole.
+let private splitNestedBlock (frameIndent: int) (units: InputUnit list) =
+    let rec loop (taken: InputUnit list) (remaining: InputUnit list) =
         match remaining with
-        | line :: rest when shouldStayInNestedBlock currentIntendation line rest ->
-            let nextAcc, nextRemaining = pushLineWithBody acc line rest
-            loop nextAcc nextRemaining
-        | _ ->
-            List.rev acc, remaining
+        | [] -> List.rev taken, remaining
+        | InputUnit.Blank :: _ ->
+            let count, following = skipBlanks remaining 0
+            let stays =
+                match following with
+                | next :: _ -> indentOf next > frameIndent
+                | [] -> true
+            if stays then loop (List.replicate count InputUnit.Blank @ taken) following
+            else List.rev taken, remaining
+        | item :: rest ->
+            if indentOf item > frameIndent then loop (item :: taken) rest
+            else List.rev taken, remaining
 
-    loop [] lines
+    loop [] units
+
+let private previousContentLine (acc: PreprocessorElement list) =
+    acc
+    |> List.tryFind (function
+        | Line line -> isContentLine line
+        | _ -> true
+    )
+
+let private previousContentLineOpensBlock (acc: PreprocessorElement list) =
+    previousContentLine acc
+    |> function
+        | Some (Line line) ->
+            let trimmed = line.TrimEnd()
+            trimmed.EndsWith(":")
+            || trimmed.EndsWith("[")
+            || trimmed.EndsWith("{")
+        | _ -> false
+
+/// Builds the elements of one frame, the units that share the indentation `frameIndent`. A deeper unit
+/// starts a nested frame, which becomes an `Intendation`. The elements come back in reverse order.
+let rec private buildFrame (units: InputUnit list) (frameIndent: int) (acc: PreprocessorElement list) =
+    match units with
+    | [] -> acc
+    | InputUnit.Blank :: _ ->
+        let count, following = skipBlanks units 0
+        let blankLines = List.replicate count (Line(""))
+        match following with
+        | next :: _ ->
+            let nextIndent = indentOf next
+            if nextIndent > frameIndent && (List.isEmpty acc || previousContentLineOpensBlock acc) then
+                // The blank lines move into the block that follows them.
+                let nested, remaining = splitNestedBlock frameIndent following
+                let children = buildFrame nested nextIndent blankLines |> List.rev
+                buildFrame remaining frameIndent (Intendation children :: acc)
+            else
+                buildFrame following frameIndent (blankLines @ acc)
+        | [] ->
+            blankLines @ acc
+    | item :: rest ->
+        let indent = indentOf item
+        if indent = frameIndent then
+            buildFrame rest frameIndent (lower frameIndent item acc)
+        else
+            let nested, remaining = splitNestedBlock frameIndent rest
+            let children = buildFrame (item :: nested) indent [] |> List.rev
+            buildFrame remaining frameIndent (Intendation children :: acc)
 
 
 let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option) =
@@ -151,92 +314,9 @@ let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option)
 /// Builds the AST from lines that the scanner already tokenized. Reader.readDocuments passes the
 /// slices of one tokenized input here, so no text is tokenized twice.
 let internal readPrepared (content: Persil.PreparedYaml) =
-
-    let stripIndent (indent: int) (line: string) =
-        if indent <= 0 then line
-        else
-            let availableIndent = Line.countLeadingSpaces line
-            if availableIndent >= indent then line.Substring(indent)
-            else line.TrimStart()
-
-    let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
-        let previousContentLine () =
-            acc
-            |> List.tryFind (function
-                | Line line -> isContentLine line
-                | _ -> true
-            )
-
-        let previousContentLineOpensBlock () =
-            previousContentLine ()
-            |> function
-                | Some (Line line) ->
-                    let trimmed = line.TrimEnd()
-                    trimmed.EndsWith(":")
-                    || trimmed.EndsWith("[")
-                    || trimmed.EndsWith("{")
-                | _ -> false
-
-        let blockScalarHeaderBefore () =
-            match previousContentLine () with
-            | Some (Line line) -> BlockScalar.tryParseHeaderLine line |> Option.map (fun found -> found.Header)
-            | _ -> None
-
-        match lines with
-        | [] -> acc
-        | line :: rest ->
-            if Line.isBlank line then
-                let nextIndentation =
-                    rest
-                    |> List.tryFind (Line.isBlank >> not)
-                    |> Option.map Line.countLeadingSpaces
-
-                let header =
-                    match nextIndentation with
-                    | Some nextIntendation when nextIntendation > currentIntendation -> blockScalarHeaderBefore ()
-                    | _ -> None
-
-                match header, nextIndentation with
-                | Some header, _ ->
-                    let bodyElement, remaining = readBlockScalarBody currentIntendation header.Indent lines
-                    loop remaining currentIntendation (bodyElement :: acc)
-                | None, Some nextIntendation when nextIntendation > currentIntendation && (List.isEmpty acc || previousContentLineOpensBlock ()) ->
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
-
-                    let children = loop nextLevelLines nextIntendation [] |> List.rev
-                    loop currentLevelLines currentIntendation (Intendation children :: acc)
-                | None, _ ->
-                    loop rest currentIntendation (Line("") :: acc)
-            else
-                let nextIntendation = Line.countLeadingSpaces line
-
-                if nextIntendation = currentIntendation then
-                    let lineText = stripIndent currentIntendation line
-                    let lineEle = Line(lineText)
-                    loop rest currentIntendation (lineEle :: acc)
-                else
-                    let header =
-                        if nextIntendation > currentIntendation then blockScalarHeaderBefore () else None
-
-                    match header with
-                    | Some header ->
-                        let bodyElement, remaining = readBlockScalarBody currentIntendation header.Indent lines
-                        loop remaining currentIntendation (bodyElement :: acc)
-                    | None ->
-                        // The block starts with its first line, which can itself be a header,
-                        // so the recursion below processes that line too.
-                        let firstReversed, afterFirst = pushLineWithBody [] line rest
-                        let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation afterFirst
-
-                        let children = loop (List.rev firstReversed @ nextLevelLines) nextIntendation [] |> List.rev
-                        loop currentLevelLines currentIntendation (Intendation children :: acc)
-
-    let lines =
-        content.Lines
-        |> Array.map (fun line -> line.Text)
-        |> List.ofArray
-        |> alignCommentLines
-    let ast = loop lines 0 [] |> List.rev |> Level
+    let units = groupUnits content.Lines
+    checkScalarBoundaries content.CommentMap units
+    let ast = buildFrame (alignCommentLines units) 0 [] |> List.rev |> Level
 
     { AST = ast
       StringMap = content.StringMap
