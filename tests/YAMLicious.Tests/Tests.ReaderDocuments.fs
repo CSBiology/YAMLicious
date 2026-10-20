@@ -336,13 +336,20 @@ next: v"""
             "A comment behind content belongs to the document of that content"
 
     testCase "A directive behind a start marker is rejected" <| fun _ ->
-        // yaml@2.6.1 rejects both inputs with BAD_SCALAR_START, because the marker ended the prelude
+        // yaml@2.6.1 rejects all three inputs with BAD_SCALAR_START, because the marker ended the prelude
+        // and a plain scalar cannot start with a percent sign, also not as the key of a block scalar header
         Expect.throws
             (fun () -> Reader.readDocuments "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n" |> ignore)
             "A directive after a bare start marker is no directive"
         Expect.throws
             (fun () -> Reader.readDocuments "---\n# c\n%YAML 1.2\n" |> ignore)
             "A comment between the marker and the directive changes nothing"
+        Expect.throws
+            (fun () -> Reader.readDocuments "---\n%a: |\n  x\n" |> ignore)
+            "A block scalar header behind the marker cannot start with a percent sign"
+        Expect.throws
+            (fun () -> Reader.read "---\n%a: |\n  x\n" |> ignore)
+            "Reader.read rejects the same input"
 
     testCase "A directive behind an end marker applies to the next document" <| fun _ ->
         // yaml@2.6.1: two documents, {"a":1} and {"b":2}

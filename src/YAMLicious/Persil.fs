@@ -597,7 +597,7 @@ let private failOnDirectiveContent (inlineLine: TokenLine option) (lines: TokenL
         | _ -> if first < lines.Length then Some lines.[first] else None
 
     match content with
-    | Some line when line.Kind = LineKind.Code && line.Text.StartsWith("%") ->
+    | Some line when (line.Kind = LineKind.Code || line.Kind = LineKind.BlockHeader) && line.Text.StartsWith("%") ->
         failwithf "Line %d: a directive is only allowed at the start of the input or after a document end marker." line.SourceLine
     | _ -> ()
 
