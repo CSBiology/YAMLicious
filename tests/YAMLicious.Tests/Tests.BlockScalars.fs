@@ -4,6 +4,12 @@ open Fable.Pyxpecto
 open YAMLicious
 open YAMLiciousTypes
 
+let private blockScalar (style: BlockScalarStyle) (chomp: ChompingMode) (indent: int option) (value: string) =
+    YAMLElement.Value(YAMLContent.create(value, style=ScalarStyle.Block(style, chomp, indent)))
+
+let private literalBlock (value: string) =
+    blockScalar BlockScalarStyle.Literal ChompingMode.Clip None value
+
 let Main =
   testList "Block Scalars" [
     testCase "Explicit indentation preserves leading content spaces" <| fun _ ->
@@ -306,4 +312,159 @@ next: value"""
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Combined explicit indent and strip chomping should parse correctly"
+
+    testCase "Literal block scalar keeps the exact indentation of a more indented line" <| fun _ ->
+        let yaml = "key: |\n    text\n     more\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "text\n more\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "One extra space in the source should stay one extra space in the value"
+
+    testCase "Literal block scalar keeps a more indented hash line as content" <| fun _ ->
+        let yaml = "key: |\n    text\n     # more\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "text\n # more\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A hash line inside the block is content and keeps its extra space"
+
+    testCase "Literal block scalar keeps two spaces before a deeper hash line" <| fun _ ->
+        let yaml = "key: |\n    text\n      # two\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "text\n  # two\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Two extra spaces in the source should stay two extra spaces in the value"
+
+    testCase "Folded block scalar keeps the line breaks around a more indented line" <| fun _ ->
+        let yaml = "key: >\n    text\n     more\n    end\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), blockScalar BlockScalarStyle.Folded ChompingMode.Clip None "text\n more\nend\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A more indented line is not folded and keeps its extra space"
+
+    testCase "Literal block scalar keeps mixed indentation depths with hash lines" <| fun _ ->
+        let yaml = "key: |\n    a\n     # b\n         c\n       # d\n    e\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "a\n # b\n     c\n   # d\ne\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Every line should keep its indentation relative to the least indented line"
+
+    testCase "Nested mapping block scalar keeps indentation and the next key" <| fun _ ->
+        let yaml = "outer:\n  key: |\n    x\n     y\n  next: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("outer"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "x\n y\n")
+                    YAMLElement.Mapping(YAMLContent.create("next"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))])
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A nested block scalar should end at the dedented sibling key"
+
+    testCase "Root block scalar keeps the exact indentation of a more indented line" <| fun _ ->
+        let yaml = "|\n  x\n   y\n"
+        let expected = YAMLElement.Object [literalBlock "x\n y\n"]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A root block scalar should keep one extra space"
+
+    testCase "First sequence item block scalar keeps indentation and the next item" <| fun _ ->
+        let yaml = "- |\n  x\n   y\n- z\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [literalBlock "x\n y\n"]
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("z"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The first item should keep one extra space and the second item should stay a plain value"
+
+    testCase "Later sequence item block scalars keep their indentation" <| fun _ ->
+        let yaml = "- a\n- |\n  x\n   y\n- b\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Sequence [
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("a"))]
+                YAMLElement.Object [literalBlock "x\n y\n"]
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("b"))]
+            ]
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A block scalar after the first item should read as one scalar"
+
+    testCase "Indentless sequence under a key keeps block scalar indentation" <| fun _ ->
+        let yaml = "key:\n- |\n  x\n   y\n- z\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        YAMLElement.Object [literalBlock "x\n y\n"]
+                        YAMLElement.Object [YAMLElement.Value(YAMLContent.create("z"))]
+                    ]
+                ]
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The first item of an indentless sequence should read as one scalar"
+
+    testCase "Explicit indentation indicator keeps spaces beyond the indicated baseline" <| fun _ ->
+        let yaml = "key: |2\n     x\n   y\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("key"),
+                blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) "   x\n y\n"
+            )
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "The indicator sets the baseline even when the first line is deeper than a later line"
+
+    testCase "Keep chomping retains trailing blank lines before a dedented sibling" <| fun _ ->
+        let yaml = "a: |+\n  x\n\n\nb: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("a"), blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n\n\n")
+            YAMLElement.Mapping(YAMLContent.create("b"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))])
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Both trailing blank lines belong to the scalar and the sibling key stays separate"
+
+    testCase "Keep chomping retains trailing blank lines of a nested scalar" <| fun _ ->
+        let yaml = "outer:\n  key: |+\n    x\n\nnext: 1\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(
+                YAMLContent.create("outer"),
+                YAMLElement.Object [
+                    YAMLElement.Mapping(YAMLContent.create("key"), blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n\n")
+                ]
+            )
+            YAMLElement.Mapping(YAMLContent.create("next"), YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))])
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "A blank line before a dedent to an outer key still belongs to the nested scalar"
+
+    testCase "Header-looking body text stays literal content" <| fun _ ->
+        let yaml = "key: |\n  a: |\n    b\n  - c\n"
+        let expected = YAMLElement.Object [
+            YAMLElement.Mapping(YAMLContent.create("key"), literalBlock "a: |\n  b\n- c\n")
+        ]
+        let actual = Reader.read yaml
+        Expect.equal actual expected "Text that looks like a header or a sequence item inside a body is not interpreted"
+
+    testCase "Preprocessing keeps a block scalar body flat with only the header indentation removed" <| fun _ ->
+        let yaml = "outer:\n  key: |\n    text\n     # more\n       deeper\n  next: 1\n"
+        let expected =
+            Level [
+                Line "outer:"
+                Intendation [
+                    Line "key: |"
+                    Intendation [Line "  text"; Line "   # more"; Line "     deeper"]
+                    Line "next: 1"
+                ]
+            ]
+        let actual = Preprocessing.read yaml
+        Expect.equal actual.AST expected "The body should be one Intendation of lines without nested blocks"
   ]

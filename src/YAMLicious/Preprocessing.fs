@@ -62,11 +62,50 @@ let private shouldStayInNestedBlock (currentIntendation: int) (line: string) (re
     else
         Line.countLeadingSpaces line > currentIntendation
 
+let private isBlockScalarHeaderLine (line: string) =
+    BlockScalar.isHeaderLine (line.TrimEnd())
+
+/// Splits the body off a block scalar. The body holds every blank line and every line indented
+/// deeper than the header. It ends before the next nonblank line at the header's indentation or
+/// less. Blank lines before that line stay in the body so that keep chomping can retain them.
+let private takeBlockScalarBody (headerIndent: int) (lines: string list) =
+    let rec loop acc remaining =
+        match remaining with
+        | line :: rest when Line.isBlank line || Line.countLeadingSpaces line > headerIndent ->
+            loop (line :: acc) rest
+        | _ ->
+            List.rev acc, remaining
+
+    loop [] lines
+
+/// Removes exactly the header's indentation from a body line. Counting spaces keeps tabs and
+/// all deeper indentation, which is content. A blank line shorter than the header loses only the
+/// spaces it has.
+let private stripBlockScalarIndent (headerIndent: int) (line: string) =
+    line.Substring(min headerIndent (Line.countLeadingSpaces line))
+
+/// Reads a block scalar body as one flat block. Its indentation beyond the header's is content,
+/// so the structural pass neither nests nor interprets the lines. The Reader gets them as they are.
+let private readBlockScalarBody (headerIndent: int) (lines: string list) =
+    let body, remaining = takeBlockScalarBody headerIndent lines
+    let bodyLines = body |> List.map (fun bodyLine -> Line(stripBlockScalarIndent headerIndent bodyLine))
+    Intendation bodyLines, remaining
+
+/// Moves a line onto the reversed accumulator. A block scalar header takes its whole body along,
+/// so an enclosing block never separates the header from the body or from its trailing blank lines.
+let private pushLineWithBody (acc: string list) (line: string) (rest: string list) =
+    if isBlockScalarHeaderLine line then
+        let body, remaining = takeBlockScalarBody (Line.countLeadingSpaces line) rest
+        List.rev body @ (line :: acc), remaining
+    else
+        line :: acc, rest
+
 let private splitNestedBlock (currentIntendation: int) (lines: string list) =
     let rec loop acc remaining =
         match remaining with
         | line :: rest when shouldStayInNestedBlock currentIntendation line rest ->
-            loop (line :: acc) rest
+            let nextAcc, nextRemaining = pushLineWithBody acc line rest
+            loop nextAcc nextRemaining
         | _ ->
             List.rev acc, remaining
 
@@ -106,7 +145,7 @@ let read (yamlStr: string) =
             if availableIndent >= indent then line.Substring(indent)
             else line.TrimStart()
 
-    let rec loop (lines: string list) (currentIntendation: int) (inBlockScalar: bool) (acc: PreprocessorElement list) =
+    let rec loop (lines: string list) (currentIntendation: int) (acc: PreprocessorElement list) =
         let previousContentLine () =
             acc
             |> List.tryFind (function
@@ -122,52 +161,54 @@ let read (yamlStr: string) =
                     trimmed.EndsWith(":")
                     || trimmed.EndsWith("[")
                     || trimmed.EndsWith("{")
-                    || BlockScalar.isHeaderLine trimmed
                 | _ -> false
 
-        let nestedBlockScalarAfterPresentation () =
+        let blockScalarHeaderBefore () =
             match previousContentLine () with
-            | Some (Line line) -> BlockScalar.isHeaderLine (line.TrimEnd())
+            | Some (Line line) -> isBlockScalarHeaderLine line
             | _ -> false
 
         match lines with
         | [] -> acc
         | line :: rest ->
             if Line.isBlank line then
-                let nextIndentedLine =
+                let nextIndentation =
                     rest
                     |> List.tryFind (Line.isBlank >> not)
+                    |> Option.map Line.countLeadingSpaces
 
-                match nextIndentedLine with
-                | Some nextLine when Line.countLeadingSpaces nextLine > currentIntendation && (List.isEmpty acc || inBlockScalar || canStartNestedBlockAfterPresentation ()) ->
-                    let nextIntendation = Line.countLeadingSpaces nextLine
-                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
+                match nextIndentation with
+                | Some nextIntendation when nextIntendation > currentIntendation && blockScalarHeaderBefore () ->
+                    let bodyElement, remaining = readBlockScalarBody currentIntendation lines
+                    loop remaining currentIntendation (bodyElement :: acc)
+                | Some nextIntendation when nextIntendation > currentIntendation && (List.isEmpty acc || canStartNestedBlockAfterPresentation ()) ->
                     let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation (line :: rest)
 
-                    let children = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
-                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
+                    let children = loop nextLevelLines nextIntendation [] |> List.rev
+                    loop currentLevelLines currentIntendation (Intendation children :: acc)
                 | _ ->
-                    loop rest currentIntendation inBlockScalar (Line("") :: acc)
+                    loop rest currentIntendation (Line("") :: acc)
             else
                 let nextIntendation = Line.countLeadingSpaces line
 
                 if nextIntendation = currentIntendation then
                     let lineText = stripIndent currentIntendation line
                     let lineEle = Line(lineText)
-                    loop rest currentIntendation inBlockScalar (lineEle :: acc)
+                    loop rest currentIntendation (lineEle :: acc)
+                elif nextIntendation > currentIntendation && blockScalarHeaderBefore () then
+                    let bodyElement, remaining = readBlockScalarBody currentIntendation lines
+                    loop remaining currentIntendation (bodyElement :: acc)
                 else
-                    let lineText =
-                        stripIndent nextIntendation line
-                    let lineEle = Line(lineText)
-                    let childInBlockScalar = inBlockScalar || nestedBlockScalarAfterPresentation ()
-                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation rest
+                    // The block starts with its first line, which can itself be a header,
+                    // so the recursion below processes that line too.
+                    let firstReversed, afterFirst = pushLineWithBody [] line rest
+                    let nextLevelLines, currentLevelLines = splitNestedBlock currentIntendation afterFirst
 
-                    let otherChildren = loop nextLevelLines nextIntendation childInBlockScalar [] |> List.rev
-                    let children = lineEle :: otherChildren
-                    loop currentLevelLines currentIntendation inBlockScalar (Intendation children :: acc)
+                    let children = loop (List.rev firstReversed @ nextLevelLines) nextIntendation [] |> List.rev
+                    loop currentLevelLines currentIntendation (Intendation children :: acc)
 
     let lines = content.Lines |> List.ofArray |> alignCommentLines
-    let ast = loop lines 0 false [] |> List.rev |> Level
+    let ast = loop lines 0 [] |> List.rev |> Level
 
     { AST = ast
       StringMap = content.StringMap

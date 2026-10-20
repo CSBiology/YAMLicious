@@ -55,16 +55,31 @@ let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list
     | _ ->
         None
 
+/// A block scalar header written directly after a sequence dash, such as `- |` or `- &a >-`.
+let private isSequenceBlockScalarHeader (value: string) =
+    let withoutComment, _ = Placeholder.splitTrailingComment value
+    let indicator = BlockScalar.stripProperties withoutComment
+    indicator.StartsWith("|") || indicator.StartsWith(">")
+
+/// Puts the value written after a sequence dash in front of the block that follows it. A block
+/// scalar header keeps that block as one Intendation because the body is a single unit.
+/// Flattening it would turn each body line into a node of its own.
+let private joinSequenceItemValue (value: string option) (block: PreprocessorElement list) =
+    match value with
+    | Some header when isSequenceBlockScalarHeader header ->
+        [PreprocessorElement.Line header; PreprocessorElement.Intendation block]
+    | Some v ->
+        PreprocessorElement.Line v :: block
+    | None ->
+        block
+
 let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorElement list list =
     match eles with
     | line::rest when isBlankLineElement line ->
         collectSequenceElements rest
     | SequenceMinusOpener v::Intendation yamlAstList::rest ->
         [
-            if v.Value.IsSome then
-                PreprocessorElement.Line v.Value.Value::yamlAstList
-            else
-                yamlAstList
+            joinSequenceItemValue v.Value yamlAstList
             yield! collectSequenceElements rest            
         ]
     | SequenceMinusOpener v::rest ->
@@ -165,23 +180,14 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let flattenBlockScalar (eles: PreprocessorElement list) : string list =
         flattenBlockScalarWithDepth 0 eles
 
-    let rec flattenBlockScalarContentWithDepth (depth: int) (eles: PreprocessorElement list) : string list =
+    /// Collects the lines of a block without adding indentation. A block scalar body arrives as one
+    /// flat block with only the header's indentation removed, so its lines keep their content spaces.
+    let rec collectContentLines (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
-            | Line s ->
-                let prefix =
-                    if s = "" then ""
-                    // Preprocessing strips one structural indent level when building
-                    // Intendation children. Rehydrate that baseline so explicit-indicator
-                    // deindent math can preserve leading content spaces.
-                    else System.String(' ', (depth + 1) * 2)
-                [prefix + restoreInlinePlaceholders s]
-            | Intendation children ->
-                flattenBlockScalarContentWithDepth (depth + 1) children
+            | Line s -> [restoreInlinePlaceholders s]
+            | Intendation children -> collectContentLines children
             | _ -> [])
-
-    let flattenBlockScalarContent (eles: PreprocessorElement list) : string list =
-        flattenBlockScalarContentWithDepth 0 eles
 
     let restoreScalarWithStyle (raw: string) =
         match tryParseExactPlaceholderIndex raw with
@@ -249,7 +255,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         let props = extractProperties handles headerWithoutComment
         props.Value.StartsWith("|") || props.Value.StartsWith(">")
 
-    let tryReadBlockScalar (rawHeader: string) (headerIndent: int) (baseCommentId: int option) (block: PreprocessorElement list) =
+    let tryReadBlockScalar (rawHeader: string) (baseCommentId: int option) (block: PreprocessorElement list) =
         let headerWithoutComment, headerCommentId = Placeholder.splitTrailingComment rawHeader
         let props = extractProperties handles headerWithoutComment
         let commentId =
@@ -263,8 +269,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | Some lineCommentId ->
                 failwithf "A comment line (#%s) ends a block scalar, so the more indented content after it is invalid." commentDict.[lineCommentId]
             | None -> ()
-            let lines = flattenBlockScalarContent block
-            let value = Syntax.BlockScalar.buildContent header.Style header.Chomp headerIndent header.Indent lines
+            let lines = collectContentLines block
+            // The body is already relative to the header, so the header indentation is 0 here.
+            let value = Syntax.BlockScalar.buildContent header.Style header.Chomp 0 header.Indent lines
             let comment = restoreCommentReplace commentDict commentId
             Some
                 {| Props = props
@@ -310,7 +317,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let tryCollapsePlainScalarContent (hasInlineFirstLine: bool) (block: PreprocessorElement list) (parsed: YAMLElement) =
         match tryGetPlainScalarSegments parsed with
         | Some (firstSegment :: _ as segments) ->
-            let rawBlockLines = flattenBlockScalarContent block
+            let rawBlockLines = collectContentLines block
             let expectedSegmentCount =
                 if hasInlineFirstLine then List.length segments - 1 else List.length segments
 
@@ -589,42 +596,13 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         //   My Key1: My Value1
         //   My Key2: My Value2
         //   My Key3: My Value3
-        | SequenceMinusOpener v::Intendation yamlAstList::rest0 when v.Value.IsSome && isBlockScalarHeaderCandidate v.Value.Value ->
-            match tryReadBlockScalar v.Value.Value v.Indent None yamlAstList with
-            | Some blockScalar ->
-                let sequenceElements, rest = splitSequenceItems rest0
-                let firstItem =
-                    YAMLElement.Object [
-                        YAMLElement.Value(
-                            YAMLContent.create(
-                                blockScalar.Value,
-                                ?comment = blockScalar.Comment,
-                                ?anchor = blockScalar.Props.Anchor,
-                                ?tag = blockScalar.Props.Tag,
-                                style = ScalarStyle.Block(blockScalar.Style, blockScalar.Chomp, blockScalar.Indent)
-                            )
-                        )
-                    ]
-                let current =
-                    YAMLElement.Sequence [
-                        firstItem
-                        for i in sequenceElements do
-                            readSequenceItem i
-                    ]
-                loopRead handles rest (current::acc)
-            | None ->
-                failwithf "Invalid sequence block scalar header: %s" v.Value.Value
         | SequenceMinusOpener v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let firstItem =
                 match v.Value |> Option.bind (fun value -> tryParseMultilineFlowFromSequenceItem value yamlAstList) with
                 | Some (node, openerCommentId, closerCommentId) ->
                     wrapFlowSequenceItem openerCommentId closerCommentId node
                 | None ->
-                    let objectList = 
-                        if v.Value.IsSome then
-                            PreprocessorElement.Line v.Value.Value::yamlAstList
-                        else
-                            yamlAstList
+                    let objectList = joinSequenceItemValue v.Value yamlAstList
                     let parsedFirstItem = loopRead handles objectList []
                     match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
                     | Some content -> YAMLElement.Object [YAMLElement.Value content]
@@ -819,11 +797,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | SequenceMinusOpener w::Intendation yamlAstList::tail ->
                 let c = restoreCommentReplace commentDict v.Comment
                 let keyContent = createScalarContent v.Key c
-                let objectList =
-                    if w.Value.IsSome then
-                        PreprocessorElement.Line w.Value.Value :: yamlAstList
-                    else
-                        yamlAstList
+                let objectList = joinSequenceItemValue w.Value yamlAstList
                 let sequenceElements, rest = splitSequenceItems tail
                 let seq =
                     YAMLElement.Sequence [
@@ -869,7 +843,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
-            match tryReadBlockScalar v.Value v.Indent None block with
+            match tryReadBlockScalar v.Value None block with
             | Some blockScalar ->
                 let keyContent = createScalarContent v.Key None
                 let current =
@@ -922,7 +896,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead handles rest (current::acc)
         // Root-level block scalar
         | YamlValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
-            match tryReadBlockScalar v.Value v.Indent v.Comment block with
+            match tryReadBlockScalar v.Value v.Comment block with
             | Some blockScalar ->
                 let current =
                     YAMLElement.Value(

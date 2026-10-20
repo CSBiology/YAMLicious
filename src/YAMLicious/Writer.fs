@@ -276,6 +276,17 @@ module Formatting =
         | _ ->
             None
 
+    /// An explicit indentation indicator fixes the content indentation at that many spaces beyond
+    /// the header, so such a body stays on the header's level and carries those spaces itself.
+    /// Without an indicator the body is nested one level, as for any other child.
+    let private mkBlockScalarBody (indent: int option) (lines: string list) =
+        match indent with
+        | Some spaces ->
+            let prefix = System.String(' ', spaces)
+            lines |> List.map (fun line -> PreprocessorElement.Line (if line = "" then line else prefix + line))
+        | None ->
+            [ PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line) ]
+
     let mkBlockScalarMapping (options: WriterOptions) (key: YAMLContent) (content: YAMLContent) =
         let style, chomp, indent = resolveBlockStyle options content
         let header = mkBlockHeader style chomp indent
@@ -284,7 +295,7 @@ module Formatting =
         let headerLine = mkMappingKey options key + " " + mkNodePrefix content + header |> appendComment content
         PreprocessorElement.Level [
             PreprocessorElement.Line headerLine
-            PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
+            yield! mkBlockScalarBody indent lines
         ]
 
     let mkBlockScalarSequenceItem (options: WriterOptions) (content: YAMLContent) =
@@ -295,7 +306,7 @@ module Formatting =
         let headerLine = "- " + mkNodePrefix content + header |> appendComment content
         PreprocessorElement.Level [
             PreprocessorElement.Line headerLine
-            PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
+            yield! mkBlockScalarBody indent lines
         ]
 
     let mkBlockScalarRoot (options: WriterOptions) (content: YAMLContent) =
@@ -306,7 +317,7 @@ module Formatting =
         let headerLine = mkNodePrefix content + header |> appendComment content
         PreprocessorElement.Level [
             PreprocessorElement.Line headerLine
-            PreprocessorElement.Intendation (lines |> List.map PreprocessorElement.Line)
+            yield! mkBlockScalarBody indent lines
         ]
 
 let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =

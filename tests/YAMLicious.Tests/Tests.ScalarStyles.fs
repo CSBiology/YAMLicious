@@ -10,6 +10,16 @@ let private expectSingleMappingValue (ast: YAMLElement) =
     | YAMLElement.Object [YAMLElement.Mapping(_, YAMLElement.Value value)] -> value
     | _ -> failwithf "Unexpected AST: %A" ast
 
+let private expectSingleSequenceItemValue (ast: YAMLElement) =
+    match ast with
+    | YAMLElement.Object [YAMLElement.Sequence [YAMLElement.Object [YAMLElement.Value value]]] -> value
+    | _ -> failwithf "Unexpected AST: %A" ast
+
+let private expectSingleRootValue (ast: YAMLElement) =
+    match ast with
+    | YAMLElement.Object [YAMLElement.Value value] -> value
+    | _ -> failwithf "Unexpected AST: %A" ast
+
 let Main =
   testList "Scalar Styles" [
     testCase "Normalization helper ignores scalar style metadata" <| fun _ ->
@@ -201,6 +211,34 @@ let Main =
         let value2 = expectSingleMappingValue ast2
         Expect.equal value2.Value value1.Value "Explicit-indent round-trip should not add leading spaces"
         Expect.equal ast2 ast1 "Explicit-indent round-trip should keep metadata and value"
+
+    testCase "Explicit indentation indicator round-trip keeps a sequence item scalar" <| fun _ ->
+        let yaml = "- |1\n  explicit\n"
+        let ast1 = Reader.read yaml
+        let value1 = expectSingleSequenceItemValue ast1
+        Expect.equal value1.Value " explicit\n" "Initial parse should keep the space beyond the indicator"
+        Expect.equal value1.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 1))) "Style should preserve explicit indent metadata"
+
+        let written = Writer.write ast1 None
+        Expect.trimEqual written yaml "The body should sit one space beyond the dash, as the indicator says"
+        let ast2 = Reader.read written
+        let value2 = expectSingleSequenceItemValue ast2
+        Expect.equal value2.Value value1.Value "Sequence item round-trip should not change the value"
+        Expect.equal ast2 ast1 "Sequence item round-trip should keep metadata and value"
+
+    testCase "Explicit indentation indicator round-trip keeps a root scalar" <| fun _ ->
+        let yaml = "|2\n    x\n"
+        let ast1 = Reader.read yaml
+        let value1 = expectSingleRootValue ast1
+        Expect.equal value1.Value "  x\n" "Initial parse should keep the spaces beyond the indicator"
+        Expect.equal value1.Style (Some (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, Some 2))) "Style should preserve explicit indent metadata"
+
+        let written = Writer.write ast1 None
+        Expect.trimEqual written yaml "The body should sit two spaces in, as the indicator says, plus the content spaces"
+        let ast2 = Reader.read written
+        let value2 = expectSingleRootValue ast2
+        Expect.equal value2.Value value1.Value "Root round-trip should not change the value"
+        Expect.equal ast2 ast1 "Root round-trip should keep metadata and value"
 
     testCase "Expression block scalar keeps quote delimiters and stays block style on write" <| fun _ ->
         let yaml = """expression: >
