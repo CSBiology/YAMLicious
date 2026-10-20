@@ -374,14 +374,6 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
         Expect.equal (blockIdsOf actual) [-1; 0; 0; -1] "the header opens a block"
         Expect.equal (stringsOf actual) [0, plainEntry "desc\n[bar"] "the scalar"
 
-    testCase "a flow mapping with a header-looking value opens no block" <| fun _ ->
-        let actual =
-            expectLines
-                "a: {b: |\n}\nc: 'x'\n"
-                "a: {b: |\n}\nc: <s f=0/>\n"
-                [code; code; code; blank]
-        Expect.equal (stringsOf actual) [0, single "x"] "strings"
-
     testCase "quoted bars in a multiline flow collection are strings and the block after it opens" <| fun _ ->
         let actual =
             expectLines
@@ -406,14 +398,6 @@ let private blockScannerTests = testList "Block scalars in the scanner" [
                 "a: !!seq [\n  <s f=0/>,\n  <s f=1/>\n]\nd: |\n  'x'\n"
                 [code; code; code; code; header; body; blank]
         Expect.equal (stringsOf actual) [0, single "b"; 1, dquote "c"] "strings"
-
-    testCase "text behind the bar means there is no header" <| fun _ ->
-        let actual =
-            expectLines
-                "a: | extra\n  \"q\"\n"
-                "a: | extra\n  <s f=0/>\n"
-                [code; code; blank]
-        Expect.equal (stringsOf actual) [0, dquote "q"] "the line below is not a body"
 
     testCase "line endings are normalized once" <| fun _ ->
         let actual = Persil.tokenize "a: 'x\r\n  y'\r\nb: |\r\n  \"q\"\rc: \"z\"\r\n"
@@ -567,9 +551,8 @@ let private quoteScannerTests = testList "Quotes in the scanner" [
         Expect.equal actual.StringMap.Count 0 "the comma is text, so the quote is text"
 
     testCase "a quote behind a brace in a plain scalar is text" <| fun _ ->
-        // yaml@2.6.1 rejects this input with BLOCK_AS_IMPLICIT_KEY, because the `: ` ends a plain scalar
-        // that would be an implicit key. The quote sits inside that plain scalar.
-        let actual = expectLines "k: x {\"a\": 1}" "k: x {\"a\": 1}" [code]
+        // yaml@2.6.1: {"k":"x {\"a\", \"b\"}"}
+        let actual = expectLines "k: x {\"a\", \"b\"}" "k: x {\"a\", \"b\"}" [code]
         Expect.equal actual.StringMap.Count 0 "no string"
 
     testCase "a quote in a single-line flow collection opens a scalar" <| fun _ ->
@@ -834,11 +817,124 @@ let private flowScannerTests = testList "Flow collections across lines in the sc
         // yaml@2.6.1: ["a"] and ["b"] as two documents
         let actual = expectLines "[a]\n---\n[b]" "[a]\n---\n[b]" [code; start; code]
         Expect.equal actual.StringMap.Count 0 "no string"
+]
 
-    testCase "a line inside a flow collection opens no block scalar" <| fun _ ->
-        // yaml@2.6.1 rejects the input with BAD_SCALAR_START
-        let actual = expectLines "[\n  |\n    x\n]" "[\n  |\n    x\n]" [code; code; code; code]
-        Expect.equal (blockIdsOf actual) [-1; -1; -1; -1] "no block"
+let private strictScannerTests = testList "Strict rejections in the scanner" [
+    /// Asserts that the scanner and the Reader reject the input and that the scanner names the rule.
+    let expectRejected (input: string) (message: string) =
+        Expect.stringContains (errorOf (fun () -> Persil.tokenize input |> ignore)) message $"The error of {input}"
+        Expect.throws (fun () -> Reader.read input |> ignore) $"Reader.read rejects {input}"
+
+    /// The value of the key `k`, read as a string.
+    let field (yaml: string) =
+        Reader.read yaml |> Decode.object (fun get -> get.Required.Field "k" Decode.string)
+
+    testCase "a bar or an angle bracket at a node start needs a valid block scalar header" <| fun _ ->
+        // yaml@2.6.1 rejects the first eight inputs with UNEXPECTED_TOKEN and `k: |# c` with MISSING_CHAR.
+        // It rejects the five inputs in a flow collection with BAD_SCALAR_START.
+        let header (line: int) (indicator: string) =
+            $"Line {line}: a block scalar header allows only an indentation digit and a chomping sign behind the `{indicator}`."
+        expectRejected "valueFrom: > 5" (header 1 ">")
+        expectRejected "a: | extra" (header 1 "|")
+        expectRejected "a: | extra\n  \"q\"\n" (header 1 "|")
+        expectRejected "k: |+ x" (header 1 "|")
+        expectRejected "k: >5x" (header 1 ">")
+        expectRejected "| x" (header 1 "|")
+        expectRejected "> x: y" (header 1 ">")
+        expectRejected "a: |\n  b\nc: > 5" (header 3 ">")
+        expectRejected "k: |# c" (header 1 "|")
+        let inFlow = "a block scalar cannot start inside a flow collection."
+        expectRejected "k: {\n  a: |\n}" $"Line 2: {inFlow}"
+        expectRejected "[ > 5 ]" $"Line 1: {inFlow}"
+        expectRejected "a: {b: |\n}\nc: 'x'\n" $"Line 1: {inFlow}"
+        expectRejected "[\n  |\n    x\n]" $"Line 2: {inFlow}"
+        expectRejected "{a: >}" $"Line 1: {inFlow}"
+
+    testCase "a valid block scalar header and a bar or an angle bracket inside text are no error" <| fun _ ->
+        // yaml@2.6.1: {"k":"a"}, ["a\n"], {"k":" a\n"}, {"k":"a\n"}, {"a\n":"b"}, "a\n", {"k":"a | b"}, {"k":"a > b"},
+        // ["a|b"], {"a":"x>y"}, ["a","|"] and {"k":">"}
+        for input in [ "k: >-\n  a\n"; "- |\n  a\n"; "k: |2\n   a\n"; "k: !!str |\n  a\n"; "? |\n  a\n: b\n"; "--- |\n  a\n" ] do
+            let actual = Persil.tokenize input
+            Expect.equal (tokenizedText actual) input $"The text of {input}"
+            Expect.equal (List.head (blockIdsOf actual)) 0 $"The first line of {input} opens a block"
+        let withComment = expectLines "k: | # c\n  a\n" "k: | <c f=0/>\n  a\n" [header; body; blank]
+        Expect.equal (blockIdsOf withComment) [0; 0; -1] "a comment behind the header"
+        for input in [ "k: a | b"; "k: a > b"; "[a|b]"; "{a: x>y}" ] do
+            let actual = expectLines input input [code]
+            Expect.equal (blockIdsOf actual) [-1] $"No block in {input}"
+        let quoted = expectLines "[a, '|']" "[a, <s f=0/>]" [code]
+        Expect.equal (stringsOf quoted) [0, single "|"] "a quoted bar in a flow collection"
+        Expect.equal (field "k: \">\"") ">" "a quoted angle bracket"
+        Expect.equal (field "k: >-\n  a\n") "a" "a folded block scalar"
+
+    testCase "a closer without an open flow collection, a comma or a hash at a node start is an error" <| fun _ ->
+        // yaml@2.6.1 rejects the six inputs with a closer with UNEXPECTED_TOKEN, `k: , a` and `- ,` with BAD_SCALAR_START,
+        // the three inputs with a hash with MISSING_CHAR and the four inputs with a dash in a flow collection with BLOCK_IN_FLOW
+        let closes (line: int) (closer: string) = $"Line {line}: `{closer}` closes no flow collection."
+        expectRejected "k: ]" (closes 1 "]")
+        expectRejected "k: a\n]" (closes 2 "]")
+        expectRejected "k: }" (closes 1 "}")
+        expectRejected "[a]]" (closes 1 "]")
+        expectRejected "k: {a}}" (closes 1 "}")
+        expectRejected "- ]" (closes 1 "]")
+        let cannotStart (character: string) = $"Line 1: a plain scalar cannot start with `{character}`."
+        expectRejected "k: , a" (cannotStart ",")
+        expectRejected "- ," (cannotStart ",")
+        expectRejected "[#a]" (cannotStart "#")
+        expectRejected "[a,#b]" (cannotStart "#")
+        expectRejected "{#a: 1}" (cannotStart "#")
+        for input in [ "[- a]"; "[-]"; "{a: -}"; "[a, -]" ] do
+            expectRejected input "Line 1: inside a flow collection a `-` needs a plain character behind it."
+
+    testCase "an indicator inside a plain scalar or behind a closed flow collection is no error" <| fun _ ->
+        // yaml@2.6.1: {"k":"a]"}, {"k":"a}"}, {"k":"a, b"}, {"k":"-x"}, {"k":"?x"}, {"k":":x"}, [], ["a"], {"a":1}, [[]],
+        // {"k":{}}, {"k":["a"]}, ["-x"] and ["a",-1]
+        for input in [ "k: a]"; "k: a}"; "k: a, b"; "k: -x"; "k: ?x"; "k: :x"; "[]"; "[a,]"; "{a: 1,}"; "[[]]"; "k: {}"; "k: [a, ]"; "[-x]"; "[a, -1]" ] do
+            let actual = expectLines input input [code]
+            Expect.equal actual.StringMap.Count 0 $"no string in {input}"
+        Expect.equal (field "k: a]") "a]" "a closer inside a plain scalar"
+        Expect.equal (field "k: a, b") "a, b" "a comma inside a plain scalar"
+        Expect.equal (field "k: -x") "-x" "a dash that starts a plain scalar"
+        Expect.equal (field "k: :x") ":x" "a colon that starts a plain scalar"
+
+    testCase "a tab in the indentation or between an indicator and a block collection is an error" <| fun _ ->
+        // yaml@2.6.1 rejects all fifteen inputs. Fourteen get TAB_AS_INDENT, and `k: a\n\tb`, `k:\n\tv` and `k: a\n\n\tb` get
+        // MISSING_CHAR as well. `- a\n\tb` gets UNEXPECTED_TOKEN.
+        for (input, line) in [ ("k: a\n\tb", 2); ("\tk: v", 1); ("\tv", 1); ("a: b\n# c\n\tc: d", 3); ("k:\n\tv", 2); ("- a\n\tb", 2); ("k:\n  \ta: b", 2); ("k: a\n\n\tb", 3) ] do
+            expectRejected input $"Line {line}: a tab cannot be part of the indentation."
+        for (input, line) in [ ("-\tk: v", 1); ("- \tk: v", 1); ("-\t- a", 1); ("?\t- a", 1); ("?\tk: v", 1); ("k:\n  -\tk: v", 2); ("- - \ta: b", 1) ] do
+            expectRejected input $"Line {line}: a tab cannot separate a block collection from the indicator in front of it."
+
+    testCase "a tab as separation or inside a scalar is no error" <| fun _ ->
+        // yaml@2.6.1: {"k":"v"} for the first two inputs, {"k":"a\tb"} three times, {"k":"a\tb\n\tc\n"} and ["v"] twice.
+        // The inputs in the loop give {"k":"a b"}, [["a"]], {"k":null}, {"a":"b","c":"d"}, "a b", ["a","b"] and "b".
+        Expect.equal (field "k:\tv") "v" "a tab behind the colon"
+        Expect.equal (field "k:\n  \tv") "v" "a tab behind the indentation of a value"
+        Expect.equal (field "k: a\tb") "a\tb" "a tab inside a plain scalar"
+        Expect.equal (field "k: 'a\tb'") "a\tb" "a tab inside a single-quoted scalar"
+        Expect.equal (field "k: \"a\tb\"") "a\tb" "a tab inside a double-quoted scalar"
+        Expect.equal (field "k: |\n  a\tb\n  \tc\n") "a\tb\n\tc\n" "a tab inside a block scalar body"
+        Expect.equal (Reader.read "-\tv" |> Decode.list Decode.string) [ "v" ] "a tab behind a dash"
+        Expect.equal (Reader.read "-\n  \tv" |> Decode.list Decode.string) [ "v" ] "a tab behind the indentation of an item"
+        for input in [ "k: a\n  \tb"; "- \t[a]"; "?\tk"; "a: b\n\t# c\nc: d"; "a\n\tb"; "\t[a, b]"; "  \tb" ] do
+            Persil.tokenize input |> ignore
+
+    testCase "a colon followed by a blank inside a plain scalar value is an error" <| fun _ ->
+        // yaml@2.6.1 rejects all seven inputs with BLOCK_AS_IMPLICIT_KEY, and the first two also with UNEXPECTED_TOKEN
+        for input in [ "valueFrom: $(inputs.a ? 'x: y' : \"z\")"; "valueFrom: $(inputs.a ? 'x' : 'y')"; "k: a: b"; "k: a:"; "k: x {\"a\": 1}"; "k: a: b: c"; "- k: a: b" ] do
+            expectRejected input "Line 1: a plain scalar cannot contain `: `."
+
+    testCase "a colon inside a word, a quoted scalar or a comment, and a compact mapping are no error" <| fun _ ->
+        // yaml@2.6.1: {"k":"a:b"}, {"k":"http://x"}, {"k":"a: b"} twice, {"k":"a"} and {"k":"a :b"}. The compact mappings read as
+        // [{"k":"v"}], [{"a":null}], {"{ a: b }":null}, [[{"a":"b"}]], {"a":{"b":"c"}} and {"k":{"a":"b"}}.
+        Expect.equal (field "k: a:b") "a:b" "a colon inside a word"
+        Expect.equal (field "k: http://x") "http://x" "a URL"
+        Expect.equal (field "k: \"a: b\"") "a: b" "a double-quoted scalar"
+        Expect.equal (field "k: 'a: b'") "a: b" "a single-quoted scalar"
+        Expect.equal (field "k: a #c: d") "a" "a colon inside a comment"
+        Expect.equal (field "k: a :b") "a :b" "a colon behind a blank and in front of a word"
+        for input in [ "- k: v"; "- ? a"; "? a: b"; "- - a: b"; "? a\n: b: c\n"; "k: {a: b}" ] do
+            Persil.tokenize input |> ignore
 ]
 
 let private pipelineTests = testList "Persil.pipeline" [
@@ -1318,6 +1414,7 @@ let Main = testList "Tokenizer" [
     quoteScannerTests
     continuationScannerTests
     flowScannerTests
+    strictScannerTests
     pipelineTests
     documentsTests
     lineDataTests

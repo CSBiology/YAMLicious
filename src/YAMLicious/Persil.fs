@@ -178,6 +178,9 @@ type private Scanner(s: string) =
     // scalar, so a line that is deeper than its owner can neither continue it nor start a node.
     let mutable endedOwner = NoPlain
     let mutable endedLine = 0
+    // True once the line holds the colon of an implicit key outside a flow collection. A plain scalar that
+    // starts behind it is a value, and a value cannot hold `: `.
+    let mutable keySeparated = false
 
     // The block scalar in progress. The content indentation stays Unresolved until the first
     // body line with more than spaces sets it.
@@ -295,20 +298,38 @@ type private Scanner(s: string) =
     let nextIsBlank (k: int) =
         k >= n || s.[k] = ' ' || s.[k] = '\t' || s.[k] = '\n'
 
+    /// True when a token inside a flow collection ends at `k`: at a blank, at a flow indicator or at the end.
+    let endsFlowToken (k: int) =
+        nextIsBlank k || s.[k] = ',' || s.[k] = '[' || s.[k] = ']' || s.[k] = '{' || s.[k] = '}'
+
     /// The physical line of the cursor, counted from 1.
     let physicalLine () = records.Count + 1 + foldedBreaks
 
-    /// Notes what the character `c` at a node start begins. The indicators `[ ] { } , # & * ! | >` and
-    /// the quotes cannot start a plain scalar, so a node that begins with one is no open plain scalar.
-    /// The reserved `%`, `@` and backquote begin no node at all, so they are an error.
+    /// Notes what the character `c` at a node start begins. A plain scalar cannot start with an indicator,
+    /// so a node that begins with an alias, a quote or a block scalar indicator is no open plain scalar.
+    /// The reserved `%`, `@` and backquote begin no node at all. A comma outside a flow collection and a
+    /// hash that starts no comment begin none either, so each of them is an error. The other indicators
+    /// never get here, because a flow collection, a closer, a property and a quoted scalar each have a
+    /// path of their own.
     let startPlain (c: char) =
-        if c = '%' || c = '@' || c = '`' then
+        match c with
+        | ',' | '#' | '%' | '@' | '`' ->
             failwithf "Line %d: a plain scalar cannot start with `%s`." (physicalLine ()) (string c)
-        plainOpen <-
-            match c with
-            | '[' | ']' | '{' | '}' | ',' | '#' | '&' | '*' | '!' | '|' | '>' | '\'' | '"' -> false
-            | _ -> true
-        if plainOpen then
+        | '|' | '>' ->
+            if flowOpeners.Count > 0 then
+                failwithf "Line %d: a block scalar cannot start inside a flow collection." (physicalLine ())
+            // The header runs to the line break or to a comment, and nothing but an indentation digit and a
+            // chomping sign may follow the indicator.
+            let mutable stop = i
+            while stop < n && s.[stop] <> NewLineChar && not (s.[stop] = '#' && CommentMarker.startsAt s stop) do
+                stop <- stop + 1
+            if Option.isNone (BlockScalar.parseHeader (copyRange i stop)) then
+                failwithf "Line %d: a block scalar header allows only an indentation digit and a chomping sign behind the `%s`." (physicalLine ()) (string c)
+            plainOpen <- false
+        | '*' | '\'' | '"' ->
+            plainOpen <- false
+        | _ ->
+            plainOpen <- true
             plainStartPos <- line.Length
             plainStartSrc <- i
             plainStringMark <- strings.Count
@@ -433,14 +454,27 @@ type private Scanner(s: string) =
         let mutable opens = NoPlain
         if structural then
             let indent = Line.countLeadingSpaces text
+            let code = text.Substring(0, codeEnd)
+            let value = LineValue.find code
+            // A tab never indents a block node. It may separate the spaces of the indentation from a flow node,
+            // as in the line `  <tab>v` behind `k:`. That node must be the value of the node in front of it,
+            // so the spaces reach deeper than its owner. At the root a tab alone is enough for a flow collection.
+            if Line.hasTabIndent text then
+                let first = LineValue.skipBlanks text 0
+                let startsFlowCollection = first < text.Length && (text.[first] = '[' || text.[first] = '{')
+                let isSeparation =
+                    value.Bare
+                    && (if owners.Count = 0 then indent > 0 || startsFlowCollection else owners.[owners.Count - 1] < indent)
+                if not isSeparation then
+                    failwithf "Line %d: a tab cannot be part of the indentation." lineNumber
+            if LineValue.hasTabBeforeCollection code then
+                failwithf "Line %d: a tab cannot separate a block collection from the indicator in front of it." lineNumber
             if endedOwner <> NoPlain then
                 if indent > endedOwner then
                     failwithf "Line %d: a comment ended the plain scalar on line %d, so this more indented line is invalid." lineNumber endedLine
                 endedOwner <- NoPlain
             while owners.Count > 0 && owners.[owners.Count - 1] >= indent do
                 owners.RemoveAt(owners.Count - 1)
-            let code = text.Substring(0, codeEnd)
-            let value = LineValue.find code
             let parent = if owners.Count > 0 then owners.[owners.Count - 1] else RootOwner
             // A line of properties alone is a pending property, and the value behind it has the parent as its owner.
             if not (value.Bare && value.Start >= code.Length) then owners.Add value.Owner
@@ -660,12 +694,15 @@ type private Scanner(s: string) =
                     else
                         appendPlain c
                 | ']' | '}' ->
-                    let closes = flowOpeners.Count > 0
-                    if closes then
+                    // Inside a plain scalar a closer is text, as in `a]`. Anywhere else it needs an open flow collection.
+                    if flowOpeners.Count > 0 then
                         closeFlow c
-                        plainOpen <- false
-                    appendPlain c
-                    if closes then tokenEnd <- i
+                        appendSeparator c false
+                        tokenEnd <- i
+                    elif plainOpen then
+                        appendPlain c
+                    else
+                        failwithf "Line %d: `%s` closes no flow collection." (physicalLine ()) (string c)
                 | ',' ->
                     if flowOpeners.Count > 0 then appendSeparator c true else appendPlain c
                 | '<' ->
@@ -673,9 +710,21 @@ type private Scanner(s: string) =
                     if stop > 0 then commitLiteralPlaceholder stop else appendPlain c
                 | ':' ->
                     // In a flow collection a colon needs no blank behind it, as in `{"a":"b"}`.
-                    if flowOpeners.Count > 0 || nextIsBlank (i + 1) then appendSeparator c true else appendPlain c
+                    if flowOpeners.Count > 0 then
+                        appendSeparator c true
+                    elif nextIsBlank (i + 1) then
+                        // The first colon ends the key. A plain scalar behind it is a value and ends at the line break.
+                        if plainOpen && keySeparated then
+                            failwithf "Line %d: a plain scalar cannot contain `: `." (physicalLine ())
+                        if not atNodeStart then keySeparated <- true
+                        appendSeparator c true
+                    else
+                        appendPlain c
                 | '-' | '?' ->
                     // An indicator needs a blank behind it. Without one the character begins a plain scalar.
+                    // A flow collection holds no block sequence, so a dash there needs a plain character behind it.
+                    if c = '-' && atNodeStart && flowOpeners.Count > 0 && endsFlowToken (i + 1) then
+                        failwithf "Line %d: inside a flow collection a `-` needs a plain character behind it." (physicalLine ())
                     if atNodeStart && nextIsBlank (i + 1) then appendSeparator c true else appendPlain c
                 | '!' | '&' ->
                     if atNodeStart then
@@ -699,6 +748,7 @@ type private Scanner(s: string) =
         lineComment <- NoComment
         codeLength <- -1
         plainOpen <- false
+        keySeparated <- false
         startedInFlow <- flowOpeners.Count > 0
         if not startedInFlow then atNodeStart <- true
 

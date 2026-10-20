@@ -20,6 +20,11 @@ module Line =
     let isSpacesOnly (line: string) =
         countLeadingSpaces line = line.Length
 
+    /// True when a tab follows the leading spaces, so the indentation of the line holds a tab.
+    let hasTabIndent (line: string) =
+        let spaces = countLeadingSpaces line
+        spaces < line.Length && line.[spaces] = '\t'
+
 module CommentMarker =
 
     /// YAML 1.2.2 [s-b-comment]: `#` starts a comment only at the start of a line or after
@@ -128,6 +133,19 @@ module LineValue =
     let private isEntryIndicator (s: string) (i: int) =
         (s.[i] = '-' || s.[i] = '?' || s.[i] = ':') && (i + 1 >= s.Length || isBlankChar s.[i + 1])
 
+    /// The index of the first `:` from `start` on that a blank or the end of the line follows, or the length
+    /// of the line. That colon separates an implicit key from its value. A colon inside a verbatim tag or a
+    /// plain word such as `a:b` does not count.
+    let private keyColon (line: string) (start: int) =
+        let mutable q = start
+        while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
+            q <- q + 1
+        q
+
+    /// True when a flow collection or a block scalar header starts at `p`. `find` reads no implicit key for it.
+    let private startsKeylessNode (line: string) (p: int) =
+        p < line.Length && (line.[p] = '[' || line.[p] = '{' || line.[p] = '|' || line.[p] = '>')
+
     /// Where the value of a line starts and who owns it. `Start` is the index behind the entry
     /// indicators, the key and the properties, or the length of the line when nothing follows them.
     type Found =
@@ -161,19 +179,34 @@ module LineValue =
         let keyColumn = if hasIndicator then p else owner
         p <- skipProperties line p
 
-        let startsNode = p < line.Length && (line.[p] = '[' || line.[p] = '{' || line.[p] = '|' || line.[p] = '>')
-        if p < line.Length && not startsNode then
-            // The first `:` followed by a blank or the end of the line separates a key from its value.
-            // A colon inside a verbatim tag or a plain word such as `a:b` does not count.
-            let mutable q = p
-            while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
-                q <- q + 1
+        if p < line.Length && not (startsKeylessNode line p) then
+            let q = keyColon line p
             if q < line.Length then
                 { Start = skipProperties line (skipBlanks line (q + 1)); Owner = keyColumn; Bare = false }
             else
                 { Start = p; Owner = owner; Bare = not hasIndicator }
         else
             { Start = p; Owner = owner; Bare = not hasIndicator }
+
+    /// True when a tab stands between an entry indicator and a block collection that starts behind it on the
+    /// same line, as in `-\tk: v` or `- \t- a`. YAML 1.2.2 allows only spaces there. A tab in front of a flow
+    /// node, as in `-\tv`, is separation and stays valid. Like `find`, it expects quoted scalars as
+    /// placeholders and no comment.
+    let hasTabBeforeCollection (line: string) : bool =
+        let mutable p = skipBlanks line 0
+        let mutable found = false
+        while not found && p < line.Length && isEntryIndicator line p do
+            let next = skipBlanks line (p + 1)
+            let mutable tabbed = false
+            for k in p + 1 .. next - 1 do
+                if line.[k] = '\t' then tabbed <- true
+            let node = skipProperties line next
+            let startsCollection =
+                node < line.Length
+                && (isEntryIndicator line node || (not (startsKeylessNode line node) && keyColon line node < line.Length))
+            found <- tabbed && startsCollection
+            p <- next
+        found
 
 module BlockScalar =
 
