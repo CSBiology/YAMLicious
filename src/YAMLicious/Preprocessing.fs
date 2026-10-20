@@ -41,8 +41,8 @@ let private lastNodeIndent (lines: string list) =
         | line :: rest ->
             let lineIndent = Line.countLeadingSpaces line
             match BlockScalar.tryParseHeaderLine line with
-            | Some header ->
-                let _, afterBody = takeBlockScalarBody lineIndent header.Indent rest
+            | Some found ->
+                let _, afterBody = takeBlockScalarBody found.Baseline found.Header.Indent rest
                 loop afterBody lineIndent
             | None -> loop rest lineIndent
 
@@ -107,8 +107,8 @@ let private readBlockScalarBody (headerIndent: int) (indicator: int option) (lin
 /// so an enclosing block never separates the header from the body or from its trailing blank lines.
 let private pushLineWithBody (acc: string list) (line: string) (rest: string list) =
     match BlockScalar.tryParseHeaderLine line with
-    | Some header ->
-        let body, remaining = takeBlockScalarBody (Line.countLeadingSpaces line) header.Indent rest
+    | Some found ->
+        let body, remaining = takeBlockScalarBody found.Baseline found.Header.Indent rest
         List.rev body @ (line :: acc), remaining
     | None ->
         line :: acc, rest
@@ -148,8 +148,9 @@ let write (rootElement: PreprocessorElement, fconfig: (Config -> Config) option)
     loop rootElement sb config
     sb.ToString()
 
-let read (yamlStr: string) =
-    let content = Persil.pipeline yamlStr
+/// Builds the AST from lines that the scanner already tokenized. Reader.readDocuments passes the
+/// slices of one tokenized input here, so no text is tokenized twice.
+let internal readPrepared (content: Persil.PreparedYaml) =
 
     let stripIndent (indent: int) (line: string) =
         if indent <= 0 then line
@@ -178,7 +179,7 @@ let read (yamlStr: string) =
 
         let blockScalarHeaderBefore () =
             match previousContentLine () with
-            | Some (Line line) -> BlockScalar.tryParseHeaderLine line
+            | Some (Line line) -> BlockScalar.tryParseHeaderLine line |> Option.map (fun found -> found.Header)
             | _ -> None
 
         match lines with
@@ -230,7 +231,11 @@ let read (yamlStr: string) =
                         let children = loop (List.rev firstReversed @ nextLevelLines) nextIntendation [] |> List.rev
                         loop currentLevelLines currentIntendation (Intendation children :: acc)
 
-    let lines = content.Lines |> List.ofArray |> alignCommentLines
+    let lines =
+        content.Lines
+        |> Array.map (fun line -> line.Text)
+        |> List.ofArray
+        |> alignCommentLines
     let ast = loop lines 0 [] |> List.rev |> Level
 
     { AST = ast
@@ -238,6 +243,9 @@ let read (yamlStr: string) =
       CommentMap = content.CommentMap
       YAMLVersion = content.YAMLVersion
       TagHandles = content.TagHandles }
+
+let read (yamlStr: string) =
+    readPrepared (Persil.pipeline yamlStr)
 
 let mkLine (line: string) = Line line
 

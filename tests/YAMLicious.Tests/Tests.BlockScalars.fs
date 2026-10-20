@@ -251,7 +251,7 @@ let Main =
         let actual = Reader.read yaml
         Expect.equal actual expected "Quoted delimiters inside block scalars should remain literal content"
 
-    testCase "Block scalar keeps quote delimiters in placeholders" <| fun _ ->
+    testCase "Block scalar keeps quote delimiters on every body line" <| fun _ ->
         let yaml = """expression: >
   ${ return (function() {
     var allowedFields = ['class', 'basename'];

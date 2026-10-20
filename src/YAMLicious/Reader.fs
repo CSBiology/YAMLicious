@@ -176,10 +176,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
     /// Collects the lines of a block without adding indentation. A block scalar body arrives as one
     /// flat block with only the header's indentation removed, so its lines keep their content spaces.
+    /// The scanner copies a body as it is and puts no placeholder into it, so a text such as `<s f=0/>`
+    /// there is content. The lines stay verbatim and nothing restores a placeholder in them.
     let rec collectContentLines (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
-            | Line s -> [restoreInlinePlaceholders s]
+            | Line s -> [s]
             | Intendation children -> collectContentLines children
             | _ -> [])
 
@@ -931,58 +933,90 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
     loopRead handles yamlList []
 
-let read (yaml: string) =
-    let ast = Preprocessing.read yaml
+let private readAst (ast: Preprocessor) =
     match ast.AST with
     | Level lvl ->
         tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles
     | _ -> failwith "Not a root!"
 
-let readDocuments (yaml: string) : YAMLElement list =
-    let normalized = Line.normalizeNewlines yaml
-    let lines = normalized.Split([|'\n'|], System.StringSplitOptions.None) |> Array.toList
+let read (yaml: string) =
+    readAst (Preprocessing.read yaml)
 
-    let appendCurrentDocument (currentDoc: string list) (docs: string list list) =
-        if List.isEmpty currentDoc then docs else (List.rev currentDoc)::docs
+let private flushDocument (documents: ResizeArray<Persil.TokenLine[]>) (current: ResizeArray<Persil.TokenLine>) =
+    if current.Count > 0 then
+        documents.Add(current.ToArray())
+        current.Clear()
 
-    // A document marker counts only at column 0. A block scalar body is blank or indented, so
-    // its lines never look like a marker and need no special handling here.
-    let rec splitDocuments (remaining: string list) (currentDoc: string list) (docs: string list list) =
-        match remaining with
-        | [] ->
-            appendCurrentDocument currentDoc docs |> List.rev
-        | line::rest when Document.isTopLevelMarker Document.isStart line ->
-            let inlineContent = Document.tryInlineContentAfterStartMarker line
-            if List.isEmpty currentDoc || Document.isDirectivePreludeOnly currentDoc then
-                let preludeDirectives =
-                    currentDoc
-                    |> List.filter (fun l -> l.TrimStart().StartsWith("%"))
-                let nextDoc =
-                    match inlineContent with
-                    | Some content -> content::preludeDirectives
-                    | None -> preludeDirectives
-                splitDocuments rest nextDoc docs
+/// The comments and blank lines before the `---` of a document are not part of its content. The
+/// directives stay, because they apply to the document.
+let private keepDirectives (current: ResizeArray<Persil.TokenLine>) =
+    let directives = ResizeArray<Persil.TokenLine>()
+    for line in current do
+        if line.Kind = Persil.LineKind.Directive then
+            directives.Add line
+    current.Clear()
+    current.AddRange directives
+
+/// Splits the lines of one tokenized input at the document markers that the scanner classified.
+/// The scanner recognizes a marker only at column 0 and keeps quoted scalars from crossing it,
+/// so a marker-like line in a scalar or a block scalar body never shows up as a marker here.
+///
+/// A `---` ends the current document when that document has content or has already started with its
+/// own `---`. Otherwise it starts the document that the lines before it introduce, which then
+/// drops its comments. A `---` that only follows directives keeps them for the next document, and
+/// a `...` always ends the document.
+let private splitDocuments (lines: Persil.TokenLine[]) =
+    let documents = ResizeArray<Persil.TokenLine[]>()
+    let current = ResizeArray<Persil.TokenLine>()
+    let mutable started = false
+    let mutable hasContent = false
+    let mutable hasDirective = false
+
+    for line in lines do
+        match line.Kind with
+        | Persil.LineKind.DocumentEnd ->
+            flushDocument documents current
+            started <- false
+            hasContent <- false
+            hasDirective <- false
+        | Persil.LineKind.DocumentStart ->
+            if hasContent || (started && not hasDirective) then
+                flushDocument documents current
+                hasDirective <- false
             else
-                let docs' = appendCurrentDocument currentDoc docs
-                let nextDoc =
-                    match inlineContent with
-                    | Some content -> [content]
-                    | None -> []
-                splitDocuments rest nextDoc docs'
-        | line::rest when Document.isTopLevelMarker Document.isEnd line ->
-            let docs' = appendCurrentDocument currentDoc docs
-            splitDocuments rest [] docs'
-        | line::rest ->
-            splitDocuments rest (line::currentDoc) docs
+                keepDirectives current
+            started <- true
+            hasContent <- false
+            match Persil.tryInlineContent line with
+            | Some inlineLine ->
+                if inlineLine.Kind <> Persil.LineKind.CommentOnly then
+                    current.Add inlineLine
+                    hasContent <- true
+            | None -> ()
+        | Persil.LineKind.Directive ->
+            current.Add(Persil.withoutTrailingComment line)
+            hasDirective <- true
+        | Persil.LineKind.Code
+        | Persil.LineKind.BlockHeader ->
+            current.Add line
+            hasContent <- true
+        | Persil.LineKind.BlockBody
+        | Persil.LineKind.CommentOnly
+        | Persil.LineKind.Blank ->
+            current.Add line
 
-    let documentTexts =
-        splitDocuments lines [] []
-        |> List.filter (fun doc ->
-            doc |> List.exists (fun l -> l.Trim() <> "")
-        )
+    flushDocument documents current
+    documents
 
-    documentTexts
-    |> List.map (fun docLines ->
-        let docText = String.concat "\n" docLines
-        read docText
+let readDocuments (yaml: string) : YAMLElement list =
+    let tokenized = Persil.tokenize yaml
+    splitDocuments tokenized.Lines
+    |> Seq.filter (fun document ->
+        document |> Array.exists (fun line -> line.Kind <> Persil.LineKind.Blank)
     )
+    |> Seq.map (fun document ->
+        Persil.prepare tokenized document
+        |> Preprocessing.readPrepared
+        |> readAst
+    )
+    |> List.ofSeq

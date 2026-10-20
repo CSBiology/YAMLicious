@@ -269,4 +269,120 @@ next: v"""
             ]
         ]
         Expect.equal actual expected "Only standalone ... markers should terminate a document"
+
+    testCase "Leading comments and directives belong to the document they introduce" <| fun _ ->
+        // yaml@2.6.1 reads each of the three inputs as one document, {"a":1}
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("a"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                )
+            ]
+        ]
+        for yaml in [ "# lead\n%YAML 1.2\n---\na: 1\n"; "%YAML 1.2\n# lead\n---\na: 1\n"; "# lead\n---\na: 1\n" ] do
+            Expect.equal (Reader.readDocuments yaml) expected $"The prelude of {yaml} should not become a document of its own."
+
+    testCase "A comment between an end marker and the next start marker is no document" <| fun _ ->
+        // yaml@2.6.1: two documents, {"a":1} and {"b":2}
+        let yaml = "a: 1\n...\n# c\n---\nb: 2\n"
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("a"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("b"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2"))]
+                )
+            ]
+        ]
+        Expect.equal (Reader.readDocuments yaml) expected "The comment is the prelude of the second document"
+
+    testCase "A comment behind a directive does not become content" <| fun _ ->
+        // yaml@2.6.1: {"a":"x"}
+        let yaml = "%YAML 1.2 # c\n---\na: 'x'\n"
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("a"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x", style=ScalarStyle.SingleQuoted))]
+                )
+            ]
+        ]
+        Expect.equal (Reader.readDocuments yaml) expected "Only the directive applies to the document"
+
+    testCase "Multiline quotes and block scalars stay inside their own documents" <| fun _ ->
+        // yaml@2.6.1: {"a":"x y"}, {"b":"\"hi\"\n"} and {"c":"z"}
+        let yaml = "a: 'x\n  y'\n---\nb: |\n  \"hi\"\n---\nc: \"z\"\n"
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("a"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x y", style=ScalarStyle.SingleQuoted))]
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("b"),
+                    YAMLElement.Value(
+                        YAMLContent.create(
+                            "\"hi\"\n",
+                            style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                        )
+                    )
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("c"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("z", style=ScalarStyle.DoubleQuoted))]
+                )
+            ]
+        ]
+        Expect.equal (Reader.readDocuments yaml) expected "Each document should keep its own strings"
+
+    testCase "Block scalars behind start markers" <| fun _ ->
+        // yaml@2.6.1: "x\n" and "y\n"
+        let yaml = "--- !!str |\n  x\n--- &a |\n  y\n"
+        let expected = [
+            YAMLElement.Object [
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "x\n",
+                        tag="tag:yaml.org,2002:str",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            ]
+            YAMLElement.Object [
+                YAMLElement.Value(
+                    YAMLContent.create(
+                        "y\n",
+                        anchor="a",
+                        style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)
+                    )
+                )
+            ]
+        ]
+        Expect.equal (Reader.readDocuments yaml) expected "The header after a start marker should open a block scalar"
+
+    testCase "A document marker inside a quoted scalar ends the document" <| fun _ ->
+        // yaml@2.6.1 rejects the input. A quote never crosses a marker, so the marker still splits
+        // the documents and the unclosed quote stays plain text.
+        let yaml = "a: 'x\n---\nb: 1\n"
+        let actual = Reader.readDocuments yaml
+        Expect.equal actual.Length 2 "The marker should split the input into two documents"
+        Expect.equal
+            actual.[1]
+            (YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create("b"),
+                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
+                )
+            ])
+            "The second document should be unaffected by the quote before the marker"
 ]

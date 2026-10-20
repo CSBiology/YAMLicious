@@ -10,7 +10,10 @@ module Line =
         s.Replace("\r\n", "\n").Replace("\r", "\n")
 
     let countLeadingSpaces (line: string) =
-        line |> Seq.takeWhile (fun c -> c = ' ') |> Seq.length
+        let mutable count = 0
+        while count < line.Length && line.[count] = ' ' do
+            count <- count + 1
+        count
 
     let isBlank (line: string) =
         line.Trim() = ""
@@ -79,29 +82,28 @@ module Document =
 
     let isEnd line = isMarker "..." line
 
-    let isTopLevelMarker (markerCheck: string -> bool) (line: string) =
-        Line.countLeadingSpaces line = 0 && markerCheck line
+module Property =
 
-    let tryInlineContentAfterStartMarker (line: string) =
-        let trimmed = line.TrimStart()
-        if not (trimmed.StartsWith("---")) then
-            None
+    /// The index after the property token that starts at `start`, a `!` tag or a `&` anchor. A token
+    /// ends at whitespace. A shorthand tag or an anchor also ends at a flow indicator or a quote,
+    /// because neither can be part of a tag handle or an anchor name. A verbatim tag `!<...>` runs to
+    /// its closing `>` and may contain `:` and `,`, as in `!<tag:yaml.org,2002:str>`.
+    let endIndex (s: string) (start: int) =
+        let isSpace (c: char) =
+            c = ' ' || c = '\t' || c = '\n' || c = '\r'
+
+        let endsShorthand (c: char) =
+            isSpace c || c = ',' || c = '[' || c = ']' || c = '{' || c = '}' || c = '\'' || c = '"'
+
+        let mutable i = start + 1
+        if s.[start] = '!' && i < s.Length && s.[i] = '<' then
+            while i < s.Length && s.[i] <> '>' && not (isSpace s.[i]) do
+                i <- i + 1
+            if i < s.Length && s.[i] = '>' then i + 1 else i
         else
-            let rest = trimmed.Substring(3).TrimStart()
-            if String.IsNullOrWhiteSpace(rest) || rest.StartsWith("#") then
-                None
-            else
-                Some rest
-
-    let isDirectivePreludeLine (line: string) =
-        let t = line.TrimStart()
-        t = "" || t.StartsWith("%") || t.StartsWith("#")
-
-    let isDirectivePreludeOnly (lines: string list) =
-        let hasDirective =
-            lines |> List.exists (fun line -> line.TrimStart().StartsWith("%"))
-
-        hasDirective && (lines |> List.forall isDirectivePreludeLine)
+            while i < s.Length && not (endsShorthand s.[i]) do
+                i <- i + 1
+            i
 
 module BlockScalar =
 
@@ -153,43 +155,91 @@ module BlockScalar =
                 else
                     None
 
+    /// A block scalar header on a line, together with the indentation its content counts from.
+    type HeaderLine =
+        { Header: Header
+          /// The structural indentation of the line, not the column of the `|` or `>`. A compact
+          /// `- key: |` reports the indentation of the dash. The deeper indentation of the mapping
+          /// that `key` opens is not calculated yet.
+          Baseline: int }
+
+    let private isBlankChar (c: char) = c = ' ' || c = '\t'
+
+    let private skipBlanks (s: string) (start: int) =
+        let mutable i = start
+        while i < s.Length && isBlankChar s.[i] do
+            i <- i + 1
+        i
+
+    /// Skips every tag and anchor from `start`, together with the blanks after each one.
+    let private skipProperties (s: string) (start: int) =
+        let mutable i = start
+        while i < s.Length && (s.[i] = '!' || s.[i] = '&') do
+            i <- skipBlanks s (Property.endIndex s i)
+        i
+
     let stripProperties (s: string) =
-        let rec loop (current: string) =
-            let c = current.TrimStart()
-            if c.StartsWith("&") then
-                let idx = c.IndexOf(' ')
-                if idx < 0 then "" else loop (c.Substring(idx + 1))
-            elif c.StartsWith("!<") then
-                let idx = c.IndexOf('>')
-                if idx < 0 then c else loop (c.Substring(idx + 1))
-            elif c.StartsWith("!") && not (c.StartsWith("|")) && not (c.StartsWith(">")) then
-                let idx = c.IndexOf(' ')
-                if idx < 0 then "" else loop (c.Substring(idx + 1))
+        s.Substring(skipProperties s (skipBlanks s 0))
+
+    /// True for the `-`, `?` and `:` that start a sequence entry, an explicit key or an explicit value.
+    let private isEntryIndicator (s: string) (i: int) =
+        (s.[i] = '-' || s.[i] = '?' || s.[i] = ':') && (i + 1 >= s.Length || isBlankChar s.[i + 1])
+
+    let private isHeaderStart (s: string) (i: int) =
+        i < s.Length && (s.[i] = '|' || s.[i] = '>')
+
+    /// The block scalar header that ends the code of a line. Quoted scalars must already be
+    /// placeholders and the line must not contain comment text, so this function never searches for
+    /// quotes or hashes. It accepts these shapes, each after any number of properties:
+    ///
+    /// - a standalone header, such as `|2`
+    /// - a header after `---`, `-`, `?` or `:`, such as `--- |` or `- >-`
+    /// - a header as the value of an implicit key, such as `key: |` or `- key: |`
+    ///
+    /// The header must end the code, so `a: | extra` has none. A flow collection never holds one.
+    let tryParseHeaderCode (code: string) =
+        let line = code.TrimEnd()
+        // A header ends with `|`, `>`, a digit, `-` or `+`, and most lines fail this cheap test.
+        let mutable last = line.Length - 1
+        while last >= 0 && ((line.[last] >= '1' && line.[last] <= '9') || line.[last] = '-' || line.[last] = '+') do
+            last <- last - 1
+
+        if last < 0 || (line.[last] <> '|' && line.[last] <> '>') then
+            None
+        else
+            let mutable p = skipBlanks line 0
+            if line.StartsWith("---") && (line.Length = 3 || isBlankChar line.[3]) then
+                p <- skipBlanks line 3
+            while p < line.Length && isEntryIndicator line p do
+                p <- skipBlanks line (p + 1)
+            p <- skipProperties line p
+
+            let mutable start = -1
+            if isHeaderStart line p then
+                start <- p
+            elif p < line.Length && line.[p] <> '[' && line.[p] <> '{' then
+                // The first `:` followed by a blank or the end of the line separates a key from its
+                // value. A colon inside a verbatim tag or a plain word such as `a:b` does not count.
+                let mutable q = p
+                while q < line.Length && not (line.[q] = ':' && (q + 1 >= line.Length || isBlankChar line.[q + 1])) do
+                    q <- q + 1
+                if q < line.Length then
+                    let value = skipProperties line (skipBlanks line (q + 1))
+                    if isHeaderStart line value then
+                        start <- value
+
+            if start < 0 then
+                None
             else
-                c
+                match parseHeader (line.Substring start) with
+                | Some header -> Some { Header = header; Baseline = Line.countLeadingSpaces line }
+                | None -> None
 
-        loop s
-
-    let headerTokenFromLine (line: string) =
-        let trimmed = line.TrimStart()
-        let afterDash =
-            if trimmed.StartsWith("- ") then
-                trimmed.Substring(2).TrimStart()
-            else
-                trimmed
-
-        let candidate =
-            let idx = afterDash.IndexOf(':')
-            if idx >= 0 then afterDash.Substring(idx + 1).TrimStart() else afterDash
-
-        stripProperties candidate
-        |> fun s -> s.Split([|' '; '\t'|], StringSplitOptions.RemoveEmptyEntries)
-        |> Array.tryHead
-
-    /// The header a line opens, such as `|2-` in `key: |2-`. The line must not contain comment text,
-    /// because a `: |` inside a comment would look like a header. A comment placeholder is fine.
+    /// The header that a line of the Preprocessing input opens. Such a line holds the placeholders of
+    /// quoted scalars and may end in a comment placeholder, which is not part of the code.
     let tryParseHeaderLine (line: string) =
-        headerTokenFromLine line |> Option.bind parseHeader
+        let code, _ = Placeholder.splitTrailingComment line
+        tryParseHeaderCode code
 
     /// True when a value, as written after a key or a sequence dash, starts a block scalar.
     /// Properties and a trailing comment placeholder do not count.

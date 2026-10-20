@@ -7,374 +7,470 @@ open System.Text.RegularExpressions
 open YAMLiciousTypes
 open Syntax
 
-// Patterns:
-// https://regex101.com/r/V0AkIH/1
-
-[<Literal>]
-let StringMatchPattern = 
-    // (?<iscomment>#.*?)? checks if inside comment. if group is found do not parse as string
-    #if FABLE_COMPILER_PYTHON
-    "(?P<all>(?P<iscomment>#.*?)?\"(?P<stringValue>.+?)\\\")"
-    #endif
-    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-    "(?<all>(?<iscomment>#.*?)?\"(?<stringValue>.+?)\")" // fable sets /gu for js regex (unicode, not required to escape ")
-    #endif
-    #if !FABLE_COMPILER
-    "(?<all>(?<iscomment>#.*?)?\\\"(?<stringValue>.+?)\\\")" // \\\" --> escaped \"
-    #endif
-
-[<Literal>]
-let SingleQuotedStringPattern = 
-    // Single-quoted strings: '' represents an escaped single quote
-    #if FABLE_COMPILER_PYTHON
-    "(?P<all>(?P<iscomment>#.*?)?'(?P<stringValue>(?:[^']|'')*)')"
-    #endif
-    #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-    "(?<all>(?<iscomment>#.*?)?'(?<stringValue>(?:[^']|'')*)')" 
-    #endif
-    #if !FABLE_COMPILER
-    "(?<all>(?<iscomment>#.*?)?'(?<stringValue>(?:[^']|'')*)')" 
-    #endif
-
 [<Literal>]
 let NewLineChar = '\n'
 
-let private nextStringIndex (dict: Dictionary<int, StringMapEntry>) =
-    if dict.Count = 0 then 0
-    else (dict.Keys |> Seq.max) + 1
+/// The scanner's decision about one emitted line.
+[<RequireQualifiedAccess>]
+type LineKind =
+    /// Content that none of the other kinds describe. A trailing comment does not change this.
+    | Code
+    | CommentOnly
+    | Blank
+    | Directive
+    /// A `---` at column 0. Inline content after it stays on the line.
+    | DocumentStart
+    /// A `...` at column 0.
+    | DocumentEnd
+    | BlockHeader
+    | BlockBody
 
+[<Literal>]
+let NoBlock = -1
+
+type TokenLine =
+    { Text: string
+      Kind: LineKind
+      /// The header and the body lines of one block scalar share this id. Every other line has `NoBlock`.
+      /// A `--- |` line keeps its `DocumentStart` kind and carries the id of the block it opens.
+      BlockId: int }
+
+/// The scanner output. `Text` is the emitted text, with one placeholder per quoted scalar and per comment.
+/// `Lines` holds the same text split at the line breaks that the scanner emitted. A line break inside a
+/// quoted scalar is not emitted, so a multiline scalar collapses into one placeholder on one line.
+type TokenizedYaml =
+    { Text: string
+      Lines: TokenLine[]
+      StringMap: Dictionary<int, StringMapEntry>
+      CommentMap: Dictionary<int, string> }
+
+let private mkLine (text: string) (kind: LineKind) (blockId: int) : TokenLine =
+    { Text = text; Kind = kind; BlockId = blockId }
+
+/// Decodes the content of a single-quoted scalar. A line break and the blanks around it fold into one
+/// space, and a blank line becomes a line break. A single line needs no folding.
 let private foldSingleQuoted (s: string) =
     let lines = s.Split([|NewLineChar|])
-    let sb = StringBuilder()
-    for i in 0 .. lines.Length - 1 do
-        let mutable line = lines.[i]
-        if i > 0 then line <- line.TrimStart()
-        if i < lines.Length - 1 then line <- line.TrimEnd()
+    if lines.Length = 1 then
+        s.Replace("''", "'")
+    else
+        let sb = StringBuilder()
+        for i in 0 .. lines.Length - 1 do
+            let mutable line = lines.[i]
+            if i > 0 then line <- line.TrimStart()
+            if i < lines.Length - 1 then line <- line.TrimEnd()
 
-        if line.Length = 0 then
-            sb.Append(NewLineChar) |> ignore
-        else
-            if sb.Length > 0 && sb.[sb.Length - 1] <> NewLineChar then
+            if line.Length = 0 then
+                sb.Append(NewLineChar) |> ignore
+            else
+                if sb.Length > 0 && sb.[sb.Length - 1] <> NewLineChar then
                     sb.Append(" ") |> ignore
-            sb.Append(line) |> ignore
-    sb.ToString().Replace("''", "'")
+                sb.Append(line) |> ignore
+        sb.ToString().Replace("''", "'")
 
-let private parseSingleQuotedSegment (s: string) (startIndex: int) =
-    let content = StringBuilder()
-    let mutable i = startIndex + 1
-    let mutable closed = false
-    while i < s.Length && not closed do
-        let ch = s.[i]
-        if ch = '\'' then
-            if i + 1 < s.Length && s.[i + 1] = '\'' then
-                content.Append("''") |> ignore
-                i <- i + 2
+[<Literal>]
+let private Unknown = -2
+
+[<Literal>]
+let private Failed = -1
+
+[<Literal>]
+let private Unresolved = -1
+
+/// One pass over a newline-normalized string. The scanner owns the lexical decisions: where quoted
+/// scalars, comments, directives, document markers and block scalar bodies are.
+///
+/// It keeps a source cursor and builds the output line by line, which lets a quoted scalar span several
+/// source lines while it emits one placeholder. Quotes get a transactional probe that reads ahead
+/// without changing any state. A failed probe emits only the opening quote and the scan resumes right
+/// after it, so an unclosed quote cannot swallow later strings or comments. The probes memoize their
+/// result per source offset, which keeps the total work linear even for malformed input.
+///
+/// A block scalar body is copied as it is, without any interpretation.
+type private Scanner(s: string) =
+    let n = s.Length
+    let strings = Dictionary<int, StringMapEntry>()
+    let comments = Dictionary<int, string>()
+    let records = ResizeArray<TokenLine>()
+    let line = StringBuilder()
+
+    // Memo tables of the quote probes, indexed by the source offset where quoted content may continue.
+    // An entry holds the offset behind a valid closing quote, Failed, or Unknown before the first probe.
+    let pending = ResizeArray<int>()
+    let mutable singleEnds: int[] = Array.empty
+    let mutable doubleEnds: int[] = Array.empty
+
+    let mutable i = 0
+    let mutable finished = false
+
+    // The emitted line in progress.
+    let mutable lineKind = LineKind.Code
+    let mutable hasCode = false
+    let mutable hasComment = false
+    /// Where the comment placeholder starts in the line, or -1 without a comment.
+    let mutable codeLength = -1
+
+    // The lexical context of the line, which the quote and flow rules read.
+    // `prevSig` is the last character that is not a blank. `tokenFirst` is the first character of the
+    // token it belongs to. A tag or an anchor may precede a quote, as in `!!str "x"`.
+    let mutable prevSig = '\n'
+    let mutable tokenFirst = ' '
+    let mutable prevSep = true
+    // True where a node may start, so a `[` or `{` there opens a flow collection. Brackets inside
+    // plain text do not.
+    let mutable atNodeStart = true
+    let mutable flowDepth = 0
+
+    // The block scalar in progress. The content indentation stays Unresolved until the first
+    // nonblank body line sets it.
+    let mutable blockCount = 0
+    let mutable blockActive = false
+    let mutable blockId = NoBlock
+    let mutable blockBaseline = 0
+    let mutable blockContentIndent = Unresolved
+
+    // A directive can only appear before the content of a document.
+    let mutable inPrelude = true
+
+    let copyBuffer = StringBuilder()
+
+    /// Copies the source text from `start` up to but excluding `stop`. A copy char by char costs time
+    /// proportional to its length on every target, while Substring on a large source costs time
+    /// proportional to its start offset in Fable Python and would make the scan quadratic.
+    let copyRange (start: int) (stop: int) =
+        copyBuffer.Clear() |> ignore
+        for k in start .. stop - 1 do
+            copyBuffer.Append(s.[k]) |> ignore
+        copyBuffer.ToString()
+
+    let isBlankChar (c: char) = c = ' ' || c = '\t'
+
+    /// True when a document marker starts at `k`. The caller passes the first index of a line.
+    /// YAML forbids markers inside a scalar, so a quote probe stops at one.
+    let markerAt (k: int) =
+        if k + 2 >= n then
+            false
+        else
+            let c = s.[k]
+            if (c = '-' || c = '.') && s.[k + 1] = c && s.[k + 2] = c then
+                k + 3 >= n || s.[k + 3] = ' ' || s.[k + 3] = '\t' || s.[k + 3] = '\n'
             else
-                closed <- true
-                i <- i + 1
+                false
+
+    /// The closing quote must end its token: only blanks, then a line end, a comment, a flow
+    /// indicator or a colon may follow.
+    let endsAtBoundary (next: int) =
+        let mutable j = next
+        while j < n && isBlankChar s.[j] do
+            j <- j + 1
+        if j >= n then
+            true
         else
-            content.Append(ch) |> ignore
-            i <- i + 1
-    closed, content.ToString(), i
+            let c = s.[j]
+            c = '\n' || c = '\r' || c = '#' || c = ',' || c = ']' || c = '}' || c = ':'
 
-let private parseDoubleQuotedSegment (s: string) (startIndex: int) =
-    let content = StringBuilder()
-    let mutable i = startIndex + 1
-    let mutable closed = false
-    let mutable escaped = false
-    while i < s.Length && not closed do
-        let ch = s.[i]
-        if escaped then
-            content.Append(ch) |> ignore
-            escaped <- false
-            i <- i + 1
-        else
-            match ch with
-            | '\\' ->
-                content.Append(ch) |> ignore
-                escaped <- true
-                i <- i + 1
-            | '"' ->
-                closed <- true
-                i <- i + 1
-            | _ ->
-                content.Append(ch) |> ignore
-                i <- i + 1
-    closed, content.ToString(), i
+    /// The offset behind the closing quote of the single-quoted scalar that opens at `opening`, or
+    /// Failed. A doubled quote is content. The probe reads only, and it records the answer for every
+    /// offset it passed, so a later opener inside the same stretch gets the answer without a walk.
+    let probeSingle (opening: int) =
+        if singleEnds.Length = 0 then
+            singleEnds <- Array.create (n + 1) Unknown
+        pending.Clear()
+        let mutable p = opening + 1
+        let mutable result = Unknown
+        while result = Unknown do
+            if p >= n then
+                result <- Failed
+            else
+                let known = singleEnds.[p]
+                if known <> Unknown then
+                    result <- known
+                else
+                    pending.Add p
+                    let c = s.[p]
+                    if c = '\'' then
+                        if p + 1 < n && s.[p + 1] = '\'' then
+                            p <- p + 2
+                        elif endsAtBoundary (p + 1) then
+                            result <- p + 1
+                        else
+                            result <- Failed
+                    elif c = '\n' then
+                        if markerAt (p + 1) then result <- Failed else p <- p + 1
+                    else
+                        p <- p + 1
+        for k in 0 .. pending.Count - 1 do
+            singleEnds.[pending.[k]] <- result
+        result
 
-let private isTokenBoundaryStart (s: string) (quoteIndex: int) =
-    let isInlineWhitespace c = c = ' ' || c = '\t'
-    let isTokenSeparator c =
-        c = ' '
-        || c = '\t'
-        || c = '\n'
-        || c = '\r'
-        || c = ':'
-        || c = '-'
-        || c = ','
-        || c = '['
-        || c = '{'
-        || c = '?'
-    let mutable i = quoteIndex - 1
-    while i >= 0 && isInlineWhitespace s.[i] do
-        i <- i - 1
+    /// Like probeSingle for a double-quoted scalar. A backslash escapes the next character.
+    let probeDouble (opening: int) =
+        if doubleEnds.Length = 0 then
+            doubleEnds <- Array.create (n + 1) Unknown
+        pending.Clear()
+        let mutable p = opening + 1
+        let mutable result = Unknown
+        while result = Unknown do
+            if p >= n then
+                result <- Failed
+            else
+                let known = doubleEnds.[p]
+                if known <> Unknown then
+                    result <- known
+                else
+                    pending.Add p
+                    let c = s.[p]
+                    if c = '"' then
+                        if endsAtBoundary (p + 1) then result <- p + 1 else result <- Failed
+                    elif c = '\\' then
+                        // An escaped line break still ends the line, so the marker check below sees it.
+                        if p + 1 < n && s.[p + 1] = '\n' then p <- p + 1 else p <- p + 2
+                    elif c = '\n' then
+                        if markerAt (p + 1) then result <- Failed else p <- p + 1
+                    else
+                        p <- p + 1
+        for k in 0 .. pending.Count - 1 do
+            doubleEnds.[pending.[k]] <- result
+        result
 
-    if i < 0 then
-        true
-    else
-        match s.[i] with
-        | '\n'
-        | '\r'
-        | ':'
-        | '-'
-        | ','
-        | '['
-        | '{'
-        | '?' -> true
-        | _ ->
-            // Allow quoted scalars immediately following a tag/anchor token
-            // (e.g. `!foo "bar"` or `&a "bar"`), while still rejecting plain
-            // scalar content like `rock 'n' roll`.
-            let mutable start = i
-            while start >= 0 && not (isTokenSeparator s.[start]) do
-                start <- start - 1
-            let token = s.Substring(start + 1, i - start)
-            token.StartsWith("!") || token.StartsWith("&")
+    /// The start rule for a quote: it opens a scalar at the start of a line, after an indicator and
+    /// after a tag or an anchor. It does not open one inside a word, as in `don't` or `rock 'n' roll`.
+    let startsToken () =
+        match prevSig with
+        | '\n' | ':' | '-' | ',' | '[' | '{' | '?' -> true
+        | _ -> tokenFirst = '!' || tokenFirst = '&'
 
-let private isTokenBoundaryEnd (s: string) (nextIndex: int) =
-    let isInlineWhitespace c = c = ' ' || c = '\t'
-    let mutable i = nextIndex
-    while i < s.Length && isInlineWhitespace s.[i] do
+    let nextIsBlank (k: int) =
+        k >= n || s.[k] = ' ' || s.[k] = '\t' || s.[k] = '\n'
+
+    let appendPlain (c: char) =
+        line.Append(c) |> ignore
+        prevSig <- c
+        if prevSep then
+            tokenFirst <- c
+            prevSep <- false
+        atNodeStart <- false
+        hasCode <- true
         i <- i + 1
 
-    if i >= s.Length then
-        true
-    else
-        match s.[i] with
-        | '\n'
-        | '\r'
-        | '#'
-        | ','
-        | ']'
-        | '}'
-        | ':' -> true
-        | _ -> false
-
-let private replaceQuotedStrings (target: QuotedStringKind) (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    let sb = StringBuilder()
-    let mutable i = 0
-    let mutable n = nextStringIndex dict
-    let mutable inComment = false
-    let length = s.Length
-    let mutable lineIndex = 0
-
-    let appendPlaceholder (entry: StringMapEntry) =
-        let currentN = n
-        n <- n + 1
-        dict.Add(currentN, entry)
-        sb.Append(sprintf "<s f=%i/>" currentN) |> ignore
-
-    let appendChar (c: char) =
-        sb.Append(c) |> ignore
-        if c = NewLineChar then
-            lineIndex <- lineIndex + 1
-
-    let appendText (text: string) =
-        for c in text do
-            appendChar c
-
-    let advanceLineIndex (startIndex: int) (endIndex: int) =
-        for j in startIndex .. endIndex - 1 do
-            if s.[j] = NewLineChar then
-                lineIndex <- lineIndex + 1
-
-    while i < length do
-        let c = s.[i]
-        if protectedBlockScalarLines.Contains lineIndex then
-            appendChar c
-            i <- i + 1
-            if c = NewLineChar then
-                inComment <- false
-        elif inComment then
-            appendChar c
-            i <- i + 1
-            if c = NewLineChar then
-                inComment <- false
-        else
-            match c with
-            | '#' ->
-                if CommentMarker.startsAt s i then
-                    inComment <- true
-                appendChar c
-                i <- i + 1
-            | '\'' when target = QuotedStringKind.SingleQuotedString ->
-                if isTokenBoundaryStart s i then
-                    let closed, rawContent, nextIndex = parseSingleQuotedSegment s i
-                    if closed && isTokenBoundaryEnd s nextIndex then
-                        let folded = foldSingleQuoted rawContent
-                        appendPlaceholder { Value = folded; Kind = QuotedStringKind.SingleQuotedString }
-                        advanceLineIndex i nextIndex
-                    else
-                        appendText (s.Substring(i, nextIndex - i))
-                    i <- nextIndex
-                else
-                    appendChar c
-                    i <- i + 1
-            | '\'' ->
-                // This branch is only reached in the double-quote pass (the single-quote pass
-                // matches the `target = SingleQuotedString` arm above). Because the single-quote
-                // pass runs first, every real single-quoted string is already a placeholder by
-                // now, so any apostrophe reaching here is ordinary scalar text. A `'` is not
-                // special in double-quoted or plain scalars and needs no escaping, so treat it as
-                // a literal character. (Scanning for a matching `'` here is not just unnecessary
-                // but harmful: an unclosed one — e.g. `'omics` in a plain scalar — would consume
-                // the rest of the document, dropping every later quoted token.)
-                appendChar c
-                i <- i + 1
-            | '"' when target = QuotedStringKind.DoubleQuotedString ->
-                if isTokenBoundaryStart s i then
-                    let closed, rawContent, nextIndex = parseDoubleQuotedSegment s i
-                    if closed && isTokenBoundaryEnd s nextIndex then
-                        appendPlaceholder { Value = rawContent; Kind = QuotedStringKind.DoubleQuotedString }
-                        advanceLineIndex i nextIndex
-                    else
-                        appendText (s.Substring(i, nextIndex - i))
-                    i <- nextIndex
-                else
-                    appendChar c
-                    i <- i + 1
-            | '"' ->
-                // Preserve *closed* double-quoted segments untouched during the single-quote
-                // pass. A lone/unclosed double quote must not swallow the remainder of the
-                // document: emit it verbatim and advance a single char instead.
-                let closed, _, nextIndex = parseDoubleQuotedSegment s i
-                if closed then
-                    appendText (s.Substring(i, nextIndex - i))
-                    i <- nextIndex
-                else
-                    appendChar c
-                    i <- i + 1
-            | _ ->
-                appendChar c
-                i <- i + 1
-
-    sb.ToString()
-
-
-let private tryFindCommentStart (line: string) =
-    let mutable i = 0
-    let mutable found = -1
-    while found < 0 && i < line.Length do
-        if line.[i] = '#' && CommentMarker.startsAt line i then
-            found <- i
+    /// Appends a character that ends a token. `startsNode` tells whether a node may start behind it.
+    let appendSeparator (c: char) (startsNode: bool) =
+        line.Append(c) |> ignore
+        prevSig <- c
+        prevSep <- true
+        atNodeStart <- startsNode
+        hasCode <- true
         i <- i + 1
-    found
 
-/// Like tryFindCommentStart, but skips closed quoted strings. Block scalar detection runs
-/// before the quote passes, so a `#` inside a quoted key such as `"a #b": |` is still raw text.
-let private tryFindCommentStartOutsideQuotes (line: string) =
-    let mutable i = 0
-    let mutable found = -1
-    while found < 0 && i < line.Length do
-        let c = line.[i]
-        if c = '#' && CommentMarker.startsAt line i then
-            found <- i
-        elif (c = '\'' || c = '"') && isTokenBoundaryStart line i then
-            let closed, _, nextIndex =
-                if c = '\'' then parseSingleQuotedSegment line i
-                else parseDoubleQuotedSegment line i
-            // An unclosed quote is an ordinary character.
-            if closed then i <- nextIndex else i <- i + 1
-        else
-            i <- i + 1
-    found
-
-let private detectBlockScalarContentLines (yamlString: string) =
-    let normalized = Line.normalizeNewlines yamlString
-    let lines = normalized.Split([|'\n'|], StringSplitOptions.None)
-    let protectedLines = ResizeArray<int>()
-    let mutable i = 0
-    let mutable openBlockContentIndent: int option = None
-
-    while i < lines.Length do
-        match openBlockContentIndent with
-        | Some contentIndent ->
-            let line = lines.[i]
-            if BlockScalar.isBodyLine contentIndent line then
-                protectedLines.Add(i) |> ignore
-                i <- i + 1
+    /// Emits one placeholder for the scalar from `opening` to `next`, the offset behind its closing
+    /// quote. A double-quoted scalar keeps its raw interior, because Escapes decodes it later.
+    let commitString (isSingle: bool) (opening: int) (next: int) =
+        let raw = copyRange (opening + 1) (next - 1)
+        let stringId = strings.Count
+        let entry: StringMapEntry =
+            if isSingle then
+                { Value = foldSingleQuoted raw; Kind = QuotedStringKind.SingleQuotedString }
             else
-                openBlockContentIndent <- None
-        | None ->
-            let line = lines.[i]
-            if line.TrimStart().StartsWith("#") then
-                i <- i + 1
+                { Value = raw; Kind = QuotedStringKind.DoubleQuotedString }
+        strings.Add(stringId, entry)
+        line.Append("<s f=" + string stringId + "/>") |> ignore
+        prevSig <- s.[opening]
+        tokenFirst <- s.[opening]
+        prevSep <- false
+        atNodeStart <- false
+        hasCode <- true
+        i <- next
+
+    let tryQuote (isSingle: bool) =
+        if startsToken () then
+            let next = if isSingle then probeSingle i else probeDouble i
+            if next > 0 then
+                commitString isSingle i next
+                true
             else
-                // Header detection ignores a trailing comment, so `- # note: |` opens no block scalar.
-                let code =
-                    match tryFindCommentStartOutsideQuotes line with
-                    | -1 -> line
-                    | idx -> line.Substring(0, idx)
-                match BlockScalar.tryParseHeaderLine code with
-                | Some header ->
-                    let firstBodyIndex = i + 1
-                    let following = seq { for j in firstBodyIndex .. lines.Length - 1 -> lines.[j] }
-                    openBlockContentIndent <-
-                        Some (BlockScalar.contentIndent (Line.countLeadingSpaces code) header.Indent following)
-                    i <- i + 1
-                | None ->
-                    i <- i + 1
-
-    protectedLines |> Seq.toList |> Set.ofList
-
-let private stringCleanUpWithProtected (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    replaceQuotedStrings QuotedStringKind.DoubleQuotedString dict protectedBlockScalarLines s
-
-let private singleQuotedStringCleanUpWithProtected (dict: Dictionary<int, StringMapEntry>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    replaceQuotedStrings QuotedStringKind.SingleQuotedString dict protectedBlockScalarLines s
-
-let stringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
-    stringCleanUpWithProtected dict Set.empty s
-
-let singleQuotedStringCleanUp (dict: Dictionary<int, StringMapEntry>) (s: string) =
-    singleQuotedStringCleanUpWithProtected dict Set.empty s
-
-/// Replaces every comment with a `<c f=N/>` placeholder. This runs after the quoted-string
-/// passes, so a `#` inside quotes is already hidden. The pass skips block scalar content
-/// because a `#` there is literal text.
-let private commentCleanUpWithProtected (dict: Dictionary<int, string>) (protectedBlockScalarLines: Set<int>) (s: string) =
-    let mutable n = 0
-    s.Split([|NewLineChar|], StringSplitOptions.None)
-    |> Array.mapi (fun lineIndex line ->
-        if protectedBlockScalarLines.Contains lineIndex then
-            line
+                false
         else
-            match tryFindCommentStart line with
-            | -1 -> line
-            | start ->
-                let currentN = n
-                n <- n + 1
-                dict.Add(currentN, line.Substring(start + 1))
-                line.Substring(0, start) + sprintf "<c f=%i/>" currentN
-    )
-    |> String.concat (string NewLineChar)
+            false
 
-let commentCleanUp (dict: Dictionary<int, string>) (s: string) =
-    commentCleanUpWithProtected dict Set.empty s
+    /// Takes everything behind the `#` at the cursor, up to the line break, as one comment.
+    let takeComment () =
+        let mutable e = i + 1
+        while e < n && s.[e] <> '\n' do
+            e <- e + 1
+        let commentId = comments.Count
+        comments.Add(commentId, copyRange (i + 1) e)
+        codeLength <- line.Length
+        line.Append("<c f=" + string commentId + "/>") |> ignore
+        hasComment <- true
+        i <- e
 
-let cut(yamlString: string) =
-    let lines =
-        yamlString.Split([|NewLineChar|], StringSplitOptions.None)
-        |> Array.toList
-    let withoutLeading =
-        match lines with
-        | ""::rest -> rest
-        | _ -> lines
-    let withoutTrailing =
-        match List.rev withoutLeading with
-        | ""::rest -> List.rev rest
-        | _ -> withoutLeading
-    withoutTrailing |> List.toArray
+    /// Looks for a block scalar header in the code of the finished line and records the line. The
+    /// code is the emitted text before any comment placeholder, so a quoted scalar is a placeholder
+    /// and comment text never shows up in it.
+    let finishLine () =
+        let text = line.ToString()
+        let mutable kind = lineKind
+        let mutable opened = NoBlock
+        if hasCode && flowDepth = 0 && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
+            let code = if codeLength >= 0 then text.Substring(0, codeLength) else text
+            match BlockScalar.tryParseHeaderCode code with
+            | Some found ->
+                opened <- blockCount
+                blockCount <- blockCount + 1
+                blockActive <- true
+                blockId <- opened
+                blockBaseline <- found.Baseline
+                blockContentIndent <-
+                    match found.Header.Indent with
+                    | Some _ -> BlockScalar.contentIndent found.Baseline found.Header.Indent Seq.empty
+                    | None -> Unresolved
+            | None -> ()
+
+        if lineKind = LineKind.Code then
+            if opened <> NoBlock then kind <- LineKind.BlockHeader
+            elif hasCode then kind <- LineKind.Code
+            elif hasComment then kind <- LineKind.CommentOnly
+            else kind <- LineKind.Blank
+
+        match lineKind with
+        | LineKind.DocumentEnd -> inPrelude <- true
+        | LineKind.DocumentStart -> inPrelude <- not hasCode
+        | LineKind.Code -> if hasCode then inPrelude <- false
+        | _ -> ()
+
+        records.Add(mkLine text kind opened)
+
+    /// Copies the line at the cursor into the block scalar in progress when it belongs to the body.
+    /// Blank lines belong to it and leave the content indentation open. A nonblank line sets the
+    /// indentation when it is still open, and a line indented less than that ends the block.
+    let takeBodyLine () =
+        let start = i
+        let mutable e = start
+        while e < n && s.[e] <> '\n' do
+            e <- e + 1
+        let text = copyRange start e
+        let isBody =
+            if Line.isBlank text then
+                true
+            else
+                if blockContentIndent = Unresolved then
+                    blockContentIndent <- BlockScalar.contentIndent blockBaseline None (Seq.singleton text)
+                BlockScalar.isBodyLine blockContentIndent text
+        if isBody then
+            records.Add(mkLine text LineKind.BlockBody blockId)
+            if e >= n then
+                i <- n
+                finished <- true
+            else
+                i <- e + 1
+        isBody
+
+    /// A directive line is copied without reading quotes. A separated hash still starts a comment.
+    let scanDirective () =
+        lineKind <- LineKind.Directive
+        let mutable lineDone = false
+        while not lineDone do
+            if i >= n || s.[i] = '\n' then
+                lineDone <- true
+            elif s.[i] = '#' && CommentMarker.startsAt s i then
+                takeComment ()
+            else
+                line.Append(s.[i]) |> ignore
+                i <- i + 1
+
+    /// Scans the content of one emitted line up to an unquoted line break or the end of the input.
+    let scanContent () =
+        let mutable lineDone = false
+        while not lineDone do
+            if i >= n then
+                lineDone <- true
+            else
+                let c = s.[i]
+                match c with
+                | '\n' ->
+                    lineDone <- true
+                | ' ' | '\t' ->
+                    line.Append(c) |> ignore
+                    prevSep <- true
+                    i <- i + 1
+                | '\'' ->
+                    if not (tryQuote true) then appendPlain c
+                | '"' ->
+                    if not (tryQuote false) then appendPlain c
+                | '#' ->
+                    if CommentMarker.startsAt s i then takeComment () else appendPlain c
+                | '[' | '{' ->
+                    let opensFlow = flowDepth > 0 || atNodeStart
+                    if opensFlow then flowDepth <- flowDepth + 1
+                    appendSeparator c opensFlow
+                | ']' | '}' ->
+                    if flowDepth > 0 then flowDepth <- flowDepth - 1
+                    appendPlain c
+                | ',' ->
+                    appendSeparator c (flowDepth > 0)
+                | ':' ->
+                    appendSeparator c (nextIsBlank (i + 1))
+                | '-' | '?' ->
+                    appendSeparator c (atNodeStart && nextIsBlank (i + 1))
+                | '!' | '&' ->
+                    if atNodeStart then
+                        // A property is one token. A flow indicator inside it must not open anything.
+                        let e = Property.endIndex s i
+                        for k in i .. e - 1 do
+                            line.Append(s.[k]) |> ignore
+                        prevSig <- s.[e - 1]
+                        tokenFirst <- c
+                        prevSep <- false
+                        hasCode <- true
+                        i <- e
+                    else
+                        appendPlain c
+                | _ ->
+                    appendPlain c
+
+    /// Scans one emitted line, starting at a physical line start.
+    let scanLine () =
+        line.Clear() |> ignore
+        lineKind <- LineKind.Code
+        hasCode <- false
+        hasComment <- false
+        codeLength <- -1
+        prevSig <- '\n'
+        tokenFirst <- ' '
+        prevSep <- true
+        atNodeStart <- true
+
+        if i < n && s.[i] = '%' && inPrelude then
+            scanDirective ()
+        else
+            if i < n && (s.[i] = '-' || s.[i] = '.') && markerAt i then
+                lineKind <- if s.[i] = '-' then LineKind.DocumentStart else LineKind.DocumentEnd
+                prevSig <- s.[i]
+                for _ in 1 .. 3 do
+                    line.Append(s.[i]) |> ignore
+                i <- i + 3
+                flowDepth <- 0
+            scanContent ()
+
+        finishLine ()
+        if i >= n then finished <- true else i <- i + 1
+
+    member _.Run() : TokenizedYaml =
+        while not finished do
+            if not (blockActive && i < n && takeBodyLine ()) then
+                blockActive <- false
+                scanLine ()
+        let lines = records.ToArray()
+        { Text = String.Join(string NewLineChar, lines |> Array.map (fun l -> l.Text))
+          Lines = lines
+          StringMap = strings
+          CommentMap = comments }
+
+/// Replaces every quoted scalar and every comment with a placeholder, `<s f=N/>` and `<c f=N/>`, and
+/// classifies each emitted line. String ids follow the source order across both quote kinds, and
+/// comment ids have their own counter. The input may use any line ending.
+let tokenize (yamlString: string) : TokenizedYaml =
+    Scanner(Line.normalizeNewlines yamlString).Run()
 
 let parseYAMLDirective (line: string) : YAMLiciousTypes.YAMLDirective option =
     let m = Regex.Match(line.Trim(), "^%YAML\s+(\d+)\.(\d+)")
@@ -389,65 +485,93 @@ let parseTagDirective (line: string) : (string * string) option =
         Some (m.Groups.[1].Value, m.Groups.[2].Value)
     else None
 
-let pipeline (yamlString: string) =
-    let stringMap = new Dictionary<int, StringMapEntry>()
-    let commentMap = new Dictionary<int, string>()
-    let normalizedContent = Line.normalizeNewlines yamlString
-    let protectedBlockScalarLines = detectBlockScalarContentLines normalizedContent
-    let withoutStrings =
-        normalizedContent
-        |> singleQuotedStringCleanUpWithProtected stringMap protectedBlockScalarLines  // Handle single-quoted strings first
-        |> stringCleanUpWithProtected stringMap protectedBlockScalarLines              // Then handle double-quoted strings
-    // A multiline quoted string collapses into one placeholder, which shifts line numbers.
-    // Detect the block scalar lines again on the text the comment pass sees.
-    let lines =
-        withoutStrings
-        |> commentCleanUpWithProtected commentMap (detectBlockScalarContentLines withoutStrings)
-        |> cut
-    let hasDirectivePrelude =
-        lines
-        |> Array.tryFind (fun l ->
-            let t = l.Trim()
-            t <> "" && not (t.StartsWith("#"))
-        )
-        |> Option.map (fun line -> line.TrimStart().StartsWith("%"))
-        |> Option.defaultValue false
+/// The input of Preprocessing: the lines of one document without the directives and the leading
+/// document start marker.
+type PreparedYaml =
+    { Lines: TokenLine[]
+      StringMap: Dictionary<int, StringMapEntry>
+      CommentMap: Dictionary<int, string>
+      YAMLVersion: YAMLDirective option
+      TagHandles: Map<string, string> }
 
-    let directivePreludeLength =
-        if hasDirectivePrelude then
-            lines
-            |> Array.takeWhile (fun l ->
-                let t = l.TrimStart()
-                t.StartsWith("%") || t.StartsWith("#") || t.Trim() = ""
-            )
-            |> Array.length
-        else
-            0
+/// Removes the empty first and the empty last line, as the split at a line break leaves them. A blank
+/// line that belongs to a block scalar body stays, because chomping counts it.
+let private cut (lines: TokenLine[]) =
+    let isEmpty (line: TokenLine) = line.Text = "" && line.Kind = LineKind.Blank
+    let start = if lines.Length > 0 && isEmpty lines.[0] then 1 else 0
+    let stop = if lines.Length > start && isEmpty lines.[lines.Length - 1] then lines.Length - 1 else lines.Length
+    Array.sub lines start (stop - start)
 
-    let directiveLines = lines |> Array.take directivePreludeLength
-    let contentLines = lines.[directivePreludeLength..]
+/// The line that stays behind when a `---` marker is removed: its inline content, a comment that
+/// follows it, or nothing. A block header keeps the id of its body.
+let internal tryInlineContent (marker: TokenLine) : TokenLine option =
+    let rest = marker.Text.Substring(3).TrimStart()
+    if rest = "" then
+        None
+    elif Placeholder.isCommentOnlyLine rest then
+        Some (mkLine rest LineKind.CommentOnly NoBlock)
+    elif marker.BlockId <> NoBlock then
+        Some (mkLine rest LineKind.BlockHeader marker.BlockId)
+    else
+        Some (mkLine rest LineKind.Code NoBlock)
+
+/// A directive line without its trailing comment.
+let internal withoutTrailingComment (line: TokenLine) =
+    let code, _ = Placeholder.splitTrailingComment line.Text
+    mkLine code line.Kind line.BlockId
+
+/// Reads the directives in front of the content, removes them and the `---` that ends the prelude
+/// and keeps the comments of the prelude. A comment behind a directive stays as a comment-only line.
+/// The lines may come from a whole tokenized input or from a slice of it. The maps are shared.
+let internal prepare (tokenized: TokenizedYaml) (records: TokenLine[]) : PreparedYaml =
+    let lines = cut records
+    let output = ResizeArray<TokenLine>()
     let mutable yamlVersion = None
     let mutable tagHandles =
         Map.empty
         |> Map.add "!" "!"
         |> Map.add "!!" "tag:yaml.org,2002:"
-    for line in directiveLines do
-        match parseYAMLDirective line with
-        | Some v ->
-            if yamlVersion.IsSome then failwith "Duplicate YAML directive"
-            yamlVersion <- Some v
-        | None ->
-            match parseTagDirective line with
-            | Some (h, t) -> tagHandles <- Map.add h t tagHandles
-            | None -> ()
 
-    let finalContentLines =
-        if contentLines.Length > 0 && Document.isStart contentLines.[0] then
-            match Document.tryInlineContentAfterStartMarker contentLines.[0] with
-            | Some inlineContent ->
-                Array.append [| inlineContent |] contentLines.[1..]
+    let isPrelude (line: TokenLine) =
+        line.Kind = LineKind.Directive || line.Kind = LineKind.CommentOnly || line.Kind = LineKind.Blank
+
+    let mutable index = 0
+    while index < lines.Length && isPrelude lines.[index] do
+        let record = lines.[index]
+        if record.Kind = LineKind.Directive then
+            let code, commentId = Placeholder.splitTrailingComment record.Text
+            match parseYAMLDirective code with
+            | Some version ->
+                if yamlVersion.IsSome then failwith "Duplicate YAML directive"
+                yamlVersion <- Some version
             | None ->
-                contentLines.[1..]
+                match parseTagDirective code with
+                | Some (handle, prefix) -> tagHandles <- Map.add handle prefix tagHandles
+                | None -> ()
+            match commentId with
+            | Some commentIndex -> output.Add(mkLine ("<c f=" + string commentIndex + "/>") LineKind.CommentOnly NoBlock)
+            | None -> ()
         else
-            contentLines
-    {|StringMap = stringMap; CommentMap = commentMap; Lines = finalContentLines; YAMLVersion = yamlVersion; TagHandles = tagHandles|}
+            output.Add record
+        index <- index + 1
+
+    if index < lines.Length && lines.[index].Kind = LineKind.DocumentStart then
+        match tryInlineContent lines.[index] with
+        | Some inlineLine -> output.Add inlineLine
+        | None -> ()
+        index <- index + 1
+
+    for k in index .. lines.Length - 1 do
+        output.Add lines.[k]
+
+    { Lines = output.ToArray()
+      StringMap = tokenized.StringMap
+      CommentMap = tokenized.CommentMap
+      YAMLVersion = yamlVersion
+      TagHandles = tagHandles }
+
+/// Tokenizes once and prepares the lines of the first document for Preprocessing. The line kinds
+/// stay available for the stages that follow.
+let pipeline (yamlString: string) : PreparedYaml =
+    let tokenized = tokenize yamlString
+    prepare tokenized tokenized.Lines
