@@ -40,22 +40,18 @@ let private isBlankLineElement = function
     | PreprocessorElement.Line line when line.Trim() = "" -> true
     | _ -> false
 
-let rec private takeLeadingSequenceItemPrefix (eles: PreprocessorElement list) =
+let rec private skipBlankLineElements (eles: PreprocessorElement list) =
     match eles with
-    | line :: rest when isBlankLineElement line ->
-        let comments, tail, _ = takeLeadingSequenceItemPrefix rest
-        comments, tail, true
-    | (YamlComment _ as commentElement) :: rest ->
-        let comments, tail, _ = takeLeadingSequenceItemPrefix rest
-        commentElement :: comments, tail, true
-    | _ ->
-        [], eles, false
+    | line :: rest when isBlankLineElement line -> skipBlankLineElements rest
+    | _ -> eles
 
+/// `- value` followed by blank lines and then an indented block continues the same item.
 let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list) =
-    let leadingComments, afterPrefix, hadPrefix = takeLeadingSequenceItemPrefix eles
-    match hadPrefix, afterPrefix with
-    | true, Intendation yamlAstList :: tail ->
-        Some (leadingComments @ yamlAstList, tail)
+    match eles with
+    | line :: _ when isBlankLineElement line ->
+        match skipBlankLineElements eles with
+        | Intendation yamlAstList :: tail -> Some (yamlAstList, tail)
+        | _ -> None
     | _ ->
         None
 
@@ -100,6 +96,19 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
     | anyElse -> failwithf "Unknown pattern for sequence elements: %A" anyElse
     
 let isSequenceElement = fun e -> match e with | Intendation _ | SequenceMinusOpener _ | YamlComment _ -> true | _ when isBlankLineElement e -> true | _ -> false
+
+let private isCommentOrBlankElement e =
+    match e with
+    | YamlComment _ -> true
+    | _ -> isBlankLineElement e
+
+/// Splits the items of a block sequence from the elements that follow it. Comments after the
+/// last item stay outside the sequence because a full-line comment belongs to the next node.
+let private splitSequenceItems (eles: PreprocessorElement list) =
+    let run = eles |> List.takeWhile isSequenceElement
+    let trailing = run |> List.rev |> List.takeWhile isCommentOrBlankElement |> List.rev
+    let items = run |> List.take (run.Length - trailing.Length)
+    collectSequenceElements items, trailing @ (eles |> List.skip run.Length)
 
 let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionary<int, StringMapEntry>) (commentDict: Dictionary<int, string>) (handles: Map<string, string>) =
     let rec flattenFlowContent (elements: PreprocessorElement list) : string list =
@@ -437,7 +446,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 YAMLElement.Sequence(List.rev acc), remaining
             | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
                 let comment = tryCommentElementFromFlowString value |> Option.get
-                loop rest (YAMLElement.Object [comment] :: acc)
+                loop rest (comment :: acc)
             | _ ->
                 let item, afterItem = parseFlowNode remaining
                 let sequenceItem =
@@ -521,6 +530,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         (List.rev elements) @ acc
 
     let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
+        // Comments between items go into the sequence list as Comment elements.
+        let readSequenceItem (element: PreprocessorElement list) =
+            match element with
+            | [YamlComment comment] -> YAMLElement.Comment commentDict.[comment.Comment]
+            | _ -> loopRead handles element []
+
         match restlist with
         | AliasNode alias::rest ->
             loopRead handles rest (YAMLElement.Alias alias::acc)
@@ -531,23 +546,21 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | SchemaNamespace v::Intendation yamlAstList::rest0 -> //create/appendSequenceElement
             let objectList = 
                 PreprocessorElement.Line v.Key::yamlAstList
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let sequenceElements, rest = splitSequenceItems rest0
             let current =
                 YAMLElement.Sequence [
                     loopRead handles objectList []
                     for i in sequenceElements do
-                        loopRead handles i []
+                        readSequenceItem i
                 ]
             loopRead handles rest (current::acc)
         | SchemaNamespace v::rest0 -> //create/appendSequenceElement
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let sequenceElements, rest = splitSequenceItems rest0
             let current =
                 YAMLElement.Sequence [
                     loopRead handles [PreprocessorElement.Line v.Key] []
                     for i in sequenceElements do
-                        loopRead handles i []
+                        readSequenceItem i
                 ]
             loopRead handles rest (current::acc)
         // Example1: 
@@ -562,8 +575,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | SequenceMinusOpener v::Intendation yamlAstList::rest0 when v.Value.IsSome && isBlockScalarHeaderCandidate v.Value.Value ->
             match tryReadBlockScalar v.Value.Value v.Indent None yamlAstList with
             | Some blockScalar ->
-                let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-                let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let sequenceElements, rest = splitSequenceItems rest0
                 let firstItem =
                     YAMLElement.Object [
                         YAMLElement.Value(
@@ -580,7 +592,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     YAMLElement.Sequence [
                         firstItem
                         for i in sequenceElements do
-                            loopRead handles i []
+                            readSequenceItem i
                     ]
                 loopRead handles rest (current::acc)
             | None ->
@@ -600,13 +612,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
                     | Some content -> YAMLElement.Object [YAMLElement.Value content]
                     | None -> parsedFirstItem
-            let sequenceElements = rest0 |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = rest0 |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let sequenceElements, rest = splitSequenceItems rest0
             let current =
                 YAMLElement.Sequence [
                     firstItem
                     for i in sequenceElements do
-                        loopRead handles i []
+                        readSequenceItem i
                 ]
             loopRead handles rest (current::acc)
         | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
@@ -621,13 +632,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     initialObjectList @ continuation, tail
                 | None ->
                     initialObjectList, rest0
-            let sequenceElements = sequenceSource |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-            let rest = sequenceSource |> Seq.skipWhile isSequenceElement |> Seq.toList
+            let sequenceElements, rest = splitSequenceItems sequenceSource
             let current =
                 YAMLElement.Sequence [
                     loopRead handles objectList []
                     for i in sequenceElements do
-                        loopRead handles i []
+                        readSequenceItem i
                 ]
             loopRead handles rest (current::acc)
         // [test1, test2, test] <c f=1/>
@@ -797,13 +807,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                         PreprocessorElement.Line w.Value.Value :: yamlAstList
                     else
                         yamlAstList
-                let sequenceElements = tail |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-                let rest = tail |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let sequenceElements, rest = splitSequenceItems tail
                 let seq =
                     YAMLElement.Sequence [
                         loopRead handles objectList []
                         for element in sequenceElements do
-                            loopRead handles element []
+                            readSequenceItem element
                     ]
                 let current =
                     YAMLElement.Mapping(
@@ -824,13 +833,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                         initialObjectList @ continuation, remaining
                     | None ->
                         initialObjectList, tail
-                let sequenceElements = sequenceSource |> Seq.takeWhile isSequenceElement |> Seq.toList |> collectSequenceElements
-                let rest = sequenceSource |> Seq.skipWhile isSequenceElement |> Seq.toList
+                let sequenceElements, rest = splitSequenceItems sequenceSource
                 let seq =
                     YAMLElement.Sequence [
                         loopRead handles objectList []
                         for element in sequenceElements do
-                            loopRead handles element []
+                            readSequenceItem element
                     ]
                 let current =
                     YAMLElement.Mapping(
@@ -841,8 +849,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | _ ->
                 let c = restoreCommentReplace commentDict v.Comment
                 let current = YAMLElement.Value(YAMLContent.create(v.Key + ":", ?comment = c))
-                let restoredComments = commentTokensToYaml leadingComments
-                loopRead handles afterComments ((List.rev restoredComments) @ (current::acc))
+                loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when isBlockScalarHeaderCandidate v.Value ->
             match tryReadBlockScalar v.Value v.Indent None block with

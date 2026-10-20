@@ -690,9 +690,7 @@ My Key:
                         YAMLElement.Object [
                             YAMLElement.Value(YAMLContent.create("My Value2"))
                         ]
-                        YAMLElement.Object[
-                            YAMLElement.Comment("ich hab das gerade gesehen und dachte mir \"ah fuck\"")
-                        ]
+                        YAMLElement.Comment("ich hab das gerade gesehen und dachte mir \"ah fuck\"")
                         YAMLElement.Object [
                             YAMLElement.Value(YAMLContent.create("My Value3"))
                         ]
@@ -793,9 +791,7 @@ My Key:
                                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("x"))]
                             )
                         ]
-                        YAMLElement.Object [
-                            YAMLElement.Comment(" between")
-                        ]
+                        YAMLElement.Comment(" between")
                         YAMLElement.Object [
                             YAMLElement.Mapping(
                                 YAMLContent.create("id"),
@@ -1666,7 +1662,7 @@ trailing: ignored"""
         | YAMLElement.Object [YAMLElement.Mapping(k, YAMLElement.Object [YAMLElement.Sequence items])] when k.Value = "data" ->
             Expect.equal (List.length items) 3 "The comment should be preserved as a sequence entry between values"
             match items.[1] with
-            | YAMLElement.Object [YAMLElement.Comment c] -> Expect.equal c " one" "Flow comment placeholder should restore to a comment"
+            | YAMLElement.Comment c -> Expect.equal c " one" "Flow comment placeholder should restore to a comment"
             | other -> failwithf "Expected flow comment sequence entry, got: %A" other
         | other -> failwithf "Unexpected structure: %A" other
 
