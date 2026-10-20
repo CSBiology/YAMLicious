@@ -2652,5 +2652,52 @@ expression: >
         let decode (yaml: string) = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "valueFrom" Decode.string)
         Expect.equal (decode "valueFrom: $(inputs.a +\n  \"x\")") "$(inputs.a + \"x\")" "The line break folds into a space and the quotes stay."
         Expect.equal (decode "valueFrom: $(f(inputs.a,\n  \"x\", 1))") "$(f(inputs.a, \"x\", 1))" "A quote behind a comma on the second line stays."
+    // yaml@2.6.1 reads `k: [` followed by `a,`, `'b''c',` and `]` as {"k":["a","b'c"]}, and `k: [ "a"` followed by
+    // `, "b" ]` as {"k":["a","b"]}. It reads the other inputs as lists and mappings too. The reader has no pattern for
+    // these layouts. It stops with a message and never returns a text with the quotes lost.
+    testCase "A flow collection over several lines in a layout without a pattern is an error" <| fun _ ->
+        let inputs =
+            [ "k: [\n  a,\n  'b''c',\n]"; "k: [ \"a\"\n  , \"b\" ]"; "k: [a,\n  b]"; "k: {a: 1,\n  b: 2}"
+              "- [a,\n  b]"; "- {\n  a: 1\n}"; "k: !!seq [\n  a\n]"; "[a,\n b]" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "A flow collection over several lines in this layout is not supported yet" $"{yaml} stops with a clear message"
+
+    // yaml@2.6.1 reads `k:` as {"k":null}, `k:` followed by `j: 1` as {"k":null,"j":1}, `k: # c` as {"k":null}, and
+    // `a:` followed by an indented `k:` and `b: 1` as {"a":{"k":null},"b":1}.
+    testCase "A key without a value maps to nothing" <| fun _ ->
+        let nothing (key: YAMLContent) = YAMLElement.Mapping(key, YAMLElement.Nil)
+        let k = YAMLContent.create "k"
+        Expect.equal (Reader.read "k:") (YAMLElement.Object [ nothing k ]) "The key alone"
+        Expect.equal (Reader.read "k: ") (YAMLElement.Object [ nothing k ]) "The key with a trailing blank"
+        Expect.equal (Reader.read "k:\nj: 1") (YAMLElement.Object [ nothing k; entry "j" (scalarNode "1") ]) "A sibling follows"
+        Expect.equal
+            (Reader.read "k: # c")
+            (YAMLElement.Object [ nothing (YAMLContent.create("k", comment=" c")) ])
+            "The comment stays on the key"
+        Expect.equal
+            (Reader.read "k: # c\nj: 1")
+            (YAMLElement.Object [ nothing (YAMLContent.create("k", comment=" c")); entry "j" (scalarNode "1") ])
+            "The comment and a sibling"
+        Expect.equal
+            (Reader.read "a:\n  k:\nb: 1")
+            (YAMLElement.Object [ entry "a" (YAMLElement.Object [ nothing k ]); entry "b" (scalarNode "1") ])
+            "The key is nested"
+
+    // yaml@2.6.1 reads `a:` followed by an indented `k:` and `b: 1` as {"a":{"k":null},"b":1}.
+    testCase "A key without a value reads as None and writes as the key" <| fun _ ->
+        let yaml = "a:\n  k:\nb: 1\n"
+        let decoded =
+            yaml
+            |> Decode.read
+            |> Decode.object (fun get ->
+                get.Required.Field "a" (Decode.object (fun inner -> inner.Required.Field "k" (Decode.option Decode.string)))
+            )
+        Expect.equal decoded None "Decode.option reads the key as None"
+        for text in [ "k:\n"; "k:\nj: 1\n"; yaml; "k: # c\n"; "- k:\n- b\n" ] do
+            let element = Reader.read text
+            let written = (Encode.write 2 element).Replace("\r\n", "\n")
+            Expect.isTrue (written.Contains("k:\n") || written.Contains("k: # c\n")) $"The key of {text} is written without a value"
+            Expect.equal (Reader.read written) element $"The text of {text} reads back as the same element"
 ]
 

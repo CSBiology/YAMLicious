@@ -21,6 +21,10 @@ module CoreSchema =
     // The regular expressions of the tag resolution of the core schema (YAML 1.2.2, section 10.3.2) for the
     // tags null, bool, int (decimal, octal and hexadecimal) and float (number, infinity and not-a-number).
     let private nullAlternative = "null|Null|NULL|~"
+    let private boolAlternative = "true|True|TRUE|false|False|FALSE"
+    let private decimalAlternative = "[-+]?[0-9]+"
+    let private octalAlternative = "0o[0-7]+"
+    let private hexadecimalAlternative = "0x[0-9a-fA-F]+"
     let private numberAlternative = "[-+]?(?:\\.[0-9]+|[0-9]+(?:\\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
     let private infinityAlternative = "[-+]?\\.(?:inf|Inf|INF)"
     let private nanAlternative = "\\.(?:nan|NaN|NAN)"
@@ -30,10 +34,10 @@ module CoreSchema =
     let private nonStringPattern =
         [
             nullAlternative
-            "true|True|TRUE|false|False|FALSE"
-            "[-+]?[0-9]+"
-            "0o[0-7]+"
-            "0x[0-9a-fA-F]+"
+            boolAlternative
+            decimalAlternative
+            octalAlternative
+            hexadecimalAlternative
             numberAlternative
             infinityAlternative
             nanAlternative
@@ -42,6 +46,9 @@ module CoreSchema =
         |> anchored
 
     let private nullPattern = anchored nullAlternative
+    let private decimalPattern = anchored decimalAlternative
+    let private octalPattern = anchored octalAlternative
+    let private hexadecimalPattern = anchored hexadecimalAlternative
     let private numberPattern = anchored numberAlternative
     let private infinityPattern = anchored infinityAlternative
     let private nanPattern = anchored nanAlternative
@@ -62,11 +69,77 @@ module CoreSchema =
     let resolvesToNonString (text: string) =
         String.IsNullOrEmpty text || matches nonStringPattern text
 
-    /// The float that a reader of the core schema takes from the text, or None when the text is not a decimal
-    /// number, an infinity or not-a-number. A text that the number parse of the target accepts but the core
-    /// schema does not, such as NaN or 0x1F, gives None.
-    let tryParseFloat (text: string) : float option =
-        if matches infinityPattern text then
+    /// True when the scalar can have the type that `tag` names. A plain scalar has the type that its text
+    /// says. A quoted or block scalar is a string. An explicit tag fixes the type, whatever the style.
+    let private resolvesAs (tag: string) (content: YAMLContent) =
+        match content.Tag with
+        | Some explicit -> explicit = tag
+        | None ->
+            match content.Style with
+            | None
+            | Some ScalarStyle.Plain -> true
+            | _ -> false
+
+    /// True when a reader of the core schema reads the scalar as null. That is a plain scalar with the text
+    /// null, Null, NULL, ~ or nothing, or a scalar under the tag !!null with such a text. A scalar under
+    /// another tag, such as `!!str null`, is not null.
+    let isNull (content: YAMLContent) =
+        resolvesAs "tag:yaml.org,2002:null" content && resolvesToNull content.Value
+
+    /// The bool that a reader of the core schema takes from the scalar, or None when the scalar is not a
+    /// bool. Only true, True, TRUE, false, False and FALSE count. YAML 1.2 reads yes, no, on and off as strings.
+    let tryParseBool (content: YAMLContent) : bool option =
+        if resolvesAs "tag:yaml.org,2002:bool" content then
+            match content.Value with
+            | "true" | "True" | "TRUE" -> Some true
+            | "false" | "False" | "FALSE" -> Some false
+            | _ -> None
+        else
+            None
+
+    /// The int that a reader of the core schema takes from the scalar, or None when the scalar is not an int
+    /// or does not fit in 32 bits. A decimal int has an optional sign. An octal int starts with 0o and a
+    /// hexadecimal int with 0x. The sum runs in 64 bits and stops once it exceeds the 32 bit range.
+    let tryParseInt (content: YAMLContent) : int option =
+        let text = content.Value
+        let digitValue (c: char) =
+            if c <= '9' then int c - int '0'
+            elif c >= 'a' then int c - int 'a' + 10
+            else int c - int 'A' + 10
+
+        let magnitude (start: int) (radix: int) =
+            let mutable sum = 0L
+            let mutable index = start
+            while index < text.Length && sum <= 2147483648L do
+                sum <- sum * int64 radix + int64 (digitValue text.[index])
+                index <- index + 1
+            sum
+
+        if not (resolvesAs "tag:yaml.org,2002:int" content) then
+            None
+        elif matches decimalPattern text then
+            let hasSign = text.[0] = '-' || text.[0] = '+'
+            let sum = magnitude (if hasSign then 1 else 0) 10
+            if text.[0] = '-' && sum <= 2147483648L then Some (int (-sum))
+            elif text.[0] <> '-' && sum <= 2147483647L then Some (int sum)
+            else None
+        elif matches octalPattern text then
+            let sum = magnitude 2 8
+            if sum <= 2147483647L then Some (int sum) else None
+        elif matches hexadecimalPattern text then
+            let sum = magnitude 2 16
+            if sum <= 2147483647L then Some (int sum) else None
+        else
+            None
+
+    /// The float that a reader of the core schema takes from the scalar, or None when the scalar is not a
+    /// decimal number, an infinity or not-a-number. A text that the number parse of the target accepts but
+    /// the core schema does not, such as NaN or 0x1F, gives None.
+    let tryParseFloat (content: YAMLContent) : float option =
+        let text = content.Value
+        if not (resolvesAs "tag:yaml.org,2002:float" content) then
+            None
+        elif matches infinityPattern text then
             Some (if text.[0] = '-' then Double.NegativeInfinity else Double.PositiveInfinity)
         elif matches nanPattern text then
             Some Double.NaN
@@ -81,6 +154,12 @@ module CoreSchema =
         else
             None
 
+    /// The text of a finite float. A whole number such as 1 gets ".0", because a reader of the core schema
+    /// reads the text 1 as an int and 1.0 as a float. Every other text of a float already has a point or
+    /// an exponent.
+    let floatText (text: string) =
+        if matches decimalPattern text then text + ".0" else text
+
     /// The content of a string scalar. Text that a core schema reader takes for null, a bool, an int or a
     /// float is double-quoted, so that it reads back as the string. Every other text has no style and the
     /// writer picks its form.
@@ -90,10 +169,19 @@ module CoreSchema =
 
 let int (value: int) = (YAMLContent.create(string value)) |> YAMLElement.Value
 
+#if FABLE_COMPILER_PYTHON
+/// The Python repr of a float is the shortest text that reads back as the same number. It switches to an
+/// exponent for large and small magnitudes (1e+21, 5e-324), where the Fable ToString writes every digit.
+/// The Fable float64 has its own repr, so the number becomes a Python float first.
+[<Fable.Core.Emit("repr(float($0))")>]
+let private pyRepr (value: float) : string = Fable.Core.Util.nativeOnly
+#endif
+
 /// The core schema spells not-a-number as .nan and the infinities as .inf and -.inf, where ToString gives NaN
 /// and Infinity. The JavaScript ToString writes negative zero as 0, so negative zero gets its own spelling.
-/// Every other text is a float of the core schema on all targets, for example 1E+21 on .NET and 1e+21 on
-/// JavaScript and Python.
+/// A finite number is written in the shortest text that reads back as the same number. A whole number gets
+/// ".0", because the core schema reads the text 1 as an int and 1.0 as a float. The exponent form depends on
+/// the target: 1E+21 on .NET, 1e+21 on JavaScript and Python.
 let float (value: float) : YAMLElement =
     let text =
         if Double.IsNaN value then ".nan"
@@ -101,10 +189,14 @@ let float (value: float) : YAMLElement =
         elif Double.IsNegativeInfinity value then "-.inf"
         elif value = 0.0 && BitConverter.DoubleToInt64Bits value < 0L then "-0.0"
         else
-            #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
-            value.ToString()
+            #if FABLE_COMPILER_PYTHON
+            CoreSchema.floatText (pyRepr value)
             #else
-            value.ToString("R", CultureInfo.InvariantCulture)
+            #if FABLE_COMPILER_JAVASCRIPT || FABLE_COMPILER_TYPESCRIPT
+            CoreSchema.floatText (value.ToString())
+            #else
+            CoreSchema.floatText (value.ToString("R", CultureInfo.InvariantCulture))
+            #endif
             #endif
     YAMLContent.create text |> YAMLElement.Value
 
@@ -199,11 +291,10 @@ let resizearray (encoder: 'a -> YAMLElement) (arr: ResizeArray<'a>) = YAMLElemen
 
 let list (encoder: 'a -> YAMLElement) (l: 'a list) = YAMLElement.Sequence (List.map encoder l)
 
-let values (encoder: 'a -> string) (values: 'a seq) = 
-    values 
-    |> Seq.map (encoder >> YAMLContent.create >> YAMLElement.Value) 
-    |> List.ofSeq 
-    |> YAMLElement.Object
+/// A sequence of string scalars, the counterpart of `Decode.values`. A block sequence is the only form in
+/// which several scalars read back as several values. Siblings in an `Object` read back as one multiline
+/// scalar. Each item goes through `string`, so a text such as `true` is double-quoted.
+let values (encoder: 'a -> string) (values: 'a seq) = seq (encoder >> string) values
 
 let inline object (objSeq: #seq<(string*YAMLElement)>) = 
     [

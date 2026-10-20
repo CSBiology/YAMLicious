@@ -127,8 +127,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | _ -> [])
     
     /// The lines of a block in order, nested blocks included. Each line keeps the text that
-    /// Preprocessing delivered. `tryCollapsePlainScalarContent` matches the nonblank ones against the
-    /// segments of a plain scalar.
+    /// Preprocessing delivered.
     let rec collectContentLines (eles: PreprocessorElement list) : string list =
         eles
         |> List.collect (function
@@ -247,108 +246,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             )
         | None ->
             failwithf "Invalid block scalar header: %s" rawHeader
-
-    let tryGetPlainScalarSegments (element: YAMLElement) =
-        let isAllowedSegment (allowMetadata: bool) (content: YAMLContent) =
-            let hasPlainCompatibleStyle =
-                match content.Style with
-                | None
-                | Some ScalarStyle.Plain -> true
-                | _ -> false
-
-            let hasOnlyContinuationContent =
-                content.Comment.IsNone
-                && content.Anchor.IsNone
-                && content.Tag.IsNone
-
-            hasPlainCompatibleStyle
-            && (allowMetadata || hasOnlyContinuationContent)
-
-        let rec loop (allowMetadata: bool) (items: YAMLElement list) (acc: YAMLContent list) =
-            match items with
-            | [] ->
-                match List.rev acc with
-                | [] -> None
-                | segments -> Some segments
-            | YAMLElement.Value content :: rest when isAllowedSegment allowMetadata content ->
-                loop false rest (content :: acc)
-            | _ ->
-                None
-
-        match element with
-        | YAMLElement.Object items -> loop true items []
-        | _ -> None
-
-    let tryCollapsePlainScalarContent (hasInlineFirstLine: bool) (block: PreprocessorElement list) (parsed: YAMLElement) =
-        match tryGetPlainScalarSegments parsed with
-        | Some (firstSegment :: _ as segments) ->
-            let rawBlockLines = collectContentLines block
-            let expectedSegmentCount =
-                if hasInlineFirstLine then List.length segments - 1 else List.length segments
-
-            let actualNonEmptyBlockLineCount =
-                rawBlockLines
-                |> List.filter (fun line -> line.Trim() <> "")
-                |> List.length
-
-            let rawLines =
-                if expectedSegmentCount = actualNonEmptyBlockLineCount then
-                    let values =
-                        if hasInlineFirstLine then segments |> List.tail else segments
-                        |> Queue
-
-                    let renderedBlockLines =
-                        rawBlockLines
-                        |> List.map (fun rawLine ->
-                            if rawLine.Trim() = "" then
-                                ""
-                            else
-                                values.Dequeue().Value
-                        )
-
-                    if hasInlineFirstLine then
-                        firstSegment.Value :: renderedBlockLines
-                    else
-                        renderedBlockLines
-                else
-                    segments |> List.map (fun segment -> segment.Value)
-
-            let rawValue = System.String.Join("\n", rawLines)
-            let style =
-                if rawValue.Contains("\n") then Some ScalarStyle.Plain else firstSegment.Style
-
-            Some { firstSegment with Value = rawValue; Style = style }
-        | _ ->
-            None
-
-    let rec takePlainScalarContinuationContents (elements: PreprocessorElement list) (acc: YAMLContent list) =
-        match elements with
-        | Key _ :: _
-        | KeyValue _ :: _
-        | SequenceMinusOpener _ :: _
-        | YamlComment _ :: _
-        | [] ->
-            List.rev acc, elements
-        | YamlValue v :: rest when v.Value <> "" && v.Comment.IsNone ->
-            let content = createScalarContent v.Value None
-            match content.Style, content.Comment, content.Anchor, content.Tag with
-            | (None | Some ScalarStyle.Plain), None, None, None ->
-                takePlainScalarContinuationContents rest (content :: acc)
-            | _ ->
-                List.rev acc, elements
-        | _ ->
-            List.rev acc, elements
-
-    let appendPlainScalarContinuations (content: YAMLContent) (continuations: YAMLContent list) =
-        match continuations with
-        | [] -> content
-        | _ ->
-            let rawValue =
-                content :: continuations
-                |> List.map (fun segment -> segment.Value)
-                |> String.concat "\n"
-
-            { content with Value = rawValue; Style = Some ScalarStyle.Plain }
 
     let rec takeLeadingComments (elements: PreprocessorElement list) =
         match elements with
@@ -517,6 +414,47 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         (List.rev elements) @ acc
 
+    /// The elements that a node gets when a line of properties stands in front of it. A scalar takes the
+    /// tag and the anchor, and the comment of the line goes in front of it. Nothing behind the line gives an
+    /// empty scalar that carries them. A block mapping or sequence has no field for properties, so they are
+    /// dropped and only the comment stays.
+    let attachProperties (props: {| Value: string; Tag: string option; Anchor: string option |}) (comment: string option) (node: YAMLElement) =
+        let oneOf (own: string option) (outer: string option) (name: string) =
+            match own, outer with
+            | Some _, Some _ -> failwithf "A node cannot have two %ss." name
+            | Some _, None -> own
+            | None, _ -> outer
+
+        let items = match node with YAMLElement.Object items -> items | other -> [other]
+        let leading = comment |> Option.map YAMLElement.Comment |> Option.toList
+        let isValue = function YAMLElement.Value _ -> true | _ -> false
+        let isComment = function YAMLElement.Comment _ -> true | _ -> false
+        match items |> List.filter (isComment >> not) with
+        | [] ->
+            items @ [ YAMLElement.Value(YAMLContent.create("", ?comment = comment, ?anchor = props.Anchor, ?tag = props.Tag)) ]
+        | [ item ] when isValue item ->
+            leading @ (items |> List.map (function
+                | YAMLElement.Value content ->
+                    YAMLElement.Value { content with Tag = oneOf content.Tag props.Tag "tag"; Anchor = oneOf content.Anchor props.Anchor "anchor" }
+                | other -> other))
+        | _ ->
+            leading @ items
+
+    /// A plain scalar cannot start with `[`, `]`, `{`, `}` or `,`, so a value that does belongs to a flow
+    /// collection. The layouts of a flow collection that the Reader supports are matched before a value gets
+    /// here. What is left spans several lines in a layout without a pattern, and reading its lines one by one
+    /// would give a wrong value. A collection that fits on one line behind properties is not checked here.
+    let failOnFlowFragment (value: string) =
+        if value <> "" then
+            match value.[0] with
+            | '[' | ']' | '{' | '}' | ',' ->
+                match PreprocessorElement.Line value with
+                | InlineSequence _
+                | InlineJSON _ -> ()
+                | _ ->
+                    failwithf "A flow collection over several lines in this layout is not supported yet: %s" (restoreStringReplace stringDict value)
+            | _ -> ()
+
     let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         // Comments between items go into the sequence list as Comment elements.
         let readSequenceItem (element: PreprocessorElement list) =
@@ -542,11 +480,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | Some (node, openerCommentId, closerCommentId) ->
                     wrapFlowSequenceItem openerCommentId closerCommentId node
                 | None ->
-                    let objectList = joinSequenceItemValue v.Value yamlAstList
-                    let parsedFirstItem = loopRead handles objectList []
-                    match tryCollapsePlainScalarContent v.Value.IsSome yamlAstList parsedFirstItem with
-                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                    | None -> parsedFirstItem
+                    loopRead handles (joinSequenceItemValue v.Value yamlAstList) []
             let sequenceElements, rest = splitSequenceItems rest0
             let current =
                 YAMLElement.Sequence [
@@ -662,10 +596,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     loopRead handles [PreprocessorElement.Line (String.concat " " (value :: flattenFlowContent block))] []
                 else
                     let inlineValue = if value = "" then None else Some value
-                    let parsedValue = loopRead handles (joinSequenceItemValue inlineValue block) []
-                    match tryCollapsePlainScalarContent inlineValue.IsSome block parsedValue with
-                    | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                    | None -> parsedValue
+                    loopRead handles (joinSequenceItemValue inlineValue block) []
 
             match afterKey with
             | ExplicitValue v::Intendation iList::tail ->
@@ -678,16 +609,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | Key v::Intendation yamlAstList::rest -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
             let keyContent = createScalarContent v.Key c
-            let parsedValue = loopRead handles yamlAstList []
-            let valueElement =
-                match tryCollapsePlainScalarContent false yamlAstList parsedValue with
-                | Some content -> YAMLElement.Object [YAMLElement.Value content]
-                | None -> parsedValue
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    valueElement
-                )
+            let current = YAMLElement.Mapping (keyContent, loopRead handles yamlAstList [])
             loopRead handles rest (current::acc)
         | Key v::rest0 ->
             let leadingComments, afterComments = takeLeadingComments rest0
@@ -736,8 +658,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     )
                 loopRead handles rest (current::acc)
             | _ ->
+                // A key with no value and no indented block maps to nothing, like an explicit key without `:`.
                 let c = restoreCommentReplace commentDict v.Comment
-                let current = YAMLElement.Value(YAMLContent.create(v.Key + ":", ?comment = c))
+                let current = YAMLElement.Mapping(createScalarContent v.Key c, YAMLElement.Nil)
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
@@ -746,20 +669,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             loopRead handles rest (current::acc)
         | KeyValue v::Intendation block::rest ->
             let keyContent = createScalarContent v.Key None
-            let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
-            let valueElement, restAfterValue =
-                match tryCollapsePlainScalarContent true block parsedValue with
-                | Some content ->
-                    let continuations, restAfterContinuations = takePlainScalarContinuationContents rest []
-                    let content = appendPlainScalarContinuations content continuations
-                    YAMLElement.Object [YAMLElement.Value content], restAfterContinuations
-                | None -> parsedValue, rest
-            let current =
-                YAMLElement.Mapping(
-                    keyContent,
-                    valueElement
-                )
-            loopRead handles restAfterValue (current::acc)
+            let current = YAMLElement.Mapping(keyContent, loopRead handles (PreprocessorElement.Line v.Value :: block) [])
+            loopRead handles rest (current::acc)
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             let keyContent = createScalarContent v.Key None
@@ -780,17 +691,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | YamlValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
             let current = YAMLElement.Value(readBlockScalarContent v.Value v.Comment block)
             loopRead handles rest (current::acc)
-        | YamlValue v::Intendation block::rest ->
-            let parsedValue = loopRead handles (PreprocessorElement.Line v.Value :: block) []
-            let current =
-                match tryCollapsePlainScalarContent true block parsedValue with
-                | Some content ->
-                    YAMLElement.Value content
-                | None ->
-                    match parsedValue with
-                    | YAMLElement.Object [single] -> single
-                    | _ -> failwithf "Unknown pattern: %A" (PreprocessorElement.Line v.Value :: block)
-            loopRead handles rest (current::acc)
         | YamlValue v::rest when v.Value = "" && v.Comment.IsNone ->
             // Ignore structural blank lines outside explicit scalar contexts.
             loopRead handles rest acc
@@ -798,12 +698,22 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | YamlValue v::rest -> // createValue
             let c = restoreCommentReplace commentDict v.Comment
             let props = extractProperties handles v.Value
-            let finalValue, finalStyle = restoreScalarWithStyle props.Value
-            let current = 
-                YAMLElement.Value (
-                    YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
-                )
-            loopRead handles rest (current::acc)
+            if props.Value = "" && (props.Tag.IsSome || props.Anchor.IsSome) then
+                // The line holds only properties, so the node behind it owns them. That node is the block
+                // nested behind the line or the rest of the block that the line belongs to.
+                let node, afterNode =
+                    match rest with
+                    | Intendation block::tail -> loopRead handles block [], tail
+                    | _ -> loopRead handles rest [], []
+                loopRead handles afterNode (List.rev (attachProperties props c node) @ acc)
+            else
+                failOnFlowFragment props.Value
+                let finalValue, finalStyle = restoreScalarWithStyle props.Value
+                let current =
+                    YAMLElement.Value (
+                        YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
+                    )
+                loopRead handles rest (current::acc)
         | [] ->
             acc
             |> List.rev

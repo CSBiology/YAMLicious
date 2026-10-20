@@ -628,57 +628,9 @@ let private siblingScalarsInput (scalars: int) =
         sb.Append(sprintf "k%d: |\n  x\n# c\n" i) |> ignore
     sb.ToString()
 
-/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run. Fable has no
-/// Stopwatch, so the clock is the system time, and a window of 50 ms holds many runs of a short action.
-let private sampleMilliseconds (action: unit -> unit) =
-    let startTime = System.DateTime.UtcNow
-    let mutable runs = 0
-    let mutable elapsed = 0.0
-    while elapsed < 50.0 do
-        action ()
-        runs <- runs + 1
-        elapsed <- (System.DateTime.UtcNow - startTime).TotalMilliseconds
-    elapsed / float runs
-
-/// The lines of the small and the large input in the scaling tests. Fable Python runs far slower than
-/// the other targets, so it keeps a shorter large input to hold the time of the suite down.
-let private smallLines = 2000
-#if FABLE_COMPILER_PYTHON
-let private largeLines = 16000
-#else
-let private largeLines = 32000
-#endif
-
-/// Compares how the time of Preprocessing.read grows from the small to the large input with how the time
-/// of Persil.tokenize grows on the same inputs. The tokenizer is linear, so a linear read scores about 1
-/// and a quadratic one about the ratio of the two sizes. The reference absorbs the cost that a large
-/// input pays for the garbage collector and the caches. Every round measures the four series one after
-/// the other, so a load on the machine hits the read and the reference alike. The first round warms up
-/// the code and is dropped. The fastest of the five rounds after it keeps a pause of the garbage
-/// collector out of the result.
-let private expectLinear (name: string) (build: int -> string) =
-    let smallInput = build smallLines
-    let largeInput = build largeLines
-    let actions: (unit -> unit)[] = [|
-        fun () -> Persil.tokenize smallInput |> ignore
-        fun () -> Preprocessing.read smallInput |> ignore
-        fun () -> Persil.tokenize largeInput |> ignore
-        fun () -> Preprocessing.read largeInput |> ignore
-    |]
-    let fastest = Array.create actions.Length infinity
-    for round in 0 .. 5 do
-        for i in 0 .. actions.Length - 1 do
-            let milliseconds = sampleMilliseconds actions.[i]
-            if round > 0 then fastest.[i] <- min fastest.[i] milliseconds
-    let readRatio = fastest.[3] / fastest.[1]
-    let referenceRatio = fastest.[2] / fastest.[0]
-    let normalized = readRatio / referenceRatio
-    // The limit is the geometric mean of 1 (linear) and the size ratio (quadratic), the middle on a log scale.
-    let limit = sqrt (float largeLines / float smallLines)
-    Expect.isTrue
-        (normalized < limit)
-        (sprintf "%s: the read took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. The tokenizer took %.3f ms and %.3f ms, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
-            name fastest.[1] smallLines fastest.[3] largeLines readRatio fastest.[0] fastest.[2] referenceRatio normalized limit)
+/// The read of the input must grow linearly with its lines. The scanner is the reference.
+let private expectReadLinear (name: string) (build: int -> string) =
+    expectLinear $"The read of {name}" (Preprocessing.read >> ignore) (Persil.tokenize >> ignore) build
 
 let private scalingTests = testList "Block scalar scaling" [
     testCase "A body of more than 5000 lines reads as one scalar" <| fun _ ->
@@ -699,22 +651,22 @@ let private scalingTests = testList "Block scalar scaling" [
         | _ -> failwith "The root should hold the mapping of the header and its sibling."
 
     testCase "The time grows linearly with the lines of a body" <| fun _ ->
-        expectLinear "body" bodyInput
+        expectReadLinear "body" bodyInput
 
     testCase "The time grows linearly with a run of comments between nodes" <| fun _ ->
-        expectLinear "comments" commentRunInput
+        expectReadLinear "comments" commentRunInput
 
     testCase "The time grows linearly with a run of comments at the end of the input" <| fun _ ->
-        expectLinear "trailing comments" trailingCommentRunInput
+        expectReadLinear "trailing comments" trailingCommentRunInput
 
     testCase "The time grows linearly with a run of comments in front of a flow closer" <| fun _ ->
-        expectLinear "flow closer" flowCloserCommentRunInput
+        expectReadLinear "flow closer" flowCloserCommentRunInput
 
     testCase "The time grows linearly with a run of blank lines" <| fun _ ->
-        expectLinear "blank lines" blankRunInput
+        expectReadLinear "blank lines" blankRunInput
 
     testCase "The time grows linearly with the number of scalars and comments" <| fun _ ->
-        expectLinear "sibling scalars" siblingScalarsInput
+        expectReadLinear "sibling scalars" siblingScalarsInput
 ]
 
 let Main =

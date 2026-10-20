@@ -278,42 +278,6 @@ module Formatting =
             mkNodePrefix content + firstLine
         mkPlainMultilineNode mkFirstLine content lines
 
-    let tryLegacyPlainMultilineContent (items: YAMLElement list) =
-        let isAllowedSegment (allowMetadata: bool) (content: YAMLContent) =
-            let hasPlainCompatibleStyle =
-                match content.Style with
-                | None
-                | Some ScalarStyle.Plain -> true
-                | _ -> false
-
-            let hasOnlyContinuationContent =
-                content.Comment.IsNone
-                && content.Anchor.IsNone
-                && content.Tag.IsNone
-
-            hasPlainCompatibleStyle
-            && (allowMetadata || hasOnlyContinuationContent)
-
-        let rec loop (allowMetadata: bool) (remaining: YAMLElement list) (acc: YAMLContent list) =
-            match remaining with
-            | [] ->
-                acc |> List.rev |> Some
-            | YAMLElement.Value content :: rest when isAllowedSegment allowMetadata content ->
-                loop false rest (content :: acc)
-            | _ ->
-                None
-
-        match loop true items [] with
-        | Some (firstSegment :: _ :: _ as segments) ->
-            let rawValue =
-                segments
-                |> List.map (fun segment -> segment.Value)
-                |> String.concat "\n"
-
-            Some { firstSegment with Value = rawValue; Style = Some ScalarStyle.Plain }
-        | _ ->
-            None
-
     /// An explicit indentation indicator fixes the content indentation at that many spaces beyond
     /// the header, so such a body stays on the header's level and carries those spaces itself.
     /// Without an indicator the body is nested one level, as for any other child.
@@ -382,9 +346,6 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                 PreprocessorElement.Line s
             | YAMLElement.Object [YAMLElement.Alias a] ->
                 PreprocessorElement.Line (Formatting.mkMappingKey options key + " *" + a)
-            | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
-                let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
-                Formatting.mkPlainMultilineMapping options key value
             | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
                 Formatting.mkBlockScalarMapping options key value
             | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
@@ -407,9 +368,6 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                         loop anyElse
                     ]
                 ]
-        | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
-            let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
-            Formatting.mkPlainMultilineRoot options value
         | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
             Formatting.mkPlainMultilineRoot options value
         | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->
@@ -436,9 +394,6 @@ let detokenizeWithOptions (options: WriterOptions) (ele: YAMLElement) =
                         PreprocessorElement.Line s
                     | YAMLElement.Object [YAMLElement.Alias a] ->
                         PreprocessorElement.Line ("- *" + a)
-                    | YAMLElement.Object items when Formatting.tryLegacyPlainMultilineContent items |> Option.isSome ->
-                        let value = Formatting.tryLegacyPlainMultilineContent items |> Option.get
-                        Formatting.mkPlainMultilineSequenceItem options value
                     | YAMLElement.Value value when Formatting.shouldEmitPlainMultilineScalar options value ->
                         Formatting.mkPlainMultilineSequenceItem options value
                     | YAMLElement.Value value when Formatting.shouldEmitBlockScalar options value ->

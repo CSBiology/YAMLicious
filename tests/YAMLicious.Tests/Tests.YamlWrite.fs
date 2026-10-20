@@ -78,12 +78,12 @@ let Main = testList "YamlWrite" [
 - My Value 3"
         Expect.trimEqual actual expected ""
 
+    // yaml@2.6.1 reads the expected text as ["My Value 1 My Value 2", "My Value 3"].
     testCase "SequenceObjects" <| fun _ ->
         let ele = YAMLElement.Object [
             YAMLElement.Sequence[
                 YAMLElement.Object [
-                    YAMLElement.Value (YAMLContent.create("My Value 1"))
-                    YAMLElement.Value (YAMLContent.create("My Value 2"))
+                    YAMLElement.Value (YAMLContent.create("My Value 1\nMy Value 2", style=ScalarStyle.Plain))
                 ];
                 YAMLElement.Value(YAMLContent.create("My Value 3"))
             ]
@@ -94,14 +94,13 @@ let Main = testList "YamlWrite" [
 - My Value 3"
         Expect.trimEqual actual expected ""
 
+    // yaml@2.6.1 reads the expected text as {"My Key": "My Value1 My Value2 My Value3"}.
     testCase "SequenceImplicit" <| fun _ ->
         let ele = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("My Key"),
                 YAMLElement.Object [
-                    YAMLElement.Value(YAMLContent.create("My Value1"));
-                    YAMLElement.Value(YAMLContent.create("My Value2"));
-                    YAMLElement.Value(YAMLContent.create("My Value3"))
+                    YAMLElement.Value(YAMLContent.create("My Value1\nMy Value2\nMy Value3", style=ScalarStyle.Plain))
                 ]
             )
         ]

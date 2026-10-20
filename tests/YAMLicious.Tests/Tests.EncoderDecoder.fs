@@ -475,11 +475,11 @@ let tests_option_null = testList "Encode and Decode option and null" [
             Expect.equal (readOption written) (Some text) $"Some '{text}' reads back as Some '{text}'"
         Expect.equal (readOption (writeValue (Encode.option Encode.string None))) None "None reads back as None"
 
-    // yaml@2.6.1 reads `k: null`, `k: ~`, `k: Null` and `k: NULL` as null. It reads `k:` as null too. The
-    // reader returns the text `k:` as a scalar for it, so the test builds the empty plain scalar by hand.
+    // yaml@2.6.1 reads `k: null`, `k: ~`, `k: Null` and `k: NULL` as null. It reads `k:` as null too.
     testCase "Decode.option reads a plain null, ~ and empty value as None" <| fun _ ->
         for text in [ "null"; "~"; "Null"; "NULL" ] do
             Expect.equal (readOption $"k: {text}\n") None $"A plain {text} is None"
+        Expect.equal (readOption "k:\n") None "A key without a value is None"
         let empty = YAMLElement.Value(YAMLContent.create "")
         Expect.equal (Decode.option Decode.string empty) None "An empty plain scalar is None"
 
@@ -506,16 +506,31 @@ let tests_float = testList "Encode and Decode float" [
         Expect.equal (writeValue (Encode.float infinity)) "k: .inf\n" "infinity"
         Expect.equal (writeValue (Encode.float (-infinity))) "k: -.inf\n" "negative infinity"
 
-    // yaml@2.6.1 reads the text that each target writes as the same number. The finite texts differ by target:
-    // 1E+21 on .NET, 1e+21 on JavaScript and 1000000000000000000000 on Python. It reads all of them as 1e+21.
-    // It reads `-0.0` as -0 and `.nan` as NaN.
+    // yaml@2.6.1 reads the text that each target writes as the same number. The exponent form differs by
+    // target: 1E+21 on .NET and 1e+21 on JavaScript and Python. It reads both as 1e+21. It reads `-0.0` as -0
+    // and `.nan` as NaN.
     testCase "Encode.float and Decode.float round trip" <| fun _ ->
         let values =
             [ nan; infinity; -infinity; 0.1; 1e21; -0.0; 0.0; 123.0; -1.5; 1e-7; 1e16
-              0.30000000000000004; 5e-324; 1.7976931348623157e308 ]
+              0.30000000000000004; 5e-324; 1.7976931348623157e308; 1.0; 1e15; 1e100; -1e-100 ]
         for value in values do
             let written = writeValue (Encode.float value)
             Expect.isTrue (sameFloat (readValue Decode.float written) value) $"{value} reads back from {written}"
+
+    // The core schema of yaml@2.6.1 resolves 1.0, 100.0 and -2.0 as floats and 1 and 1000000000000000000000 as ints.
+    testCase "Encode.float writes a whole number with a point" <| fun _ ->
+        Expect.equal (writeValue (Encode.float 1.0)) "k: 1.0\n" "1.0"
+        Expect.equal (writeValue (Encode.float 100.0)) "k: 100.0\n" "100.0"
+        Expect.equal (writeValue (Encode.float -2.0)) "k: -2.0\n" "-2.0"
+        Expect.equal (writeValue (Encode.float 0.0)) "k: 0.0\n" "0.0"
+
+    // The core schema of yaml@2.6.1 resolves a text as an int when it has only digits and a sign. A float needs a
+    // point or an exponent. The texts stay short on every target, also for 5e-324, which Python wrote with 300 digits.
+    testCase "Encode.float writes no int and no long text" <| fun _ ->
+        for value in [ 1.0; 1e15; 1e16; 1e21; 1e22; 1e100; 1e-7; -1e-100; 5e-324; 1.7976931348623157e308; 123456789012345680000.0 ] do
+            let text = (writeValue (Encode.float value)).Substring(3).TrimEnd('\n')
+            Expect.isTrue (text.Contains(".") || text.Contains("e") || text.Contains("E")) $"{text} is a float of the core schema"
+            Expect.isTrue (text.Length <= 25) $"{text} is short"
 
     // yaml@2.6.1 reads each of these plain texts as the number in the expectation.
     testCase "Decode.float reads the float forms of the core schema" <| fun _ ->
@@ -557,11 +572,72 @@ let tests_keys_and_chars = testList "Encode char and keys" [
         Expect.equal (writeDocument objectNode) "\"null\": 1\n\"1.5\": 2\nname: 3\n" "object keys are quoted when they need it"
 ]
 
+let tests_decode_core_schema = testList "Decode follows the core schema" [
+    // yaml@2.6.1 reads `k: !!str null` as the string null and `k: !!str` as the empty string. It reads `k: !!null`
+    // and `k: !!null null` as null. It reads `k: !foo null` and `k: ! null` as the string null.
+    testCase "Decode.option follows an explicit tag" <| fun _ ->
+        Expect.equal (readOption "k: !!str null\n") (Some "null") "!!str null is the string"
+        Expect.equal (readOption "k: !!str\n") (Some "") "!!str alone is the empty string"
+        Expect.equal (readOption "k: !!null\n") None "!!null alone is null"
+        Expect.equal (readOption "k: !!null null\n") None "!!null null is null"
+        Expect.equal (readOption "k: !foo null\n") (Some "null") "A local tag is not null"
+        Expect.equal (readOption "k: ! null\n") (Some "null") "The non-specific tag is not null"
+
+    // yaml@2.6.1 reads the sequence `- a`, `-`, `- b` as ["a", null, "b"]. The reader gives the empty item as Object [].
+    testCase "Decode.option reads an empty node as None" <| fun _ ->
+        let items = "- a\n-\n- b\n" |> Decode.read |> Decode.list (Decode.option Decode.string)
+        Expect.equal items [ Some "a"; None; Some "b" ] "The empty sequence item is None"
+        Expect.equal (Decode.option Decode.string YAMLElement.Nil) None "Nil is None"
+        Expect.equal (Decode.option Decode.string (YAMLElement.Object [])) None "An empty object is None"
+
+    // yaml@2.6.1 reads true, True, TRUE, false, False and FALSE as bools. It reads tRuE, yes, on, 1, "true" and
+    // 'true' as strings, and `!!bool "true"` as true.
+    testCase "Decode.bool reads the bools of the core schema" <| fun _ ->
+        for (text, expected) in [ "true", true; "True", true; "TRUE", true; "false", false; "False", false; "FALSE", false ] do
+            Expect.equal (readValue Decode.bool $"k: {text}\n") expected $"{text} is a bool"
+        Expect.equal (readValue Decode.bool "k: !!bool \"true\"\n") true "An explicit tag fixes the type"
+        for text in [ "tRuE"; "yes"; "on"; "1"; "\"true\""; "'true'" ] do
+            Expect.throws (fun _ -> readValue Decode.bool $"k: {text}\n" |> ignore) $"{text} is no bool"
+        Expect.throws (fun _ -> readValue Decode.bool "k: |\n  true\n" |> ignore) "A block scalar is a string"
+
+    // yaml@2.6.1 reads 5, +5, -5, 007, 0o17 and 0x1F as the ints 5, 5, -5, 7, 15 and 31. It reads 0X1F, -0x1, 0o8, 1_000,
+    // "5" and '5' as strings, 1.5 and 5.0 as floats, and `!!int "5"` as 5.
+    testCase "Decode.int reads the ints of the core schema" <| fun _ ->
+        let ints =
+            [ "5", 5; "+5", 5; "-5", -5; "007", 7; "0o17", 15; "0x1F", 31; "0xff", 255
+              "2147483647", 2147483647; "-2147483648", -2147483648; "0x7FFFFFFF", 2147483647 ]
+        for (text, expected) in ints do
+            Expect.equal (readValue Decode.int $"k: {text}\n") expected $"{text} is an int"
+        Expect.equal (readValue Decode.int "k: !!int \"5\"\n") 5 "An explicit tag fixes the type"
+        for text in [ "2147483648"; "-2147483649"; "0x80000000"; "1.5"; "5.0"; "0X1F"; "-0x1"; "0o8"; "1_000"; "\"5\""; "'5'"; "5a" ] do
+            Expect.throws (fun _ -> readValue Decode.int $"k: {text}\n" |> ignore) $"{text} is no int"
+
+    // yaml@2.6.1 reads `k: "1.5"` as the string 1.5 and `k: 1.5` as the float 1.5.
+    testCase "Decode.float rejects a quoted number" <| fun _ ->
+        Expect.equal (readValue Decode.float "k: 1.5\n") 1.5 "A plain 1.5 is a float"
+        Expect.throws (fun _ -> readValue Decode.float "k: \"1.5\"\n" |> ignore) "A double-quoted 1.5 is a string"
+        Expect.throws (fun _ -> readValue Decode.float "k: '1.5'\n" |> ignore) "A single-quoted 1.5 is a string"
+]
+
+let tests_encode_values = testList "Encode.values" [
+    // yaml@2.6.1 reads `k: [a, b c, "true"]` as {"k":["a","b c","true"]} and the root sequence `- a`, `- b` as ["a","b"].
+    // An Object of sibling scalars would be written as lines that read back as one multiline scalar.
+    testCase "Encode.values writes a sequence that Decode.values reads back" <| fun _ ->
+        let written = writeValue (Encode.values id [ "a"; "b c"; "true" ])
+        Expect.equal written "k: [a, b c, \"true\"]\n" "The items stay separate"
+        Expect.equal (readValue (Decode.values Decode.string) written) [ "a"; "b c"; "true" ] "The items read back"
+        let root = writeDocument (Encode.values id [ "a"; "b" ])
+        Expect.equal root "- a\n- b\n" "The root is a block sequence"
+        Expect.equal (root |> Decode.read |> Decode.values Decode.string) [ "a"; "b" ] "The root items read back"
+]
+
 let Main = testList "EncoderDecoder" [
     tests_decode
     tests_validationPackages
     tests_encode_scalars
     tests_option_null
     tests_float
+    tests_decode_core_schema
+    tests_encode_values
     tests_keys_and_chars
 ]

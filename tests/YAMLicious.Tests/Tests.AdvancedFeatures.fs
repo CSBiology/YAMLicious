@@ -341,4 +341,109 @@ rbi:
             Expect.equal value.Style (Some ScalarStyle.SingleQuoted) "Single-quoted style should be preserved"
         | _ ->
             failwithf "Unexpected AST: %A" actual
+    // --- Section 7: Tags and anchors on a line of their own ---
+
+    // yaml@2.6.1 reads `k: !!str` followed by `a` and `b` on indented lines as {"k":"a b"}, and the same with the
+    // tag on a line of its own below `k:`. It reads `k: &x` followed by `a` as {"k":"a"} and `- !!str` followed by
+    // `a` and `b` as ["a b"].
+    testCase "7.1 Properties on their own line belong to the plain scalar behind them" <| fun _ ->
+        let strTag = "tag:yaml.org,2002:str"
+        let multiline = YAMLContent.create("a\nb", tag=strTag, style=ScalarStyle.Plain)
+        let expected = YAMLElement.Object [ scalarEntry (YAMLContent.create "k") multiline ]
+        Expect.equal (Reader.read "k: !!str\n  a\n  b") expected "The tag stands on the key line"
+        Expect.equal (Reader.read "k:\n  !!str\n  a\n  b") expected "The tag stands on a line of its own"
+        Expect.equal
+            (Reader.read "k: &x\n  a")
+            (YAMLElement.Object [ scalarEntry (YAMLContent.create "k") (YAMLContent.create("a", anchor="x")) ])
+            "The anchor stands on the key line"
+        Expect.equal
+            (Reader.read "- !!str\n  a\n  b")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Value multiline ] ] ])
+            "The tag stands behind a dash"
+        let decoded = Reader.read "k: !!str\n  a\n  b" |> Decode.object (fun get -> get.Required.Field "k" Decode.string)
+        Expect.equal decoded "a b" "The value has no leading line break"
+
+    // yaml@2.6.1 reads `k: !t` followed by `|` and `x` on indented lines as {"k":"x\n"}, and `- &a` followed by
+    // `>-` and `y` as ["y"].
+    testCase "7.2 Properties on their own line belong to the block scalar behind them" <| fun _ ->
+        let block (style: BlockScalarStyle) (chomp: ChompingMode) = ScalarStyle.Block(style, chomp, None)
+        Expect.equal
+            (Reader.read "k: !t\n  |\n    x")
+            (YAMLElement.Object [ scalarEntry (YAMLContent.create "k") (YAMLContent.create("x\n", tag="!t", style=block BlockScalarStyle.Literal ChompingMode.Clip)) ])
+            "The tag stands on the key line"
+        Expect.equal
+            (Reader.read "- &a\n  >-\n    y")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("y", anchor="a", style=block BlockScalarStyle.Folded ChompingMode.Strip)) ] ] ])
+            "The anchor stands behind a dash"
+
+    // yaml@2.6.1 reads these inputs as [{"k":"v"}], {"k":{"a":1}}, [["x"]] and {"k":["a"]}. The element model has no
+    // field for the properties of a mapping or a sequence, so the reader drops them. It adds no empty scalar.
+    testCase "7.3 Properties on their own line before a block mapping or sequence add no empty scalar" <| fun _ ->
+        let value (text: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create text) ]
+        let entry (key: string) (node: YAMLElement) = YAMLElement.Mapping(YAMLContent.create key, node)
+        Expect.equal
+            (Reader.read "- !!map\n  k: v")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ entry "k" (value "v") ] ] ])
+            "A tagged mapping behind a dash"
+        Expect.equal
+            (Reader.read "k: !!map\n  a: 1")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (value "1") ]) ])
+            "A tagged mapping behind a key"
+        Expect.equal
+            (Reader.read "- &a\n  - x")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Sequence [ value "x" ] ] ] ])
+            "An anchored sequence behind a dash"
+        Expect.equal
+            (Reader.read "k: &x\n  - a")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ value "a" ] ]) ])
+            "An anchored sequence behind a key"
+
+    // yaml@2.6.1 reads `k: !!str # c` followed by `a` as {"k":"a"}. The comment stands in front of the scalar.
+    testCase "7.4 A comment behind properties on their own line stays a comment" <| fun _ ->
+        Expect.equal
+            (Reader.read "k: !!str # c\n  a")
+            (YAMLElement.Object [
+                YAMLElement.Mapping(
+                    YAMLContent.create "k",
+                    YAMLElement.Object [
+                        YAMLElement.Comment " c"
+                        YAMLElement.Value(YAMLContent.create("a", tag="tag:yaml.org,2002:str"))
+                    ]
+                )
+            ])
+            "The comment comes first and the scalar keeps the tag"
+
+    // yaml@2.6.1 reports "A node can have at most one tag" and "A node can have at most one anchor" for these inputs.
+    testCase "7.5 A node cannot have two tags or two anchors" <| fun _ ->
+        Expect.throws (fun _ -> Reader.read "k: !!str\n  !!int a" |> ignore) "Two tags"
+        Expect.throws (fun _ -> Reader.read "k: &x\n  &y a" |> ignore) "Two anchors"
+
+    // yaml@2.6.1 reads `k: !!str` followed by a blank line and `a` as {"k":"a"}, and `k: &x` followed by a blank
+    // line and `a: 1` as {"k":{"a":1}}.
+    testCase "7.6 A blank line between properties and the node behind them is part of the node" <| fun _ ->
+        Expect.equal
+            (Reader.read "k: !!str\n\n  a")
+            (Reader.read "k: !!str\n  a")
+            "The scalar reads as without the blank line"
+        Expect.equal
+            (Reader.read "k: &x\n\n  a: 1")
+            (Reader.read "k:\n  a: 1")
+            "The mapping reads as without the blank line"
+
+    // yaml@2.6.1 reads each written text again as the same value. The tag and the anchor survive the writer.
+    testCase "7.7 A writer round trip keeps the tag and the anchor of the scalars" <| fun _ ->
+        for text in [ "k: !!str\n  a\n  b"; "k: &x\n  a"; "- !!str\n  a\n  b"; "k: !t\n  |\n    x"; "- &a\n  >-\n    y" ] do
+            let written = Writer.write (Reader.read text) None
+            let reread = Reader.read written
+            Expect.equal (Writer.write reread None) written $"The text of {text} is stable"
+            let contents (element: YAMLElement) =
+                let rec collect (el: YAMLElement) =
+                    match el with
+                    | YAMLElement.Value content -> [ content.Value, content.Tag, content.Anchor ]
+                    | YAMLElement.Mapping (_, value) -> collect value
+                    | YAMLElement.Object items
+                    | YAMLElement.Sequence items -> List.collect collect items
+                    | _ -> []
+                collect element
+            Expect.equal (contents reread) (contents (Reader.read text)) $"The values, tags and anchors of {text} survive"
 ]

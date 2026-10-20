@@ -268,10 +268,11 @@ let private splitNestedBlock (frameIndent: int) (units: InputUnit list) =
     loop [] units
 
 /// True when the code of a line, without its comment, ends in a character that opens a block: the colon
-/// of a key, or the bracket of a flow collection.
+/// of a key, or the bracket of a flow collection. A line with nothing behind its indicators but properties,
+/// as in `k: !!str`, opens a block too, because the node behind the properties follows on a later line.
 let private opensBlock (line: Persil.TokenLine) =
     let code = line.Text.Substring(0, line.CodeLength).TrimEnd()
-    code.EndsWith(":") || code.EndsWith("[") || code.EndsWith("{")
+    code.EndsWith("[") || code.EndsWith("{") || (LineValue.find code).Start >= code.Length
 
 /// Builds the elements of one frame, the units that share the indentation `frameIndent`. A deeper unit
 /// starts a nested frame, which becomes an `Intendation`. The elements come back in reverse order.

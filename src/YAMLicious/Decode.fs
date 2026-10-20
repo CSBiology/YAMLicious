@@ -80,13 +80,6 @@ module Helper =
         | _ ->
             content.Value
 
-    /// Only a plain scalar can be null. A quoted or block scalar with the text null is the string.
-    let isNullScalar (content: YAMLContent) =
-        match content.Style with
-        | None
-        | Some ScalarStyle.Plain -> Encode.CoreSchema.resolvesToNull content.Value
-        | _ -> false
-
     let private isComment (element: YAMLElement) =
         match element with
         | YAMLElement.Comment _ -> true
@@ -111,20 +104,18 @@ module Helper =
 open Helper
 let int (value: YAMLElement) : int =
     match withoutComments value with
-    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        let scalar = scalarValue v
-        match System.Int32.TryParse scalar with
-        | true, v -> v
-        | false, _ -> raiseInvalidArg "value" "Expected an int" scalar
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
+        match Encode.CoreSchema.tryParseInt v with
+        | Some number -> number
+        | None -> raiseInvalidArg "value" "Expected an int" (scalarValue v)
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let float (value: YAMLElement) : float =
     match withoutComments value with
-    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        let scalar = scalarValue v
-        match Encode.CoreSchema.tryParseFloat scalar with
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
+        match Encode.CoreSchema.tryParseFloat v with
         | Some number -> number
-        | None -> raiseInvalidArg "value" "Expected a float" scalar
+        | None -> raiseInvalidArg "value" "Expected a float" (scalarValue v)
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
 let char (value: YAMLElement) : char =
@@ -138,11 +129,10 @@ let char (value: YAMLElement) : char =
 
 let bool (value: YAMLElement) : bool =
     match withoutComments value with
-    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        let scalar = scalarValue v
-        match System.Boolean.TryParse scalar with
-        | true, bool -> bool
-        | false, _ -> Helper.raiseInvalidArg "value" "Expected a bool" scalar
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
+        match Encode.CoreSchema.tryParseBool v with
+        | Some bool -> bool
+        | None -> Helper.raiseInvalidArg "value" "Expected a bool" (scalarValue v)
     | anyElse -> Helper.raiseInvalidArg "value" "Expected a bool" anyElse
 
 let map (keyDecoder: string -> 'a) (valueDecoder: YAMLElement -> 'b) (value: YAMLElement) : Map<'a, 'b> =
@@ -185,8 +175,11 @@ let datetimeOffset (value: YAMLElement) : DateTimeOffset =
 
 let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
     match withoutComments value with
-    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] -> 
-        if isNullScalar v then None else Some (decoder value)
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
+        if Encode.CoreSchema.isNull v then None else Some (decoder value)
+    // An empty node is null. `k:` gives Nil and an empty sequence item `- ` gives Object [].
+    | YAMLElement.Nil
+    | YAMLElement.Object [] -> None
     | anyElse -> Helper.raiseInvalidArg "value" "Expected an option" anyElse
 
 let string (value: YAMLElement) : string =
