@@ -31,6 +31,6 @@
     <PackageReference Include="Fable.Pyxpecto" Version="2.0.0" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\YAMLicious.Next\YAMLicious.Next.fsproj" />
+    <ProjectReference Include="..\..\src\YAMLicious\YAMLicious.Next.fsproj" />
   </ItemGroup>
 </Project>
