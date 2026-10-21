@@ -181,39 +181,37 @@ text: "one\ntwo\n"
 ```
 
 ---
-## Local Development
+## Local development
 
 ### Requirements
 
 Because this library targets multiple programming languages we need to support all of them:
 
 - [nodejs and npm](https://nodejs.org/en/download)
-    - verify with `node --version` (Tested with v20.10.0)
-    - verify with `npm --version` (Tested with v9.2.0)
+    - verify with `node --version` (tested with v22.19.0)
+    - verify with `npm --version` (tested with 11.6.1)
 - [.NET SDK](https://dotnet.microsoft.com/en-us/download)
-    - verify with `dotnet --version` (Tested with 10.0.100)
+    - verify with `dotnet --version` (`global.json` asks for 10.0.101 and accepts a newer 10.x SDK, tested with 10.0.303)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
-    - verify with `uv --version` (Tested with 0.9.13)
+    - verify with `uv --version` (tested with 0.9.26)
 
 
 ### Setup
 
-This needs to be done on a fresh download once. Paths for python venv executable might be different depending on the OS.
+Run these commands once in a fresh clone.
 
-1. `dotnet tool restore`, Restore .NET tools (fable)
-2. `npm i`, install js dependencies
-4. `uv python install`, install python itself if needed
-3. `uv pip install`, install python dependencies
+1. `dotnet tool restore` restores the .NET tools (Fable).
+2. `npm ci` installs the JavaScript dependencies from `package-lock.json`.
+3. `uv python install` installs the Python version of `.python-version` when it is missing.
+4. `uv sync --frozen` installs the Python dependencies from `uv.lock`.
 
 ### Testing
 
-First activate python virtual environment (`.\.venv\Scripts\Activate.ps1`).
+`.\build.cmd test` runs the tests of every target. Name a target to run one of them:
 
-`.\build.cmd test`
+`.\build.cmd test [f#, js, py, fable]`
 
-*or specify target*
-
-`.\build.cmd test [f#, c#, js [native], py [native]]`
+`f#` runs the .NET tests, and `js` and `py` run the Fable output on Node and on Python. `fable` runs all three. The Python run goes through `uv run`, so the virtual environment needs no activation.
 
 ### Publish
 

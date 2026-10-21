@@ -15,7 +15,7 @@ let private expectError (input: string) (expected: string) =
 let private strTag = YamlTag.core "str"
 
 let private flowKeyTests = testList "Flow collections as keys" [
-    // Tests.Tokenizer "a flow collection as the key of an entry is an error that names the line". The reader before 2.0.0 rejected `[a]: b` and `{a: 1}: b`. A flow collection
+    // Earlier test "a flow collection as the key of an entry is an error that names the line". The reader before 2.0.0 rejected `[a]: b` and `{a: 1}: b`. A flow collection
     // that stands on one line is an implicit key now, with the one-lexeme peek of a quoted scalar and the limits of [154].
     testCase "a flow collection on one line is an implicit key" <| fun _ ->
         expectRoot "[a, b]: c" (YamlNode.mapping [ YamlNode.entry (flowSeq [ sc "a"; sc "b" ]) (sc "c") ])
@@ -36,7 +36,7 @@ let private flowKeyTests = testList "Flow collections as keys" [
         let root = parseRoot "[a]: b # c"
         Expect.nodeEqual root (YamlNode.mapping [ YamlNode.entry (flowSeq [ sc "a" ]) (withNote " c" (sc "b")) ]) "The comment belongs to the value"
 
-    // Tests.Tokenizer "a flow collection as the key of an entry is an error" (the cases `{? [a] : b}` and `k: [\n  ? {a: 1}\n]`) and Tests.YamlRead "Flow collections over
+    // Earlier test "a flow collection as the key of an entry is an error" (the cases `{? [a] : b}` and `k: [\n  ? {a: 1}\n]`) and Tests.YamlRead "Flow collections over
     // several lines as explicit keys and values". yaml@2.6.1 builds the key "[ a ]" from the collection.
     testCase "a flow collection is an explicit key" <| fun _ ->
         expectRoot "{? [a] : b}" (YamlNode.flowMapping [ explicitFlowEntry (flowSeq [ sc "a" ]) (sc "b") ])
@@ -47,7 +47,7 @@ let private flowKeyTests = testList "Flow collections as keys" [
 
     // The cases N1-F06 to N1-F10. yaml@2.6.1 reads the key as the text of the collection, such as "[ a ]". The reader before 2.0.0 rejected them, and the
     // model keeps the collection as the key node.
-    testCase "the N1 cases with a flow collection as an explicit key are trees" <| fun _ ->
+    testCase "the node end cases with a flow collection as an explicit key are trees" <| fun _ ->
         expectRoot "? [a]\n: v" (YamlNode.mapping [ explicitEntry (flowSeq [ sc "a" ]) (sc "v") ])
         expectRoot "? {a: 1}\n: v" (YamlNode.mapping [ explicitEntry (flowMap [ "a", sc "1" ]) (sc "v") ])
         expectRoot "?\n  [a]\n: v" (YamlNode.mapping [ { explicitEntry (flowSeq [ sc "a" ]) (sc "v") with Question = Some(newLine None []) } ])
@@ -98,7 +98,7 @@ let private quotedKeyTests = testList "Quoted scalars as keys" [
 ]
 
 let private aliasKeyTests = testList "Aliases as keys" [
-    // Tests.YamlRead "An alias as the key of a flow entry is an error" and Tests.Tokenizer "an alias in the place of a key inside a flow collection is an error that names the line". yaml@2.6.1 reads all of these with the alias resolved,
+    // Tests.YamlRead "An alias as the key of a flow entry is an error" and the earlier test "an alias in the place of a key inside a flow collection is an error that names the line". yaml@2.6.1 reads all of these with the alias resolved,
     // for example `{*a : v}` as {"x":"v"}. The reader before 2.0.0 rejected them, because it kept scalar keys only. An alias is a node, so it is a key like any other.
     testCase "an alias is a key in a flow collection" <| fun _ ->
         let alias = YamlNode.alias "a"
@@ -214,7 +214,7 @@ let rec private hasNonScalarKey (node: YamlNode) : bool =
     | YamlNodeKind.Sequence collection -> collection.Items |> List.exists (fun item -> hasNonScalarKey item.Node)
     | _ -> false
 
-/// The inputs of the old tests that the old reader rejected because it kept scalar keys only. yaml@2.6.1 reads each of them with a string for the collection or the value of the alias as the
+/// The inputs of the old tests that the reader before 2.0.0 rejected because it kept scalar keys only. yaml@2.6.1 reads each of them with a string for the collection or the value of the alias as the
 /// key. The first column names the old test.
 let private oldKeyRows : (string * string) list = [
     "Tokenizer a colon inside a word, a quoted scalar or a comment, and a compact mapping are no error", "? a: b"

@@ -496,7 +496,7 @@ let private tabTests = testList "Lexer tabs" [
         expectLexemes "---\ta" [ "---"; "plain:a" ]
         expectLexemes "?\ta" [ "?"; "plain:a" ]
 
-    // Ported from Tests.Tokenizer "a tab in the indentation or between an indicator and a block collection is an error".
+    // Ported from the earlier test "a tab in the indentation or between an indicator and a block collection is an error".
     // yaml@2.6.1 rejects these inputs with TAB_AS_INDENT. The lexer cannot tell whether a block collection follows,
     // so it reports the tab on the line start and the parser makes the decision.
     testCase "a tab in front of a node that could be a key is reported on the line start for the parser" <| fun _ ->
@@ -507,7 +507,7 @@ let private tabTests = testList "Lexer tabs" [
         expectFull "k:\n  \ta: b" [ "stream-start"; "line:0"; "plain:k"; ":"; "line:2,tab"; "plain:a"; ":"; "plain:b"; "stream-end" ]
         expectFull "a: b\n# c\n\tc: d" [ "stream-start"; "line:0"; "plain:a"; ":"; "plain:b"; "#own: c"; "line:0,tab"; "plain:c"; ":"; "plain:d"; "stream-end" ]
 
-    // Ported from Tests.Tokenizer. yaml@2.6.1 rejects `-\tk: v` and `---\tk: v` with TAB_AS_INDENT. The tab flag of the cursor
+    // Ported from earlier tests. yaml@2.6.1 rejects `-\tk: v` and `---\tk: v` with TAB_AS_INDENT. The tab flag of the cursor
     // lets the parser see that the key behind the tab starts a block mapping.
     testCase "a tab behind an indicator in front of a scalar sets the tab flag of the scalar" <| fun _ ->
         let flagsOf (input: string) =
@@ -726,7 +726,7 @@ let private errorTests = testList "Lexer errors" [
         expectError "a: |#c\n  b" "glued-comment" "1:5-1:6"
         expectError "a: >-- \n  b" "invalid-block-header" "1:6-1:7"
 
-    // Ported from Tests.Tokenizer "a bar or an angle bracket at a node start needs a valid block scalar header".
+    // Ported from the earlier test "a bar or an angle bracket at a node start needs a valid block scalar header".
     // yaml@2.6.1 rejects the first eight inputs with UNEXPECTED_TOKEN and `k: |# c` with MISSING_CHAR.
     testCase "a bar or an angle bracket at a node start needs a valid block scalar header" <| fun _ ->
         expectError "valueFrom: > 5" "invalid-block-header" "1:12-1:15"
@@ -739,7 +739,7 @@ let private errorTests = testList "Lexer errors" [
         expectError "a: |\n  b\nc: > 5" "invalid-block-header" "3:4-3:7"
         expectError "k: |# c" "glued-comment" "1:5-1:6"
 
-    // Ported from Tests.Tokenizer. yaml@2.6.1 rejects each of these with BAD_SCALAR_START
+    // Ported from earlier tests. yaml@2.6.1 rejects each of these with BAD_SCALAR_START
     testCase "a block scalar cannot start inside a flow collection" <| fun _ ->
         expectError "k: {\n  a: |\n}" "block-scalar-position" "2:6-2:7"
         expectError "[ > 5 ]" "block-scalar-position" "1:3-1:4"
@@ -747,7 +747,7 @@ let private errorTests = testList "Lexer errors" [
         expectError "[\n  |\n    x\n]" "block-scalar-position" "2:3-2:4"
         expectError "{a: >}" "block-scalar-position" "1:5-1:6"
 
-    // Ported from Tests.Tokenizer "a closer without an open flow collection, a comma or a hash at a node start is an error".
+    // Ported from the earlier test "a closer without an open flow collection, a comma or a hash at a node start is an error".
     // yaml@2.6.1 rejects the closers with UNEXPECTED_TOKEN, `k: , a` and `- ,` with BAD_SCALAR_START and the hashes with MISSING_CHAR.
     testCase "a closer without an open flow collection, a comma or a hash at a node start is an error" <| fun _ ->
         expectError "k: ]" "unopened-flow" "1:4-1:5"
@@ -762,7 +762,7 @@ let private errorTests = testList "Lexer errors" [
         expectError "[a,#b]" "reserved-indicator" "1:4-1:5"
         expectError "{#a: 1}" "reserved-indicator" "1:2-1:3"
 
-    // Ported from Tests.Tokenizer. yaml@2.6.1 rejects each of these with BLOCK_IN_FLOW, because a plain scalar cannot be
+    // Ported from earlier tests. yaml@2.6.1 rejects each of these with BLOCK_IN_FLOW, because a plain scalar cannot be
     // a lone dash in a flow collection. It reads `{-: 1}` and `[-a]` without an error.
     testCase "a dash in front of a blank, a flow indicator or the end is an error in a flow collection" <| fun _ ->
         expectError "[- a]" "flow-dash" "1:2-1:3"
@@ -1086,7 +1086,7 @@ let private performanceTests = testList "Lexer performance" [
     testCase "a restore does not send the marks back to the start of the text" <| fun _ ->
         expectLinear "Marks around a snapshot and a restore" rewindMarks countLineBreaks fixedWidthInput
 
-    // Tests.Tokenizer "the time grows linearly with unbalanced quotes inside plain scalars" and "a long input of quoted scalars keeps every string and comment". The old tests counted the string
+    // Earlier tests "the time grows linearly with unbalanced quotes inside plain scalars" and "a long input of quoted scalars keeps every string and comment". The old tests counted the string
     // table and the comment table of the scanner. The lexer returns the quoted scalars and the comments as lexemes, so the test counts those.
     testCase "unbalanced quotes inside plain scalars open no scalar and take time linear in the length of the input" <| fun _ ->
         let styles = scalarsOf (plainQuoteInput 600) |> List.map (fun scalar -> scalar.Style)

@@ -1,7 +1,7 @@
 [project]
 name = "yamlicious"
 version = "2.0.0"
-description = "Add your description here"
+description = "A YAML 1.2.2 reader and writer with decoders and encoders in the style of Thoth.Json, compiled from F# by Fable."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

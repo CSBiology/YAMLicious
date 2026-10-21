@@ -399,8 +399,8 @@ let private constructedTests = testList "Constructed trees" [
         Expect.nodeEqual (parseRoot written) tree (sprintf "The tree after a round trip of %A" written)
 
     // The writer puts the comment behind the key of a flow mapping entry on the line of the key and the colon on the next line ([147] has the colon behind the
-    // key, and a comment ends the line). The text is in Tests.Writer. These tests build the tree and read the text back. They need the parser of the gate fix G1,
-    // which reads the comment behind a key as its TrailingComment. The parser before G1 reads it as a line in BeforeColon, and the tests fail there.
+    // key, and a comment ends the line). The text is in Tests.Writer. These tests build the tree and read the text back. The parser has to read the comment
+    // behind a key as the TrailingComment of the key (rule R8). A parser that reads it as a line in BeforeColon makes these tests fail.
     testCase "a trailing comment of a flow mapping key goes behind the key and comes back equal" <| fun _ ->
         let tree = YamlNode.flowMapping [ YamlNode.entry (withNote " key" (sc "a")) (sc "b") ]
         let written = Writer.writeNode defaults tree

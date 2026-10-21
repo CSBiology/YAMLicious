@@ -22,7 +22,7 @@ let private placeTests = testList "Where an alias stands" [
             (mapOf [ "k", flowSeq [ YamlNode.withAnchor "a" (sc "x"); YamlNode.alias "a"; flowMap [ "k", YamlNode.alias "a" ] ] ])
         Expect.equal (valueOf "k: [&a x, *a, {k: *a}]") "{\"k\":[\"x\",\"x\",{\"k\":\"x\"}]}" "The value with the alias resolved"
 
-    // Tests.Tokenizer "an alias may be followed by blanks, a comment, a comma, a closer or the end". yaml@2.6.1 reads these inputs after the anchor `s: &a x` with
+    // Earlier test "an alias may be followed by blanks, a comment, a comma, a closer or the end". yaml@2.6.1 reads these inputs after the anchor `s: &a x` with
     // the alias resolved.
     testCase "an alias can be followed by blanks, a comment, a comma, a closer or the end" <| fun _ ->
         let alias = YamlNode.alias "a"
@@ -47,7 +47,7 @@ let private placeTests = testList "Where an alias stands" [
         expectRoot "- &a x\n- *a : v" (seqOf [ anchoredNode; mapOfNodes [ alias, sc "v" ] ])
         expectRoot "- &a x\n- ? *a\n  : *a" (seqOf [ anchoredNode; YamlNode.mapping [ explicitEntry alias alias ] ])
 
-    // Tests.Tokenizer "an alias may be followed by...": the name of an alias ends at a blank, a line break or a flow indicator and may hold quotes, hashes and
+    // Earlier test "an alias may be followed by...": the name of an alias ends at a blank, a line break or a flow indicator and may hold quotes, hashes and
     // colons, so `k: *a'q'` and `k: *a:b` name other anchors. yaml@2.6.1 reads the anchor `a'q'` as unresolved in the first of them.
     testCase "the name of an alias ends at a blank or a flow indicator and may hold other characters" <| fun _ ->
         let definitions = "defs: [&a one v, &b two v, &a:b three v, &a'q' four v, &a#c five v, &c1 six v]\n"
@@ -110,7 +110,7 @@ let private errorTests = testList "Alias errors" [
         let error = parseError (anchored + "k: !!str *a")
         Expect.equal (error.Related |> List.map showSpan) [ "2:10-2:12" ] "The alias is the related span of the properties"
 
-    // Tests.Tokenizer "text behind an alias is an error that names the line". yaml@2.6.1 rejects all nine inputs with UNEXPECTED_TOKEN or MISSING_CHAR when the
+    // Earlier test "text behind an alias is an error that names the line". yaml@2.6.1 rejects all nine inputs with UNEXPECTED_TOKEN or MISSING_CHAR when the
     // anchor `s: &a x` stands in front of them. An alias ends its node. Outside a flow collection a comma cannot start a plain scalar, so `k: *a,b` is an error of the lexer.
     testCase "text behind an alias is an error" <| fun _ ->
         expectError (anchored + "k: *a b") "unexpected-content@2"

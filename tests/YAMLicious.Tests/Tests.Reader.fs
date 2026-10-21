@@ -156,7 +156,7 @@ let private multipleTests = testList "More than one document" [
                 Expect.stringContains error.Message "Use Reader.readDocuments to read all of them" (sprintf "The message of %s" label)
                 Expect.stringContains error.Message (sprintf "Line %d:" second.Start.Line) (sprintf "The line in the message of %s" label)
 
-    // Tests.Tokenizer "a second document is an error". The old test listed these texts for Persil.pipeline. yaml@2.6.1 parse throws "Source contains multiple documents" for each of the first six.
+    // Earlier test "a second document is an error". The old test listed these texts for the scanner of the reader before 2.0.0. yaml@2.6.1 parse throws "Source contains multiple documents" for each of the first six.
     // A text with one document and an end marker, with or without a comment behind it, is one document.
     testCase "the texts of the old second-document test are rejected by read and the others are read" <| fun _ ->
         for text in [ "a: 1\n---\nb: 2\n"; "a: 1\n...\nb: 2\n"; "a: 1\n...\n---\nb: 2\n"; "a: 1\n---\nb: 2\n...\nc: 3\n"; "---\n---\na: 1\n"; "a: 1\n---\n" ] do

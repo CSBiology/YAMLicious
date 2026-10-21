@@ -9,7 +9,7 @@ module Tests.Scalars
 // - Tests.StringCleanUp.fs (the tests of quoted scalars and of quotes in plain scalars)
 // - Tests.BlockScalars.fs (the unit tests of the lexical part, the lines of spaces and the group Block Scalars)
 // - Tests.ScalarStyles.fs (the chomping matrix and the explicit indentation indicator)
-// - Tests.Tokenizer.fs (the plain scalar continuation lines, the quotes and the plain scalars in flow collections)
+// - Earlier tokenizer tests (the plain scalar continuation lines, the quotes and the plain scalars in flow collections)
 // - Tests.YamlRead.fs (quoted scalars, escapes, plain continuation, quotes in plain scalars and in flow collections)
 
 open Fable.Pyxpecto
@@ -294,7 +294,7 @@ let private plainTests = testList "Plain scalars" [
         expectScalars "valueFrom: $(inputs.a +\n  \"x\")" [ pl "valueFrom"; pl "$(inputs.a + \"x\")" ]
         expectScalars "valueFrom: $(f(inputs.a,\n  \"x\", 1))" [ pl "valueFrom"; pl "$(f(inputs.a, \"x\", 1))" ]
 
-    // Tests.Tokenizer "the lines of a plain scalar become one string with a quote as text". yaml@2.6.1: {"k":"$(inputs.a + \"x\")"},
+    // Earlier test "the lines of a plain scalar become one string with a quote as text". yaml@2.6.1: {"k":"$(inputs.a + \"x\")"},
     // {"k":"$(f(inputs.a, \"x\", 1))"}, {"k":"a \"b\""}, {"k":"a 'b' c"}, ["a \"b\""], "a \"b\"" and {"k":"a b \"c\""}
     testCase "the lines of a plain scalar fold into one scalar with a quote as text" <| fun _ ->
         expectScalars "k: $(inputs.a +\n  \"x\")" [ pl "k"; pl "$(inputs.a + \"x\")" ]
@@ -305,7 +305,7 @@ let private plainTests = testList "Plain scalars" [
         expectScalars "a\n  \"b\"" [ pl "a \"b\"" ]
         expectScalars "k: a\n  b\n  \"c\"" [ pl "k"; pl "a b \"c\"" ]
 
-    // Tests.Tokenizer "an indicator character on a continuation line is text". yaml@2.6.1: {"k":"a - b"}, {"k":"a [b"}, {"k":"a {b"},
+    // Earlier test "an indicator character on a continuation line is text". yaml@2.6.1: {"k":"a - b"}, {"k":"a [b"}, {"k":"a {b"},
     // {"k":"a - \"b\""}, {"k":"a [\"b\", c]"}, {"k":"a {\"b\"}"}, {"k":"a ? |"}, {"k":"a http://x"}, {"k":"a b:c"} and {"k":"a b#c"}
     testCase "an indicator character on a continuation line is text" <| fun _ ->
         expectScalars "k: a\n  - b" [ pl "k"; pl "a - b" ]
@@ -319,28 +319,28 @@ let private plainTests = testList "Plain scalars" [
         expectScalars "k: a\n  b:c" [ pl "k"; pl "a b:c" ]
         expectScalars "k: a\n  b#c" [ pl "k"; pl "a b#c" ]
 
-    // Tests.Tokenizer "a continuation line that looks like a block scalar header opens no block". yaml@2.6.1: [{"k":"v ? |"},"b"]
+    // Earlier test "a continuation line that looks like a block scalar header opens no block". yaml@2.6.1: [{"k":"v ? |"},"b"]
     testCase "a continuation line that looks like a block scalar header opens no block" <| fun _ ->
         expectScalars "- k: v\n      ? |\n- b" [ pl "k"; pl "v ? |"; pl "b" ]
 
-    // Tests.Tokenizer "every segment is trimmed and a blank line is an empty segment". yaml@2.6.1: {"k":"a b c"}, {"k":"a\nb"} and {"k":"a\n\nb"}
+    // Earlier test "every segment is trimmed and a blank line is an empty segment". yaml@2.6.1: {"k":"a b c"}, {"k":"a\nb"} and {"k":"a\n\nb"}
     testCase "every line is trimmed and an empty line is a line feed" <| fun _ ->
         expectScalars "k: a   \n  b  \n  \tc\t" [ pl "k"; pl "a b c" ]
         expectScalars "k: a\n\n  b" [ pl "k"; pl "a\nb" ]
         expectScalars "k: a\n\n\n  b" [ pl "k"; pl "a\n\nb" ]
 
-    // Tests.Tokenizer "a blank line behind the scalar stays a line of its own" and "a comment behind the last line stays on the merged line".
+    // Earlier tests "a blank line behind the scalar stays a line of its own" and "a comment behind the last line stays on the merged line".
     // yaml@2.6.1: {"k":"a b","j":1} and {"k":"a b"}
     testCase "a blank line or a comment behind the last line is not part of the scalar" <| fun _ ->
         expectLexemes "k: a\n  b\n\nj: 1" [ "plain:k"; ":"; "plain:a b"; "blank"; "plain:j"; ":"; "plain:1" ]
         expectLexemes "k: a\n  b\n\n" [ "plain:k"; ":"; "plain:a b"; "blank" ]
         expectLexemes "k: a\n  b #c" [ "plain:k"; ":"; "plain:a b"; "#:c" ]
 
-    // Tests.Tokenizer "the scalar ends at the next line that is not deeper". yaml@2.6.1: {"k":"a \"b\"","m":"z","n":"x\n"}
+    // Earlier test "the scalar ends at the next line that is not deeper". yaml@2.6.1: {"k":"a \"b\"","m":"z","n":"x\n"}
     testCase "a plain scalar ends at the next line that is not deeper" <| fun _ ->
         expectScalars "k: a\n  \"b\"\nm: \"z\"\nn: |\n  x\n" [ pl "k"; pl "a \"b\""; pl "m"; dq "z"; pl "n"; lit "x\n" ]
 
-    // Tests.Tokenizer "the parent node owns a value on a line of its own". yaml@2.6.1: {"valueFrom":"$(f(inputs.a, \"x\", 1))"},
+    // Earlier test "the parent node owns a value on a line of its own". yaml@2.6.1: {"valueFrom":"$(f(inputs.a, \"x\", 1))"},
     // ["a \"b\", c"], {"k":"a \"b\""} and "a \"b\""
     testCase "the parent owns a value on a line of its own" <| fun _ ->
         expectScalars "valueFrom:\n  $(f(inputs.a,\n  \"x\", 1))" [ pl "valueFrom"; pl "$(f(inputs.a, \"x\", 1))" ]
@@ -348,33 +348,33 @@ let private plainTests = testList "Plain scalars" [
         expectScalars "k:\n  a\n  \"b\"" [ pl "k"; pl "a \"b\"" ]
         expectScalars "a\n\"b\"" [ pl "a \"b\"" ]
 
-    // Tests.Tokenizer "a line that is not deeper than the parent ends a value on a line of its own". yaml@2.6.1: {"k":"a","j":"x"} and ["a","b"]
+    // Earlier test "a line that is not deeper than the parent ends a value on a line of its own". yaml@2.6.1: {"k":"a","j":"x"} and ["a","b"]
     testCase "a line that is not deeper than the parent ends a value on a line of its own" <| fun _ ->
         expectScalars "k:\n  a\nj: \"x\"" [ pl "k"; pl "a"; pl "j"; dq "x" ]
         expectScalars "-\n  a\n- \"b\"" [ pl "a"; dq "b" ]
 
-    // Tests.Tokenizer "the key of a sequence item owns its value, and a sibling key ends the scalar". yaml@2.6.1: [{"key":"a \"b\"","other":"c"}],
+    // Earlier test "the key of a sequence item owns its value, and a sibling key ends the scalar". yaml@2.6.1: [{"key":"a \"b\"","other":"c"}],
     // [["a","b"]] and [["a \"b\"","c"]]
     testCase "the key of a sequence item owns its value and a sibling key ends the scalar" <| fun _ ->
         expectScalars "- key:\n    a\n    \"b\"\n  other: \"c\"" [ pl "key"; pl "a \"b\""; pl "other"; dq "c" ]
         expectScalars "- -\n    a\n  - \"b\"" [ pl "a"; dq "b" ]
         expectScalars "- - a\n    \"b\"\n  - \"c\"" [ pl "a \"b\""; dq "c" ]
 
-    // Tests.Tokenizer "a line of properties alone leaves the value to the node in front of it". yaml@2.6.1: {"k":"x \"y\""}
+    // Earlier test "a line of properties alone leaves the value to the node in front of it". yaml@2.6.1: {"k":"x \"y\""}
     testCase "a line of properties alone leaves the value to the node in front of it" <| fun _ ->
         expectScalars "k:\n  &a\n    x\n  \"y\"" [ pl "k"; pl "x \"y\"" ]
 
-    // Tests.Tokenizer "a document marker ends the plain scalar and a plain scalar on the marker line is owned by the root". yaml@2.6.1: two
+    // Earlier test "a document marker ends the plain scalar and a plain scalar on the marker line is owned by the root". yaml@2.6.1: two
     // documents, "a" and "b", and "a \"b\""
     testCase "a document marker ends a plain scalar and a plain scalar behind the marker is owned by the root" <| fun _ ->
         expectLexemes "a\n--- \"b\"" [ "plain:a"; "---"; "double:b" ]
         expectScalars "--- a\n  \"b\"" [ pl "a \"b\"" ]
 
-    // Tests.Tokenizer "text in the shape of a placeholder starts a plain scalar". yaml@2.6.1: {"k":"<s f=0/> [x, \"y\"]"}
+    // Earlier test "text in the shape of a placeholder starts a plain scalar". yaml@2.6.1: {"k":"<s f=0/> [x, \"y\"]"}
     testCase "text in the shape of a placeholder is plain text" <| fun _ ->
         expectScalars "k: <s f=0/>\n  [x, \"y\"]" [ pl "k"; pl "<s f=0/> [x, \"y\"]" ]
 
-    // Tests.Tokenizer "a continuation line that holds a mapping indicator is an error". yaml@2.6.1 rejects all four inputs with
+    // Earlier test "a continuation line that holds a mapping indicator is an error". yaml@2.6.1 rejects all four inputs with
     // BLOCK_AS_IMPLICIT_KEY and MULTILINE_IMPLICIT_KEY. The lexer returns the scalar over two lines and the colon behind it, and the
     // parser rejects an implicit key over several lines.
     testCase "a continuation line with a colon behind a blank ends the scalar and the colon is a value indicator" <| fun _ ->
@@ -382,7 +382,7 @@ let private plainTests = testList "Plain scalars" [
         expectLexemes "k: a\n  b:" [ "plain:k"; ":"; "plain:a b"; ":" ]
         Expect.equal (lexSpans "k: a\n  b: c" |> List.item 2) "plain:a b 1:4-2:4" "The scalar spans two lines, which the parser rejects for a key"
 
-    // Tests.Tokenizer "a comment ends the plain scalar and a deeper line behind it is an error". The lexer ends the scalar at the comment, and the
+    // Earlier test "a comment ends the plain scalar and a deeper line behind it is an error". The lexer ends the scalar at the comment, and the
     // parser rejects the line behind it. yaml@2.6.1 rejects all six inputs with BAD_INDENT or MISSING_CHAR.
     testCase "a comment ends a plain scalar" <| fun _ ->
         expectLexemes "k: a # c\n  \"b\"" [ "plain:k"; ":"; "plain:a"; "#: c"; "double:b" ]
@@ -766,14 +766,14 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectScalars "k: [x, \"y, z\"]" [ pl "k"; pl "x"; dq "y, z" ]
         expectScalars "- [\"a\", \"b\"]" [ dq "a"; dq "b" ]
 
-    // Tests.Tokenizer "a plain scalar in a flow collection goes on in the next lines and a quote there is text". yaml@2.6.1: ["a \"b\""] for the
+    // Earlier test "a plain scalar in a flow collection goes on in the next lines and a quote there is text". yaml@2.6.1: ["a \"b\""] for the
     // first input and ["a","b"] for the second. The third gives {"a":"b"}.
     testCase "a plain scalar in a flow collection goes on in the next lines and a quote there is text" <| fun _ ->
         expectScalars "[\n  a\n  \"b\"\n]" [ pl "a \"b\"" ]
         expectScalars "[\n  a,\n  \"b\"\n]" [ pl "a"; dq "b" ]
         expectScalars "{\n  a:\n  \"b\"\n}" [ pl "a"; dq "b" ]
 
-    // Tests.Tokenizer "a plain scalar over several lines in a flow collection is one string table entry". yaml@2.6.1: [["a b"],["a\nb"],["a b","c d"],["a b #c"]].
+    // Earlier test "a plain scalar over several lines in a flow collection is one string table entry". yaml@2.6.1: [["a b"],["a\nb"],["a b","c d"],["a b #c"]].
     // The last result is for the hash without a blank, which the comment of the old test spells wrongly.
     testCase "a plain scalar over several lines in a flow collection folds" <| fun _ ->
         expectScalars "[\n  a\n  b\n]" [ pl "a b" ]
@@ -781,7 +781,7 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectScalars "[\n  a\n  b,\n  c\n  d\n]" [ pl "a b"; pl "c d" ]
         expectScalars "[a\n b#c]" [ pl "a b#c" ]
 
-    // Tests.Tokenizer "a plain scalar in a flow collection ends at a flow indicator, a key colon or a comment". yaml@2.6.1: ["a b","c"], ["a b:c"] and
+    // Earlier test "a plain scalar in a flow collection ends at a flow indicator, a key colon or a comment". yaml@2.6.1: ["a b","c"], ["a b:c"] and
     // {"a b":"c d"} for the last. The comment ends the scalar of the fourth.
     testCase "a plain scalar in a flow collection ends at a flow indicator, a colon behind a blank or a comment" <| fun _ ->
         expectScalars "[a\n b, c]" [ pl "a b"; pl "c" ]
@@ -790,7 +790,7 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectLexemes "[a\n]" [ "["; "plain:a"; "]" ]
         expectLexemes "{a\n b: c d}" [ "{"; "plain:a b"; ":"; "plain:c d"; "}" ]
 
-    // Tests.Tokenizer "the lines of a flow collection must be indented deeper than the node that owns it" and "a closer may sit at the column of the
+    // Earlier tests "the lines of a flow collection must be indented deeper than the node that owns it" and "a closer may sit at the column of the
     // node that owns the flow collection". yaml@2.6.1 rejects the first six inputs with BAD_INDENT and reads the others. The closer at the column of
     // the owner is a deliberate difference from [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines, which ask for the indentation of
     // the owner plus one. The loader of cwltool (ruamel) and yaml@2.6.1 read that layout, and real CWL files use it for `expressionLib: [`.
@@ -979,7 +979,7 @@ let private oldScalarRows : (string * string * string) list = [
 let private oldInputTests = testList "Inputs of the old tests" [
     testCase "the scalar inputs of the old scanner and reader tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldScalarRows
 
-    // Tests.Tokenizer "line endings are normalized once" and "a block at the end of the input". yaml@2.6.1 reads the old text with a lone carriage return as {"a":"x y","b":"\"q\"\rc: \"z\"\n"},
+    // Earlier tests "line endings are normalized once" and "a block at the end of the input". yaml@2.6.1 reads the old text with a lone carriage return as {"a":"x y","b":"\"q\"\rc: \"z\"\n"},
     // because it takes the carriage return for a character, and it reads `a: |` followed by `  x` at the end of the input as {"a":"x\n"}. The spec takes a lone carriage return for a
     // line break (b-char) and ends the body at the end of the input without a line feed (rule [165]). The values here are the ones of the old tests: the old scanner normalized the carriage
     // return, so c was a key, and the body of the last scalar had no line feed.

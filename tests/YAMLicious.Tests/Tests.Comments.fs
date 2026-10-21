@@ -420,7 +420,7 @@ let private r1FlowTests = testList "R1 and R2 in a flow collection" [
 ]
 
 let private r7FlowTests = testList "R7 in a flow mapping and rule 20" [
-    // Tests.Tokenizer "the key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1 reads these as {"a":"b"}. The trivia lines between a key and its colon
+    // Earlier test "the key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1 reads these as {"a":"b"}. The trivia lines between a key and its colon
     // go to BeforeColon, for an implicit key in a flow mapping too. A comment on the line of the key is no line of that gap (see the next test).
     testCase "the trivia lines between a key and its colon go to BeforeColon" <| fun _ ->
         expectRoot "{ a\n # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])

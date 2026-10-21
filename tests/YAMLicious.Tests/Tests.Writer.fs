@@ -542,7 +542,7 @@ let private scalarTests = testList "Scalar spellings" [
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a\n\n"; next ]) "k: |+\n  a\n\nj: 1\n"
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "\n"; next ]) "k: |+\n\nj: 1\n"
         // Tests.ScalarStyles "Writer keeps the chomping of an explicit block style that the value contradicts". The old writer kept the chomping that the node stored, so a stripped value that ended in two line
-        // feeds lost them. The candidate adjusts the chomping so that the text reads back as the value.
+        // feeds lost them. The writer adjusts the chomping so that the text reads back as the value.
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "a\n\n"; next ]) "k: |+\n  a\n\nj: 1\n"
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "a"; next ]) "k: |-\n  a\nj: 1\n"
 
@@ -1229,7 +1229,7 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
             Expect.streamEqual (parseOk written) stream (sprintf "The tree of %A after writing" text)
             Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The text of %A is stable" text)
 
-    // Tests.Tokenizer "a placeholder-shaped value reads like a plain scalar and survives the writer", Tests.YamlRead "KeyValue empty inline sequence roundtrips as brackets", "An empty
+    // Earlier test "a placeholder-shaped value reads like a plain scalar and survives the writer", Tests.YamlRead "KeyValue empty inline sequence roundtrips as brackets", "An empty
     // sequence item writes as a bare dash", "A key without a value reads as None and writes as the key" and "Nested sequences of mappings and dollar keys survive write and read",
     // Tests.YamlGenericRead "Preprocessing read/write keeps stable structural indentation". yaml@2.6.1 reads the texts as {"a":"<c f=0/>"}, {"value":[]}, ["a",null,{}], {"k":[null,"x"]}
     // and {"k":null} for the keys without a value. The old tests built the elements by hand or compared a text with a part of it, so the tests here compare the whole text.

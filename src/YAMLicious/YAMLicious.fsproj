@@ -12,6 +12,8 @@
     <RepositoryUrl>https://github.com/CSBiology/YAMLicious</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,12 +41,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The lowest FSharp.Core that the library builds and tests with. The implicit reference is off, because it would declare the version of the SDK that packs the library, and a project with an older FSharp.Core would get the warning NU1605. -->
+    <PackageReference Include="FSharp.Core" Version="8.0.403" />
     <PackageReference Include="Fable.Core" Version="5.5.0" />
   </ItemGroup>
 
   <PropertyGroup>
     <PythonDependencies>
-      <Package Name="fable-library" Version="&gt;= 5.3.0 &lt; 6.0.0" ResolutionStrategy="Max" />
+      <Package Name="fable-library" Version="&gt;= 5.22.0 &lt; 6.0.0" ResolutionStrategy="Max" />
     </PythonDependencies>
   </PropertyGroup>
 

@@ -565,7 +565,7 @@ let private errorTests = testList "Parser errors" [
         expectError "a:\n  b: foo\n c: 1" "bad-indentation@3"
         expectError "- k: 3.5\n j: 1" "bad-indentation@2"
 
-    // Tests.Tokenizer "an alias with properties...". yaml@2.6.1 rejects "a: 1\n&x\nj: 2" and "k: v\n!!str\nj: w" with MULTILINE_IMPLICIT_KEY. Properties on lines of their own cannot
+    // Earlier test "an alias with properties...". yaml@2.6.1 rejects "a: 1\n&x\nj: 2" and "k: v\n!!str\nj: w" with MULTILINE_IMPLICIT_KEY. Properties on lines of their own cannot
     // stand in front of an entry of a mapping that has started already.
     testCase "properties on lines of their own in front of an entry of an open mapping are an error" <| fun _ ->
         expectError "a: 1\n&x\nj: 2" "misplaced-properties@3"
@@ -588,7 +588,7 @@ let private errorTests = testList "Parser errors" [
               "- a: 1\n  !!str &y ? b", "misplaced-properties@2" ] do
             expectError input expected
 
-    // Tests.Tokenizer "an undefined alias": the alias has to name an anchor that stands earlier in its document (YAML 1.2.2, 7.1). yaml@2.6.1 accepts these
+    // Earlier test "an undefined alias": the alias has to name an anchor that stands earlier in its document (YAML 1.2.2, 7.1). yaml@2.6.1 accepts these
     // inputs and fails later, when it resolves the alias.
     testCase "an alias needs an anchor earlier in its document" <| fun _ ->
         expectError "a: *b" "undefined-alias@1"
@@ -608,7 +608,7 @@ let private errorTests = testList "Parser errors" [
         expectError "- !<!> foo" "invalid-tag@1"
         expectError "- !<> foo" "invalid-tag@1"
 
-    // The tabs: Tests.Tokenizer "a tab in the indentation or between an indicator and a block collection is an error". yaml@2.6.1 rejects the first group with TAB_AS_INDENT
+    // The tabs: the earlier test "a tab in the indentation or between an indicator and a block collection is an error". yaml@2.6.1 rejects the first group with TAB_AS_INDENT
     // and reads the second group.
     testCase "a tab in the indentation or between an indicator and a block collection is an error" <| fun _ ->
         expectError "\tk: v" "tab-indentation@1"
@@ -940,7 +940,7 @@ let private performanceTests = testList "Parser performance" [
         expectLinear "The parser on properties and aliases" parseOnly countLineBreaks (accepted propertyInput)
 
     // Tests.BlockScalars "The time grows linearly with a run of comments in front of a flow closer", "The time grows linearly with a run of blank lines" and "The time grows linearly with the
-    // number of scalars and comments", Tests.Tokenizer "the read time grows linearly with the lines of a plain scalar". The old tests timed the preprocessing against the scanner. These tests
+    // number of scalars and comments", the earlier test "the read time grows linearly with the lines of a plain scalar". The old tests timed the preprocessing against the scanner. These tests
     // time the parser against a pass over the characters.
     testCase "a run of comments in front of a flow closer takes time linear in the length of the input" <| fun _ ->
         expectLinear "The parser on comments in front of a flow closer" parseOnly countLineBreaks (accepted flowCloserCommentInput)
@@ -968,7 +968,9 @@ let rec private hasStructuredKey (node: YamlNode) : bool =
     | YamlNodeKind.Sequence collection -> collection.Items |> List.exists (fun item -> hasStructuredKey item.Node)
     | _ -> false
 
-// The N1 cases. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection are here too: the rejected ones in the list below, N1-D02, N1-D03 and N1-D27 in the table of Tests.Flow and N1-F06 to N1-F10 in Tests.Keys.
+// The N1 cases are a fixed set of inputs about the end of a node: what may follow a quoted scalar, an alias, a flow collection or a plain scalar that a comment
+// ended. An id such as N1-D22 names one case. The letter groups related cases: A and B are lines behind a node that ended, C mixes collections, D holds valid
+// layouts, E and F hold keys with properties or with a full node, and G holds further indentation errors. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection are here too: the rejected ones in the list below, N1-D02, N1-D03 and N1-D27 in the table of Tests.Flow and N1-F06 to N1-F10 in Tests.Keys.
 let private n1Rejected : (string * string) list = [
     "N1-A01", "k: \"q\"\n  x"
     "N1-A03", "k: [a]\n  x"
@@ -1092,7 +1094,7 @@ let private n1Collections : (string * string) list = [
     "N1-F16", "? !!seq\n  - a\n: v"
 ]
 
-let private n1Tests = testList "N1 cases" [
+let private n1Tests = testList "Node end cases" [
     // yaml@2.6.1 rejects most of these inputs (BAD_INDENT, MISSING_CHAR, UNEXPECTED_TOKEN, MULTILINE_IMPLICIT_KEY, BLOCK_AS_IMPLICIT_KEY). It accepts
     // N1-A25 ({"q":null}) and N1-C05 ({"a":null}) and drops the text behind the node, which is a yaml quirk. The specification rejects all of them.
     testCase "a line that no open block owns, a second node at one indentation and a mixed collection are errors" <| fun _ ->
@@ -1625,14 +1627,14 @@ let private oldParserRows : (string * string * string) list = [
 let private oldInputTests = testList "Inputs of the old tests" [
     testCase "the block structure inputs of the old scanner tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldParserRows
 
-    // Tests.Tokenizer "a block collection cannot start on the line of its key". The old test listed `: - a`, `k: -` and `k: - # c` among the valid compact forms, and yaml@2.6.1 reads them as {"":["a"]},
+    // Earlier test "a block collection cannot start on the line of its key". The old test listed `: - a`, `k: -` and `k: - # c` among the valid compact forms, and yaml@2.6.1 reads them as {"":["a"]},
     // {"k":[null]} and {"k":[null]}. In YAML 1.2.2 the node behind the colon of an implicit entry is a block collection only on a later line, and a plain scalar cannot be a lone dash. The
     // parser follows the spec and rejects the three texts.
     testCase "a block sequence behind the colon of an implicit entry is an error where yaml@2.6.1 reads it" <| fun _ ->
         for input in [ ": - a"; "k: -"; "k: - # c" ] do
             Expect.equal (yamlValueOf input) "ERROR" (sprintf "%A is rejected" input)
 
-    // Tests.Tokenizer "every emitted line knows its physical line", "a multiline quoted scalar keeps the number of its first line and the lines behind it count on", "a merged plain scalar keeps
+    // Earlier tests "every emitted line knows its physical line", "a multiline quoted scalar keeps the number of its first line and the lines behind it count on", "a merged plain scalar keeps
     // the number of its first line and the lines behind it count on", "line endings do not change the numbers" and "the preparation keeps the numbers of the lines it keeps". The old scanner gave
     // each emitted line the number of its source line. The parser gives each node a span, so the test reads the line of a key behind a scalar that goes over several lines. The numbers are the
     // old ones. A lone carriage return is a line break for the spec, and yaml@2.6.1 reads it as a character.
@@ -1668,7 +1670,7 @@ let private oldInputTests = testList "Inputs of the old tests" [
         for (input, key, line) in rows do
             Expect.equal (lineOfKey input key) line (sprintf "The line of %s in %A" key input)
 
-    // Tests.Tokenizer "a plain scalar of more than 5000 lines reads as one value" and Tests.BlockScalars "A body of more than 5000 lines reads as one scalar". The old tests guarded the
+    // Earlier test "a plain scalar of more than 5000 lines reads as one value" and Tests.BlockScalars "A body of more than 5000 lines reads as one scalar". The old tests guarded the
     // recursion of the reader before 2.0.0. The parser keeps its state on the heap, and the tests keep the inputs of the old ones. The plain scalar folds its lines, so its value has a space where the
     // old value had a line feed.
     testCase "a plain scalar of 5200 lines and a block scalar of 5200 lines read as one value each" <| fun _ ->
@@ -1695,7 +1697,7 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.equal (List.last texts) (sprintf " c%d" (comments - 1)) "The last comment stays last"
         Expect.equal (valueOf (commentRunInput comments)) "{\"root\":{\"a\":\"x\\n\",\"b\":1},\"c\":2}" "The values"
 
-    // Tests.Tokenizer "text behind the closer stays on the merged line". The old scanner kept the comment behind the closer of a flow collection on the merged line. The comment is the trailing
+    // Earlier test "text behind the closer stays on the merged line". The old scanner kept the comment behind the closer of a flow collection on the merged line. The comment is the trailing
     // comment of the collection (rule R8), and the key behind it stands on its own line (see the test of the lines above).
     testCase "a comment behind the closer of a flow collection over several lines is the trailing comment of the collection" <| fun _ ->
         let root = parseRoot "k: [a,\n  b] # tail\nj: 1"
@@ -1704,9 +1706,9 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.equal (collection.TrailingComment |> Option.map (fun c -> c.Text)) (Some " tail") "The comment"
 
     // The old tests asserted the message of the scanner and the line of its error for these inputs (Tests.StringCleanUp "a quote at a node start that never closes is an error that names its line",
-    // Tests.Tokenizer "a comment ends the plain scalar and a deeper line behind it is an error", "a continuation line that holds a mapping indicator is an error", "text behind a flow collection is an error",
+    // Earlier tests "a comment ends the plain scalar and a deeper line behind it is an error", "a continuation line that holds a mapping indicator is an error", "text behind a flow collection is an error",
     // "an alias in the place of a key inside a flow collection is an error that names the line", Tests.YamlRead "Text behind an alias and an alias as the key of a flow entry are errors" and
-    // "A named tag handle needs a TAG directive in its document", Tests.Escapes "Double-quoted multiline escaped line break"). yaml@2.6.1 rejects every input below, and so does the candidate.
+    // "A named tag handle needs a TAG directive in its document", Tests.Escapes "Double-quoted multiline escaped line break"). yaml@2.6.1 rejects every input below, and so does the parser.
     // The codes agree with the productions. A line of a quoted scalar needs more indentation than its parent (s-flow-line-prefix), so a continuation at the column of the key is quoted-indent, and it
     // is reported on the line of the continuation where the old scanner named the line of the quote. A comment ends a plain scalar, so a deeper line behind it belongs to no node (bad-indentation).
     // A plain scalar over several lines cannot be an implicit key (ns-s-implicit-yaml-key). A flow collection and an alias end their node, so text behind them is unexpected content or a missing
@@ -1749,9 +1751,9 @@ let private oldInputTests = testList "Inputs of the old tests" [
         for (input, expected) in rows do
             Expect.equal (parseErrorOf input) expected (sprintf "The error of %A" input)
 
-    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" and Tests.FlowTokens "properties, aliases and the question mark of an explicit
+    // Earlier test "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" and Tests.FlowTokens "properties, aliases and the question mark of an explicit
     // key are tokens". yaml@2.6.1 reads `{?}` as {"":null} and `[?a, ?, ? ]` as ["?a",{"":null},{"":null}]. [142] and [150] ask for a blank behind the question mark, and a comma is none,
-    // so the candidate rejects the question mark in front of a comma or a closer (Tests.Flow 'a question mark in front of a flow indicator is an error').
+    // so the parser rejects the question mark in front of a comma or a closer (Tests.Flow 'a question mark in front of a flow indicator is an error').
     testCase "a question mark in front of a flow indicator is an error where yaml@2.6.1 reads it" <| fun _ ->
         Expect.equal (parseErrorOf "{?}") "reserved-indicator@1" "A lone question mark in a flow mapping"
         Expect.equal (parseErrorOf "[?a, ?, ? ]") "reserved-indicator@1" "A question mark in front of a comma"

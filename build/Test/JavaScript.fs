@@ -6,7 +6,7 @@ open Utils.Path.Operators
 
 [<LiteralAttribute>]
 let private outDir = "js"
-let private entryPoint = outDir </> "main.js"
+let private entryPoint = outDir </> "Main.js"
 
 let handle (args: string list) =
     let isWatch = args |> List.contains "--watch"

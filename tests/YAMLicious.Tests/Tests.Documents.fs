@@ -511,14 +511,14 @@ let private oldDocumentRows : (string * string * string) list = [
 let private oldInputTests = testList "Inputs of the old tests" [
     testCase "the document inputs of the old scanner and reader tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldDocumentRows
 
-    // Tests.Tokenizer "a marker makes a document without a body" and "a document that holds only directives is dropped". yaml@2.6.1 reads `a: 1`, `...`, `...` as the documents {"a":1} and null,
+    // Earlier tests "a marker makes a document without a body" and "a document that holds only directives is dropped". yaml@2.6.1 reads `a: 1`, `...`, `...` as the documents {"a":1} and null,
     // `%YAML 1.2` alone as no document and `a: 1`, `...`, `%YAML 1.2` as {"a":1}. YAML 1.2.2 lets an end marker follow an end marker without a document ([205] l-document-suffix)
     // and asks for the start marker of a document with directives ([209] l-directive-document). The parser follows the spec, so it reads one document for the first text and rejects the others.
     testCase "the old document counts where the spec and yaml@2.6.1 differ" <| fun _ ->
         Expect.equal (yamlValueOf "a: 1\n...\n...\n") "{\"a\":1}" "An end marker behind an end marker ends no document"
         Expect.equal (yamlValueOf "%YAML 1.2\n") "ERROR" "A directive alone makes no document"
         Expect.equal (yamlValueOf "a: 1\n...\n%YAML 1.2\n") "ERROR" "A directive behind an end marker needs a start marker"
-        // Tests.Tokenizer "a duplicate YAML directive throws". yaml@2.6.1 reads the second %YAML directive with a warning, and YAML 1.2.2 (6.8.1) makes it an error.
+        // Earlier test "a duplicate YAML directive throws". yaml@2.6.1 reads the second %YAML directive with a warning, and YAML 1.2.2 (6.8.1) makes it an error.
         Expect.equal (parseErrorOf "%YAML 1.2\n%YAML 1.1\n---\na: 1\n") "duplicate-yaml-directive@2" "A second %YAML directive"
 ]
 

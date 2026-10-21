@@ -6,7 +6,7 @@ module Tests.Flow
 //
 // The yaml@2.6.1 value of each input stands in a comment above its test or in the tables, which a script produced from yaml@2.6.1 itself and not
 // from the parser. The tables hold the inputs of the old tests that read a flow collection: Tests.FlowTokens (the inputs of the old tokenizer),
-// Tests.YamlRead, Tests.Tokenizer and the N1 cases. The first column names the old test.
+// Tests.YamlRead, earlier tokenizer tests and the N1 cases of Tests.Parser. The first column names the old test.
 //
 // Changes against the old tests, each from the new model or a ruling of the specification:
 // - A flow collection or an alias as the key of an entry is valid now. The reader before 2.0.0 rejected both, because it kept scalar keys only (Tests.Keys).
@@ -349,7 +349,7 @@ let private shapeTests = testList "Flow sequences and flow mappings" [
         Expect.isTrue document.StartMarker.IsSome "The marker"
         Expect.nodeEqual document.Root (flowSeq [ sc "a" ]) "The root on the line of the marker"
 
-    // Tests.Tokenizer "the lines behind a merged flow collection keep their source line numbers" and "text behind the closer stays on the merged line". The preprocessing before 2.0.0 merged the lines of a
+    // Earlier tests "the lines behind a merged flow collection keep their source line numbers" and "text behind the closer stays on the merged line". The preprocessing before 2.0.0 merged the lines of a
     // collection, so it had to remember the physical lines. The parser reads the lines as they are, and the spans carry them. The span of a collection runs from its opener to its closer, and the
     // span of a missing value has no width.
     testCase "the spans of a flow collection and of its parts" <| fun _ ->
@@ -375,7 +375,7 @@ let private pairTests = testList "Flow pairs" [
         expectRoot "[a:b, 12:45]" (flowSeq [ sc "a:b"; sc "12:45" ])
         Expect.nodeEqual (parseRoot "[a: b]") (parseRoot "[{a: b}]") "A pair and the mapping give the same tree"
 
-    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" and Tests.YamlRead "An explicit key
+    // Earlier test "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" and Tests.YamlRead "An explicit key
     // inside a flow collection". yaml@2.6.1: [{"a":"b"}], [{"a":"b"},{"c":null}], [{"":null}].
     testCase "a pair can start with a question mark or with a colon" <| fun _ ->
         expectRoot "[? a : b]" (flowSeq [ YamlNode.flowMapping [ explicitFlowEntry (sc "a") (sc "b") ] ])
@@ -405,7 +405,7 @@ let private pairTests = testList "Flow pairs" [
         Expect.equal (showSpan entry.Key.Span.Value) "1:5-1:6" "The key"
         Expect.equal (showSpan entry.Span.Value) "1:5-1:9" "The entry"
 
-    // Tests.Tokenizer "the key of a pair in a flow sequence cannot span lines". yaml@2.6.1 rejects all three inputs with MULTILINE_IMPLICIT_KEY.
+    // Earlier test "the key of a pair in a flow sequence cannot span lines". yaml@2.6.1 rejects all three inputs with MULTILINE_IMPLICIT_KEY.
     // [154] ns-s-implicit-yaml-key: the key of a pair is on one line with its colon and has at most 1024 characters. The limit counts from the first
     // character of the key, its properties included.
     testCase "the key of a pair has the limits of an implicit key" <| fun _ ->
@@ -494,7 +494,7 @@ let private scalarTests = testList "Scalars inside a flow collection" [
         expectRoot "[a ,b]" (flowSeq [ sc "a"; sc "b" ])
         expectRoot "{a: b c}" (flowMap [ "a", sc "b c" ])
 
-    // Tests.Tokenizer "an indicator inside a plain scalar or behind a closed flow collection is no error" and "a hash behind a blank starts a comment...".
+    // Earlier tests "an indicator inside a plain scalar or behind a closed flow collection is no error" and "a hash behind a blank starts a comment...".
     // yaml@2.6.1: {"k":"a]"}, {"k":"-x"}, {"k":":x"}, ["-x"], ["a",-1], ["a#b","c"].
     testCase "indicator characters inside a plain scalar are text" <| fun _ ->
         expectRoot "k: a]" (mapOf [ "k", sc "a]" ])
@@ -505,9 +505,9 @@ let private scalarTests = testList "Scalars inside a flow collection" [
         expectRoot "[a#b, c #d\n]" (flowSeq [ sc "a#b"; withNote "d" (sc "c") ])
         expectRoot "[a:b, 12:45, http://x]" (flowSeq [ sc "a:b"; sc "12:45"; sc "http://x" ])
 
-    // Tests.Tokenizer "an unbalanced bracket or brace at the start of a continuation line does not hide the blocks after it" and "an unbalanced bracket in a sequence item does not hide the block scalar
+    // Earlier tests "an unbalanced bracket or brace at the start of a continuation line does not hide the blocks after it" and "an unbalanced bracket in a sequence item does not hide the block scalar
     // after it" (the Reader variants of the table rows). A bracket in a plain scalar of the block structure is text, and the block scalars behind it open as usual.
-    // Tests.Tokenizer "a quote behind a bracket in a plain scalar is text". yaml@2.6.1: {"k":"o[\"k\"]"} and {"k":"$(inputs[\"my-input\"].path)"}.
+    // Earlier test "a quote behind a bracket in a plain scalar is text". yaml@2.6.1: {"k":"o[\"k\"]"} and {"k":"$(inputs[\"my-input\"].path)"}.
     testCase "brackets and quotes inside a plain scalar of the block structure are text" <| fun _ ->
         expectRoot "k: o[\"k\"]" (mapOf [ "k", sc "o[\"k\"]" ])
         expectRoot "k: $(inputs[\"my-input\"].path)" (mapOf [ "k", sc "$(inputs[\"my-input\"].path)" ])
@@ -564,7 +564,7 @@ let private layoutTests = testList "Layouts over several lines" [
         expectRoot "k: [a: b\n]" (mapOf [ "k", flowSeq [ flowPair (sc "a") (sc "b") ] ])
 
     // [63] s-indent(n) is n spaces, so a line in a collection needs its spaces in front of any tab, and a tab behind them is a separator. A line that starts with a tab has no indentation.
-    // yaml@2.6.1 rejects the first two inputs (corpus mutb11 m11197 and mut7 m7450, a nested closer behind a tab) and reads the outermost closer behind a tab at the column 0.
+    // yaml@2.6.1 rejects the first two inputs (a nested closer behind a tab) and reads the outermost closer behind a tab at the column 0.
     testCase "the indentation of a line inside a collection counts spaces and a tab only follows them" <| fun _ ->
         expectError "k:\n  [ &b1 ,\n   [\n\t   ]\n   ]\nj: 1" "flow-indent@4"
         expectError "k: [\n  { a: b\n  , c: d\n\t }\n  ]" "flow-indent@4"
@@ -642,7 +642,7 @@ let private propertyTests = testList "Properties in a flow collection" [
         let plain = parseRoot "k: &a\n  [x]"
         Expect.nodeEqual plain (mapOf [ "k", anchorOnOwnLine "a" (flowSeq [ sc "x" ]) ]) "A value on the next line keeps the anchor"
 
-    // Tests.Tokenizer "tags and anchors before a header", "a sequence entry with a verbatim tag and a header" and "a quoted scalar behind a verbatim tag". The tag and the anchor belong to the
+    // Earlier tests "tags and anchors before a header", "a sequence entry with a verbatim tag and a header" and "a quoted scalar behind a verbatim tag". The tag and the anchor belong to the
     // block scalar or the quoted scalar behind them. The values stand in the table.
     testCase "tags and anchors stand on a block scalar and on a quoted scalar" <| fun _ ->
         let literal = lit "x \"q\"\n"
@@ -652,7 +652,7 @@ let private propertyTests = testList "Properties in a flow collection" [
         expectRoot "- !<tag:yaml.org,2002:str> |\n  x \"q\"\n- 'v'\n" (seqOf [ YamlNode.withTag (YamlTag.core "str") literal; sq "v" ])
         expectRoot "- !<tag:yaml.org,2002:str> 'v'\n" (seqOf [ YamlNode.withTag (YamlTag.core "str") (sq "v") ])
 
-    // Tests.Tokenizer "an anchor in a flow collection needs a name". yaml@2.6.1 rejects all three inputs with BAD_ALIAS.
+    // Earlier test "an anchor in a flow collection needs a name". yaml@2.6.1 rejects all three inputs with BAD_ALIAS.
     testCase "properties that cannot stand together or touch the node are errors" <| fun _ ->
         expectError "[!!str !!int a]" "duplicate-tag@1"
         expectError "[&a &b a]" "duplicate-anchor@1"
@@ -667,7 +667,7 @@ let private propertyTests = testList "Properties in a flow collection" [
 ]
 
 let private errorTests = testList "Flow errors" [
-    // Tests.Tokenizer "a comma behind a bracket or behind a comma is an error and a trailing comma is not". yaml@2.6.1 rejects all of these with UNEXPECTED_TOKEN.
+    // Earlier test "a comma behind a bracket or behind a comma is an error and a trailing comma is not". yaml@2.6.1 rejects all of these with UNEXPECTED_TOKEN.
     testCase "a comma with no entry in front of it is an error" <| fun _ ->
         expectError "[a,,b]" "empty-flow-entry@1"
         expectError "k: [,a]" "empty-flow-entry@1"
@@ -678,7 +678,7 @@ let private errorTests = testList "Flow errors" [
         expectError "k: {\n  a: 1,\n  ,\n}" "empty-flow-entry@3"
         expectError "[a,\n\n,]" "empty-flow-entry@3"
 
-    // Tests.Tokenizer "a node in front of a flow collection needs a comma or a colon behind it" and "an entry of a flow collection can hold only one colon".
+    // Earlier tests "a node in front of a flow collection needs a comma or a colon behind it" and "an entry of a flow collection can hold only one colon".
     // yaml@2.6.1 rejects all of these with MISSING_CHAR, UNEXPECTED_TOKEN or BLOCK_IN_FLOW.
     testCase "two entries with no comma between them are an error" <| fun _ ->
         expectError "k: [a [b]]" "missing-flow-comma@1"
@@ -694,7 +694,7 @@ let private errorTests = testList "Flow errors" [
         expectError "[a # c\n b]" "missing-flow-comma@2"
         expectError "[a [b], c]" "missing-flow-comma@1"
 
-    // Tests.Tokenizer "a flow collection that is still open at the end or at a document marker is an error" and "a closer of the other kind is an error that
+    // Earlier tests "a flow collection that is still open at the end or at a document marker is an error" and "a closer of the other kind is an error that
     // names the line of the opener". yaml@2.6.1 rejects all of these. The error stands where the text ends, and Related is the opener.
     // Tests.YamlRead "A flow collection that does not close over several lines is an error that names the opener" is the same rule for the Reader: the old message named the line of the opener, and the
     // new error stands at the end of the text with the opener as the related span.
@@ -728,7 +728,7 @@ let private errorTests = testList "Flow errors" [
         expectError "{a: 1}}" "unopened-flow@1"
         expectError "k: [a]\n]" "unopened-flow@2"
 
-    // Tests.Tokenizer "text behind a flow collection is an error". yaml@2.6.1 rejects all five inputs with UNEXPECTED_TOKEN. A flow collection ends its node.
+    // Earlier test "text behind a flow collection is an error". yaml@2.6.1 rejects all five inputs with UNEXPECTED_TOKEN. A flow collection ends its node.
     testCase "text behind a flow collection is an error" <| fun _ ->
         expectError "k: [a] b" "unexpected-content@1"
         expectError "[a] [b]" "unexpected-content@1"
@@ -737,7 +737,7 @@ let private errorTests = testList "Flow errors" [
         expectError "[a]\n[b]" "unexpected-content@2"
         expectError "k: [a]:b" "unexpected-content@1"
 
-    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator". The reader before 2.0.0 accepted a question
+    // Earlier test "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator". The reader before 2.0.0 accepted a question
     // mark in front of a flow indicator (yaml@2.6.1 reads {"":null}). [142] and [150] ask for a separator behind the question mark, and a flow indicator is
     // none, so the question mark starts neither an explicit key nor a plain scalar.
     testCase "a question mark in front of a flow indicator is an error" <| fun _ ->
@@ -747,7 +747,7 @@ let private errorTests = testList "Flow errors" [
         expectError "{?,}" "reserved-indicator@1"
         expectError "[?[a]]" "reserved-indicator@1"
 
-    // Tests.Tokenizer "a flow collection never holds a header". yaml@2.6.1 rejects the block scalar headers inside a collection.
+    // Earlier test "a flow collection never holds a header". yaml@2.6.1 rejects the block scalar headers inside a collection.
     testCase "a block scalar cannot start inside a flow collection" <| fun _ ->
         expectError "a: [|" "block-scalar-position@1"
         expectError "[a, b: |" "block-scalar-position@1"
@@ -855,7 +855,7 @@ let private performanceTests = testList "Flow performance" [
     testCase "a long flow sequence on one line takes time linear in its length" <| fun _ ->
         expectLinear "The parser on a one-line flow sequence" parseOnly countLineBreaks longSequenceInput
 
-    // Tests.Tokenizer "the read time grows linearly with the lines of a flow collection" and "the time grows linearly with the entries of a flow mapping with explicit keys and properties".
+    // Earlier tests "the read time grows linearly with the lines of a flow collection" and "the time grows linearly with the entries of a flow mapping with explicit keys and properties".
     testCase "a flow mapping over many lines takes time linear in the number of lines" <| fun _ ->
         expectLinear "The parser on a multi-line flow mapping" parseOnly countLineBreaks longMappingInput
 
