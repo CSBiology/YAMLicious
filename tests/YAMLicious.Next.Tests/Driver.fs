@@ -3,7 +3,7 @@
 /// the key of a value is the parent indentation of the node behind it, and a flow collection takes the
 /// parent indentation of the node that holds it. It is no parser and checks nothing about the structure.
 [<AutoOpenAttribute>]
-module Driver
+module internal Driver
 
 open YAMLicious
 

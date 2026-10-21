@@ -452,7 +452,7 @@ let private blockTests = testList "Block scalars" [
         expectScalars
             "expression: >\n  ${ return (function() {\n    var permittedKeys = ['class', 'basename'];\n    if (shortened.basename === \"own\") return null;\n  })(); }\n"
             [ pl "expression"; fold "${ return (function() {\n  var permittedKeys = ['class', 'basename'];\n  if (shortened.basename === \"own\") return null;\n})(); }\n" ]
-        expectScalars "comment: |\n  # Not a comment\n  value" [ pl "comment"; lit "# Not a comment\nvalue\n" ]
+        expectScalars "comment: |\n  # Not a comment\n  value\n" [ pl "comment"; lit "# Not a comment\nvalue\n" ]
         expectScalars
             "doc: |\n  Workflow doc line.\n  # This line is doc text, not a YAML comment.\nnext: value"
             [ pl "doc"; lit "Workflow doc line.\n# This line is doc text, not a YAML comment.\n"; pl "next"; pl "value" ]
@@ -645,12 +645,33 @@ let private spaceLineTests = testList "Block scalar lines of spaces" [
         expectScalars "k: >\n  \n  a\n" [ pl "k"; fold "\na\n" ]
         expectError "k: |\n    \n  a\n" "leading-empty-line" "2:1-3:1"
 
-    // yaml@2.6.1 reads a body of lines of spaces as the empty string, also behind an explicit indicator. YAML 1.2.2 (8.1.3) makes a line of spaces
-    // beyond the indicated indentation content, and the lexer keeps the old reading of the library for it.
-    testCase "a body of lines of spaces only" <| fun _ ->
+    // yaml@2.6.1 and YAML 1.2.2 agree: without an indentation indicator the longest of the lines of spaces sets the indentation, so each of them is
+    // an empty line and the body is empty. Under keep chomping the lines count as line feeds.
+    testCase "a body of lines of spaces only and no indentation indicator holds empty lines" <| fun _ ->
         expectScalars "k: |-\n   \n  \n\nj: 1\n" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Strip None ""; pl "j"; pl "1" ]
         expectScalars "- |+\n  \n  \n \n- 1\n" [ blk BlockScalarStyle.Literal ChompingMode.Keep None "\n\n\n"; pl "1" ]
         expectScalars "k: >\n \n   \nj: 1\n" [ pl "k"; fold ""; pl "j"; pl "1" ]
+
+    // Deliberate difference from yaml@2.6.1, which reads `k: |1\n   \nj: 1` as {"k":"","j":1}. With an indentation indicator the content indentation
+    // is fixed, and a line of spaces is empty only when it is no longer than that ([171] l-nb-literal-text(n) is l-empty(n,block-in)* followed by
+    // s-indent(n) nb-char+, and [170] adds the indicator to n). A line of spaces beyond the indentation is content, with the spaces beyond it.
+    testCase "a line of spaces beyond an indentation indicator is content even when no other line is" <| fun _ ->
+        expectScalars "k: |1\n   \nj: 1" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Clip (Some 1) "  \n"; pl "j"; pl "1" ]
+        expectScalars "k: |1-\n   \nj: 1" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Strip (Some 1) "  "; pl "j"; pl "1" ]
+        expectScalars "k: >1\n   \nj: 1" [ pl "k"; blk BlockScalarStyle.Folded ChompingMode.Clip (Some 1) "  \n"; pl "j"; pl "1" ]
+        // A line of spaces up to the indentation is empty, and so is the body of such lines.
+        expectScalars "k: |1\n \nj: 1" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Clip (Some 1) ""; pl "j"; pl "1" ]
+
+    // yaml@2.6.1 rejects `|\n  a\n\t\n` and `k: |\n  a\n\t\nj: 1` with BAD_INDENT. A line of blanks with a tab in it is no content line and no
+    // empty line of the scalar, so it ends the scalar, and [78] l-comment makes it a blank line of the document prefix or of the mapping ([211], [202]).
+    testCase "a line of blanks with a tab ends a block scalar without an error" <| fun _ ->
+        expectLexemes "|\n  a\n\t\n" [ "literal:a\\n"; "blank" ]
+        expectLexemes "|\n  a\n \t\n" [ "literal:a\\n"; "blank" ]
+        expectLexemes "k: |\n    a\n  \t\nj: 1" [ "plain:k"; ":"; "literal:a\\n"; "blank"; "plain:j"; ":"; "plain:1" ]
+        expectLexemes "k: >-\n    a\n\t\nj: 1" [ "plain:k"; ":"; "folded-:a"; "blank"; "plain:j"; ":"; "plain:1" ]
+        // A tab in front of text behind too few spaces is still an error.
+        expectError "k: |\n    a\n  \tb\nj: 1" "block-indent" "3:3-3:4"
+        expectError "|\n  a\n\tb\n" "block-indent" "3:1-3:2"
 ]
 
 let private lineBreakTests = testList "Line breaks in scalars" [
@@ -663,9 +684,28 @@ let private lineBreakTests = testList "Line breaks in scalars" [
 
     testCase "a byte order mark and the end of the text without a line break" <| fun _ ->
         expectScalars "\uFEFFa: b" [ pl "a"; pl "b" ]
-        expectScalars "k: |\n  a" [ pl "k"; lit "a\n" ]
         expectScalars "k: |-\n  a" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Strip None "a" ]
         expectScalars "k: a\n  b" [ pl "k"; pl "a b" ]
+
+    // Deliberate difference from yaml@2.6.1, which reads `k: |\n  a` as {"k":"a\n"} and `k: |+\n  a` as {"k":"a\n"}. [165] b-chomped-last(t) is
+    // b-as-line-feed or the end of the input for clip and keep, so a last content line that ends the input has no line break to keep. The value is
+    // "a" for every chomping, and the line break is back as soon as the input has one.
+    testCase "a last content line that ends the input has no final line feed" <| fun _ ->
+        expectScalars "k: |\n  a" [ pl "k"; lit "a" ]
+        expectScalars "k: |+\n  a" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Keep None "a" ]
+        expectScalars "k: |-\n  a" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Strip None "a" ]
+        expectScalars "|\n  a" [ lit "a" ]
+        expectScalars "k: >\n  a\n  b" [ pl "k"; fold "a b" ]
+        expectScalars "k: >+\n  a" [ pl "k"; blk BlockScalarStyle.Folded ChompingMode.Keep None "a" ]
+        expectScalars "- |\n  a" [ lit "a" ]
+        expectScalars "k: |\n  a\n" [ pl "k"; lit "a\n" ]
+        expectScalars "k: |+\n  a\n" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Keep None "a\n" ]
+        expectScalars "k: |+\n  a\n\n" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Keep None "a\n\n" ]
+        expectScalars "k: |\r\n  a\r\n" [ pl "k"; lit "a\n" ]
+        // A line of spaces at the end of the input without a line break is no empty line ([70] l-empty ends in b-as-line-feed).
+        expectScalars "k: |+\n  a\n  " [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Keep None "a\n" ]
+        // A line of spaces beyond the indentation is content, and it ends the input here.
+        expectScalars "k: |\n  a\n    " [ pl "k"; lit "a\n  " ]
 ]
 
 let private flowScalarTests = testList "Scalars in flow collections" [
@@ -713,7 +753,9 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectLexemes "{a\n b: c d}" [ "{"; "plain:a b"; ":"; "plain:c d"; "}" ]
 
     // Tests.Tokenizer "the lines of a flow collection must be indented deeper than the node that owns it" and "a closer may sit at the column of the
-    // node that owns the flow collection". yaml@2.6.1 rejects the first six inputs with BAD_INDENT and reads the others.
+    // node that owns the flow collection". yaml@2.6.1 rejects the first six inputs with BAD_INDENT and reads the others. The closer at the column of
+    // the owner is a deliberate difference from [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines, which ask for the indentation of
+    // the owner plus one. The loader of cwltool (ruamel) and yaml@2.6.1 read that layout, and real CWL files use it for `expressionLib: [`.
     testCase "the lines of a flow collection have to be deeper than the node that owns it, and a closer may stand at its column" <| fun _ ->
         expectError "k: [a,\nb]" "flow-indent" "2:1-2:2"
         expectError "k: [\na,\nb\n]" "flow-indent" "2:1-2:2"

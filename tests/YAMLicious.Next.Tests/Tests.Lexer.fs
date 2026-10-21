@@ -44,6 +44,69 @@ let private streamTests = testList "Lexer stream" [
         Expect.equal (lexSpans "\uFEFFa: b") [ "plain:a 1:1-1:2"; ": 1:2-1:3"; "plain:b 1:4-1:5" ] "The spans"
         Expect.equal (Cursor("\uFEFFa").Origin) 1 "The cursor starts behind the mark"
         Expect.equal (Cursor("a").Origin) 0 "A text without the mark starts at 0"
+
+    // yaml@2.6.1 reads `--- a\n...\n\uFEFFb` as "a" and "b". [202] l-document-prefix allows the mark in front of every document.
+    testCase "a byte order mark at the start of a later document is skipped and takes no column" <| fun _ ->
+        expectLexemes "--- a\n...\n\uFEFFb" [ "---"; "plain:a"; "..."; "plain:b" ]
+        Expect.equal
+            (lexSpans "--- a\n...\n\uFEFFb")
+            [ "--- 1:1-1:4"; "plain:a 1:5-1:6"; "... 2:1-2:4"; "plain:b 3:1-3:2" ]
+            "The mark takes no column"
+        expectLexemes "a\n...\n\uFEFF---\nb" [ "plain:a"; "..."; "---"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "%YAML 1.2"; "---"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF# c\nb" [ "plain:a"; "..."; "#own: c"; "plain:b" ]
+
+    // yaml@2.6.1 reads `\uFEFF%YAML 1.2\n---\na` as "a". [202] l-document-prefix puts the mark at the start of the prefix, and the directives of [209] follow the
+    // prefix. The prefix may hold comment lines in front of the mark of the next prefix, so comment lines and blank lines leave the mark allowed.
+    testCase "a byte order mark is valid in front of the directives and behind the comment lines of a prefix" <| fun _ ->
+        expectLexemes "\uFEFF%YAML 1.2\n---\na" [ "%YAML 1.2"; "---"; "plain:a" ]
+        expectLexemes "a\n...\n# c\n\n\uFEFFb" [ "plain:a"; "..."; "#own: c"; "blank"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "%YAML 1.2"; "---"; "plain:b" ]
+        expectLexemes "\uFEFF# c\na" [ "#own: c"; "plain:a" ]
+        // [211] l-yaml-stream repeats the prefix, and each one may open with a mark, so a run of marks is valid and takes no column.
+        expectLexemes "\uFEFF\uFEFFa" [ "plain:a" ]
+        expectLexemes "\uFEFF# c\n\uFEFF\uFEFFa" [ "#own: c"; "plain:a" ]
+        expectLexemes "a\n...\n\uFEFF\uFEFF\uFEFFb" [ "plain:a"; "..."; "plain:b" ]
+        Expect.equal (lexSpans "\uFEFF# c\n\uFEFF\uFEFFa") [ "#own: c 1:1-1:4"; "plain:a 2:1-2:2" ] "A run of marks takes no column"
+
+    // yaml@2.6.1 accepts the mark behind a directive and inside a document and keeps it in the text. The mark is no nb-char ([27]) and no ns-char ([34]), so
+    // [202] is the only place for it, and a directive or any content takes the allowance away.
+    testCase "a byte order mark behind a directive or inside a document is an error" <| fun _ ->
+        expectError "%YAML 1.2\n\uFEFF---\na" "invalid-character" "2:1-2:2"
+        expectError "a\n...\n%TAG ! tag:x,2000:\n\uFEFF---\nb" "invalid-character" "4:1-4:2"
+        expectError "a\n\uFEFFb" "invalid-character" "2:1-2:2"
+        expectError "k: 1\n\uFEFFj: 2" "invalid-character" "2:1-2:2"
+        expectError "a\n...\nb\n\uFEFFc" "invalid-character" "4:1-4:2"
+        expectError "--- # c\n\uFEFFa" "invalid-character" "2:1-2:2"
+        expectError "- a\n...\n- b\n\uFEFF- c" "invalid-character" "4:1-4:2"
+        expectLexemes "a\n\uFEFFb" [ "plain:a"; "error:invalid-character" ]
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\uFEFFb") [ "plain:a"; "error:invalid-character" ] "A plain scalar does not go on with a mark"
+
+    // yaml@2.6.1 accepts the mark in each of these places and keeps it in the text, or drops it together with the comment. [27] nb-char and [34] ns-char exclude it.
+    testCase "a byte order mark inside a scalar, a comment, a name or a directive is an error" <| fun _ ->
+        expectError "a\uFEFFb" "invalid-character" "1:2-1:3"
+        expectError "k: a\uFEFFb" "invalid-character" "1:5-1:6"
+        expectError "k: a\n  b\uFEFFc" "invalid-character" "2:4-2:5"
+        expectError "[a, b\uFEFF]" "invalid-character" "1:6-1:7"
+        expectError "k: \uFEFFa" "invalid-character" "1:4-1:5"
+        expectError "\"a\uFEFFb\"" "invalid-character" "1:3-1:4"
+        expectError "'a\uFEFFb'" "invalid-character" "1:3-1:4"
+        expectError "k: \"a\n  b\uFEFFc\"" "invalid-character" "2:4-2:5"
+        expectError "k: |\n  a\uFEFF" "invalid-character" "2:4-2:5"
+        expectError "k: >\n  a\n  \uFEFFb" "invalid-character" "3:3-3:4"
+        expectError "# c\uFEFF" "invalid-character" "1:4-1:5"
+        expectError "a # c\uFEFF" "invalid-character" "1:6-1:7"
+        expectError "k: | # c\uFEFF\n  a" "invalid-character" "1:9-1:10"
+        expectError "&a\uFEFFb c" "invalid-character" "1:3-1:4"
+        expectError "*a\uFEFF" "invalid-character" "1:3-1:4"
+        expectError "%FOO a\uFEFFb\n---" "invalid-character" "1:7-1:8"
+        expectLexemes "a\uFEFFb" [ "plain:a"; "error:invalid-character" ]
+        expectLexemes "&a\uFEFFb" [ "&a"; "error:invalid-character" ]
+
+    // yaml@2.6.1 reads the escape for the mark in a double-quoted scalar as the mark. The escape stays valid.
+    testCase "the escape for the byte order mark stays valid in a double-quoted scalar" <| fun _ ->
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"a\\uFEFFb\"") [ "double:a\uFEFFb" ] "The escape"
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"\\uFEFF\"") [ "double:\uFEFF" ] "The escape alone"
 ]
 
 let private blockTests = testList "Lexer block lexemes" [
@@ -105,7 +168,7 @@ let private flowTests = testList "Lexer flow lexemes" [
         expectLexemes "{a: 1, b: [c, d]}" [ "{"; "plain:a"; ":"; "plain:1"; ","; "plain:b"; ":"; "["; "plain:c"; ","; "plain:d"; "]"; "}" ]
         expectLexemes "k: [a, b]\nj: {c: d}" [ "plain:k"; ":"; "["; "plain:a"; ","; "plain:b"; "]"; "plain:j"; ":"; "{"; "plain:c"; ":"; "plain:d"; "}" ]
 
-    // yaml@2.6.1: ["a:b"], [{"a":"b"}], [{"a":null}] for `{a:}` and ["x"] for `[?]`
+    // yaml@2.6.1: [["a:b"]], [[{"a":"b"}]], [{"a":null}] for `{a:}` and [{"a":null,"b":null}] for `{a:,b}`
     testCase "a colon in a flow collection ends a key behind a blank or a flow indicator only" <| fun _ ->
         expectLexemes "[a:b]" [ "["; "plain:a:b"; "]" ]
         expectLexemes "[a: b]" [ "["; "plain:a"; ":"; "plain:b"; "]" ]
@@ -131,10 +194,16 @@ let private flowTests = testList "Lexer flow lexemes" [
         expectLexemes "[a, # c\n b]" [ "["; "plain:a"; ","; "#: c"; "plain:b"; "]" ]
         expectLexemes "[\n  # c\n  a\n]" [ "["; "#own: c"; "plain:a"; "]" ]
 
-    testCase "an explicit key in a flow collection stands in front of a blank or a flow indicator" <| fun _ ->
+    // yaml@2.6.1 reads `{? a, b: c}` as {"a":null,"b":"c"}, `[?a]` as [["?a"]] and `[?]`, `[?, a]` and `{?}` as an explicit key with an
+    // empty node: [{"":null}], [{"":null},"a"] and {"":null}. [142] and [150] ask for s-separate behind the `?`, and ns-plain-first
+    // rejects a `?` in front of a flow indicator, so the lexer rejects what yaml@2.6.1 accepts.
+    testCase "an explicit key in a flow collection stands in front of a blank and a question mark in front of a flow indicator is an error" <| fun _ ->
         expectLexemes "{? a, b: c}" [ "{"; "?"; "plain:a"; ","; "plain:b"; ":"; "plain:c"; "}" ]
-        expectLexemes "[?]" [ "["; "?"; "]" ]
         expectLexemes "[?a]" [ "["; "plain:?a"; "]" ]
+        expectError "[?]" "reserved-indicator" "1:2-1:3"
+        expectError "[?, a]" "reserved-indicator" "1:2-1:3"
+        expectError "{?}" "reserved-indicator" "1:2-1:3"
+        expectError "{a: ?}" "reserved-indicator" "1:5-1:6"
 
     testCase "an empty collection and a trailing comma" <| fun _ ->
         expectLexemes "[]" [ "["; "]" ]
@@ -212,6 +281,27 @@ let private propertyTests = testList "Lexer properties and aliases" [
         expectError "!<abc" "invalid-tag" "1:1-1:6"
         expectError "!a%2" "invalid-tag" "1:3-1:5"
         expectError "!a%zz" "invalid-tag" "1:3-1:6"
+
+    // yaml@2.6.1 reads `!<{x}>` as the empty string and `!<a%2> x` without an error. [98] c-verbatim-tag holds ns-uri-char+ ([39]) only, which
+    // are the alphanumerics, `-;/?:@&=+$,_.!~*'()[]#` and a `%` followed by two hexadecimal digits.
+    testCase "a verbatim tag holds URI characters only" <| fun _ ->
+        expectError "!<{x}>" "invalid-tag" "1:3-1:4"
+        expectError "!<a b>" "invalid-tag" "1:1-1:4"
+        expectError "!<a\"b>" "invalid-tag" "1:4-1:5"
+        expectError "!<a%2> x" "invalid-tag" "1:4-1:7"
+        expectError "!<a%zz> x" "invalid-tag" "1:4-1:7"
+        expectError "!<\u00E9>" "invalid-tag" "1:3-1:4"
+        expectLexemes "!<a%20b> x" [ "!<a%20b>"; "plain:x" ]
+        expectLexemes "!<-;/?:@&=+$,_.!~*'()[]#> x" [ "!<-;/?:@&=+$,_.!~*'()[]#>"; "plain:x" ]
+
+    // yaml@2.6.1 rejects `!<x>#c` with MISSING_CHAR. A verbatim tag ends at its bracket, and the hash cannot start a comment without a blank.
+    testCase "a hash right behind a verbatim tag is a glued comment" <| fun _ ->
+        expectError "!<x>#c" "glued-comment" "1:5-1:6"
+        expectError "k: !<x>#c" "glued-comment" "1:8-1:9"
+        expectError "[!<x>#c]" "glued-comment" "1:6-1:7"
+        expectLexemes "!<x> #c" [ "!<x>"; "#:c" ]
+        // A hash inside the name of a shorthand tag, an anchor or an alias is part of the name.
+        expectLexemes "!x#c y" [ "tag:!|x#c"; "plain:y" ]
 ]
 
 let private commentTests = testList "Lexer comments" [
@@ -255,7 +345,7 @@ let private markerTests = testList "Lexer directives and document markers" [
         expectLexemes "--- a" [ "---"; "plain:a" ]
         expectLexemes "--- # c" [ "---"; "#: c" ]
         expectLexemes "a: 1\n...\nb: 2" [ "plain:a"; ":"; "plain:1"; "..."; "plain:b"; ":"; "plain:2" ]
-        expectLexemes "--- |\n x" [ "---"; "literal:x\\n" ]
+        expectLexemes "--- |\n x\n" [ "---"; "literal:x\\n" ]
         expectLexemes "--- 'x'\n--- \"y\"" [ "---"; "single:x"; "---"; "double:y" ]
 
     // yaml@2.6.1 reads " ---" as "---", "----" as "----", "...x" as "...x" and "---a" as "---a". A marker needs a blank behind it and stands at column 1.
@@ -303,6 +393,25 @@ let private markerTests = testList "Lexer directives and document markers" [
         expectError "%TAG e! x\n---" "invalid-directive" "1:6-1:8"
         expectError "%TAG !e!x y\n---" "invalid-directive" "1:6-1:10"
         expectError "%\n---" "invalid-directive" "1:1-1:2"
+
+    // yaml@2.6.1 reads `% YAML 1.2\n---\na` as "a". [82] l-directive and [84] ns-directive-name put the name right behind the `%`.
+    testCase "a blank behind the percent sign leaves a directive without a name" <| fun _ ->
+        expectError "% YAML 1.2\n---" "invalid-directive" "1:1-1:2"
+        expectError "%\tTAG !e! x\n---" "invalid-directive" "1:1-1:2"
+        expectError "% \n---" "invalid-directive" "1:1-1:2"
+        expectLexemes "%YAML 1.2\n---" [ "%YAML 1.2"; "---" ]
+
+    // yaml@2.6.1 reads `%TAG !e! {bad}\n---\n!e!x y` as "y". [93] to [95] build the prefix of ns-uri-char ([39]), and a global prefix
+    // starts with an ns-tag-char ([40]), which is no `!` and no flow indicator.
+    testCase "the prefix of a tag directive holds URI characters only" <| fun _ ->
+        expectError "%TAG !e! {bad}\n---" "invalid-directive" "1:10-1:11"
+        expectError "%TAG !e! a\"b\n---" "invalid-directive" "1:11-1:12"
+        expectError "%TAG !e! a%zz\n---" "invalid-directive" "1:11-1:14"
+        expectError "%TAG !e! a%\n---" "invalid-directive" "1:11-1:12"
+        expectError "%TAG !e! ,x\n---" "invalid-directive" "1:10-1:11"
+        expectError "%TAG !e! [x]\n---" "invalid-directive" "1:10-1:11"
+        expectLexemes "%TAG !e! !local,[x]%20\n---" [ "%TAG !e! !local,[x]%20"; "---" ]
+        expectLexemes "%TAG !e! tag:x,2000:[y]%41\n---" [ "%TAG !e! tag:x,2000:[y]%41"; "---" ]
 
     // yaml@2.6.1: {"a":"b\n%TAG\n"}. A percent sign inside a block scalar body is content.
     testCase "a percent sign inside a block scalar body is content" <| fun _ ->
@@ -412,7 +521,7 @@ let private contextTests = testList "Lexer contexts" [
     testCase "a block scalar cannot start in a flow collection or as an implicit key" <| fun _ ->
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "|\n x") [ "error:block-scalar-position" ] "FlowIn"
         Expect.equal (lexIn GrammarContext.BlockKey -1 false "|\n x") [ "error:block-scalar-position" ] "BlockKey"
-        Expect.equal (lexIn GrammarContext.BlockOut -1 false "|\n x") [ "literal:x\\n" ] "BlockOut"
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "|\n x\n") [ "literal:x\\n" ] "BlockOut"
 
     testCase "the block indicators are lexemes in a block context and the flow rules apply in a flow context" <| fun _ ->
         Expect.equal (lexIn GrammarContext.FlowOut -1 false "- a") [ "-"; "plain:a" ] "FlowOut treats a dash like a block context"
@@ -430,6 +539,23 @@ let private contextTests = testList "Lexer contexts" [
         Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n ]") [ "plain:a"; ","; "error:flow-indent" ] "A closer behind the parent is too shallow"
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n# c\nb") [ "plain:a"; ","; "#own: c"; "error:flow-indent" ] "A comment line stands anywhere"
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a,\nb") [ "plain:a"; ","; "plain:b" ] "At the root every line is deep enough"
+
+    // yaml@2.6.1 rejects `k: "b\n\t\n  c"` and `k: b\n\t\n  c` (BAD_INDENT), and reads `"b\n\t\n  c"` and `b\n\t\n  c` at the root as "b\nc".
+    // [70] l-empty(n,c) is n spaces and then any blanks, or fewer than n spaces and nothing else, with n one above the parent. A tab behind
+    // fewer spaces makes the line no empty line, so a plain scalar ends in front of it and a quoted scalar is an error.
+    testCase "an empty line inside a folded scalar holds a tab only behind the indentation" <| fun _ ->
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "b\n\t\n  c") [ "plain:b"; "blank"; "plain:c" ] "A tab with no space under parent 0"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "b\n \t\n  c") [ "plain:b\\nc" ] "One space and a tab under parent 0"
+        Expect.equal (lexIn GrammarContext.BlockOut 2 false "b\n  \t\n    c") [ "plain:b"; "blank"; "plain:c" ] "Two spaces and a tab under parent 2"
+        Expect.equal (lexIn GrammarContext.BlockOut 2 false "b\n   \t\n    c") [ "plain:b\\nc" ] "Three spaces and a tab under parent 2"
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "b\n\t\n  c") [ "plain:b\\nc" ] "At the root"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  b\n\t\n  c") [ "plain:b"; "blank"; "plain:c" ] "In a flow collection"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"b\n\t\n  c\"") [ "error:quoted-indent" ] "A quoted scalar under parent 0"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"b\\\n\t\n  c\"") [ "error:quoted-indent" ] "A quoted scalar after an escaped line break"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"b\n \t\n  c\"") [ "double:b\\nc" ] "One space and a tab in a quoted scalar"
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"b\n\t\n  c\"") [ "double:b\\nc" ] "A quoted scalar at the root"
+        expectError "k: \"b\n\t\n  c\"" "quoted-indent" "2:1-2:2"
+        expectError "k: 'b\n \n\t\n  c'" "quoted-indent" "3:1-3:2"
 
     testCase "a document marker inside a flow collection is an error" <| fun _ ->
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a,\n---") [ "plain:a"; ","; "error:marker-in-flow" ] "Start marker"
@@ -466,6 +592,8 @@ let private positionTests = testList "Lexer positions" [
         Expect.equal (lexSpans "\"a\n b\"") [ "double:a b 1:1-2:4" ] "Double-quoted"
         Expect.equal (lexSpans "k: |\n  a\n  b\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal:a\\nb\\n 1:4-3:4"; "plain:j 4:1-4:2"; ": 4:2-4:3"; "plain:1 4:4-4:5" ] "Block"
         Expect.equal (lexSpans "k: |\n\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal: 1:4-1:5"; "plain:j 3:1-3:2"; ": 3:2-3:3"; "plain:1 3:4-3:5" ] "A block scalar without content ends at its header"
+        Expect.equal (lexSpans "k: | # c\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal: 1:4-1:5"; "plain:j 2:1-2:2"; ": 2:2-2:3"; "plain:1 2:4-2:5" ] "A header comment is no part of the span"
+        Expect.equal (lexSpans "k: >- # c\n  a\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "folded-:a 1:4-2:4"; "plain:j 3:1-3:2"; ": 3:2-3:3"; "plain:1 3:4-3:5" ] "Nor is it with content"
 
     testCase "the line start, the blank line and the stream end have ranges too" <| fun _ ->
         let cursor = Cursor("  a\n\n  \n")
@@ -482,6 +610,13 @@ let private positionTests = testList "Lexer positions" [
             (List.ofSeq spans)
             [ "stream-start 1:1-1:1"; "line:2 1:1-1:3"; "plain:a 1:3-1:4"; "blank 2:1-2:1"; "blank 3:1-3:3"; "stream-end 4:1-4:1" ]
             "The ranges"
+
+    testCase "a byte order mark at the start of a line takes no column" <| fun _ ->
+        let cursor = Cursor("a\n\uFEFFb\r\n\uFEFF\uFEFFc")
+        Expect.equal (cursor.MarkAt 3) { Line = 2; Column = 1 } "The character behind the mark"
+        Expect.equal (cursor.MarkAt 4) { Line = 2; Column = 2 } "The next character"
+        Expect.equal (cursor.MarkAt 8) { Line = 3; Column = 1 } "The character behind a run of marks"
+        Expect.equal (Cursor("a\uFEFFb").MarkAt 2) { Line = 1; Column = 3 } "A mark behind another character takes a column"
 
     testCase "marks are the same when they are asked out of order" <| fun _ ->
         let text = "a: 1\n\U0001F600b\r\nc"
@@ -608,7 +743,25 @@ let private errorTests = testList "Lexer errors" [
     // yaml@2.6.1 rejects the first input with "Block scalar lines must not be less indented than their first line"
     testCase "a line of spaces in front of the first content line may not be longer than that line" <| fun _ ->
         expectError "k: |\n    \n  a" "leading-empty-line" "2:1-3:1"
-        Expect.equal (lex "k: |\n  \n  a") [ "plain:k"; ":"; "literal:\\na\\n" ] "As long as the content indentation"
+        Expect.equal (lex "k: |\n  \n  a\n") [ "plain:k"; ":"; "literal:\\na\\n" ] "As long as the content indentation"
+
+    // The span of an error stays on the line of its first character. Without that, a span that reaches a few characters past the end of the line
+    // would end between the CR and the LF of a CRLF, where the column is 0.
+    testCase "an error span ends on its line and never inside a CRLF" <| fun _ ->
+        expectError "a: \"\\x4\r\n  b\"" "invalid-escape" "1:5-1:8"
+        expectError "a: \"\\x4\n  b\"" "invalid-escape" "1:5-1:8"
+        expectError "a: \"\\u00\r\n  b\"" "invalid-escape" "1:5-1:9"
+        expectError "!a%2\r\nb" "invalid-tag" "1:3-1:5"
+        expectError "!<a%\r\nb>" "invalid-tag" "1:4-1:5"
+        expectError "%TAG !e! a%\r\n---" "invalid-directive" "1:11-1:12"
+        expectError "% \r\n---" "invalid-directive" "1:1-1:2"
+        // A span from the start of one line to the start of a later one keeps covering whole lines.
+        expectError "k: |\r\n    \r\n  a\r\n" "leading-empty-line" "2:1-3:1"
+        for input in [ "a: \"\\x4\r\n  b\""; "a: \"\\u00\r\n  b\""; "!a%2\r\nb"; "!<a%\r\nb>"; "%TAG !e! a%\r\n---"; "[a, \"b\\q\r\n]"; "k: \"x\\\r\n\"" ] do
+            match errorOfInput input with
+            | Some failure ->
+                Expect.isTrue (failure.Span.Start.Column >= 1 && failure.Span.Finish.Column >= 1) (sprintf "A column of the span of %A is 0" input)
+            | None -> ()
 ]
 
 let private apiTests = testList "Lexer API" [
@@ -684,7 +837,10 @@ let private quotedInput (lines: int) =
     sb.ToString()
 
 /// A literal block scalar and a folded block scalar of the given number of lines each, with more indented
-/// lines, empty lines and lines of spaces among them.
+/// lines, empty lines and lines of spaces among them. A third part holds one block scalar for every line,
+/// each with a comment behind its header, with and without content and with every chomping sign. The
+/// scalar without content ends at its header in front of the comment, which once sent the tracker of the
+/// marks back to the start of the text.
 let private blockInput (lines: int) =
     let sb = System.Text.StringBuilder()
     for header in [ "a: |+"; "b: >" ] do
@@ -699,7 +855,38 @@ let private blockInput (lines: int) =
                 | 4 -> sprintf "  # hash %d" i
                 | _ -> sprintf "  line %d with 'quotes' and \"more\"" i
             sb.Append(text).Append("\n") |> ignore
+    for i in 0 .. lines - 1 do
+        let text =
+            match i % 8 with
+            | 0 -> sprintf "h%d: | # c%d" i i
+            | 1 -> sprintf "h%d: >- # c%d" i i
+            | 2 -> sprintf "h%d: |+ # c%d" i i
+            | 3 -> sprintf "h%d: >+ # c%d" i i
+            | 4 -> sprintf "h%d: | # c%d\n  body %d" i i i
+            | 5 -> sprintf "h%d: >- # c%d\n  body %d" i i i
+            | 6 -> sprintf "h%d: |+ # c%d\n  body %d\n" i i i
+            | _ -> sprintf "h%d: >+ # c%d\n  body %d\n\n" i i i
+        sb.Append(text).Append("\n") |> ignore
     sb.ToString()
+
+/// Lines of the same width, so that the index of a line is its number times the width.
+let private lineWidth = 11
+
+let private fixedWidthInput (lines: int) = String.replicate lines "key: value\n"
+
+/// The line of the last mark, in a cell that outlives the call so that the compiler keeps the loop.
+let private markedLine = ref 0
+
+/// Takes a snapshot at every line, looks a few lines ahead and restores. The restore puts the tracker of the
+/// marks back to the line, so the mark of the next line lies ahead of it again.
+let private rewindMarks (input: string) =
+    let cursor = Cursor(input)
+    for i in 0 .. input.Length / lineWidth - 1 do
+        let mark = cursor.MarkAt(i * lineWidth)
+        let state = cursor.Snapshot()
+        cursor.MarkAt(min input.Length (i * lineWidth + 3 * lineWidth)) |> ignore
+        cursor.Restore state
+        markedLine.Value <- mark.Line
 
 /// Comment lines with indentation and a blank line in between now and then.
 let private commentRunInput (lines: int) =
@@ -777,6 +964,9 @@ let private performanceTests = testList "Lexer performance" [
 
     testCase "the marks of the spans cost no more than a pass over the text" <| fun _ ->
         expectLinear "The driver with spans" (fun input -> lexWith false input |> ignore) countLineBreaks entriesInput
+
+    testCase "a restore does not send the marks back to the start of the text" <| fun _ ->
+        expectLinear "Marks around a snapshot and a restore" rewindMarks countLineBreaks fixedWidthInput
 ]
 
 let Main = testList "Lexer" [

@@ -14,13 +14,15 @@ open System.Text
 /// behind its last line to see whether the scalar goes on, and the lookahead stops at the first line that
 /// ends the scalar. The empty lines are scanned a second time as `BlankLine` lexemes, so each character is
 /// read a bounded number of times. The marks of the spans come from the tracker of the cursor, which moves
-/// forward once through the text. A scalar is materialized once, with one `StringBuilder` where it needs
+/// forward once through the text. Every routine that succeeds asks for its marks in the order of the text.
+/// Only an error path asks for a mark behind the tracker, which restarts the tracker at the start of the
+/// text once. A scalar is materialized once, with one `StringBuilder` where it needs
 /// folding or escapes, and no routine uses `Substring`, because that costs time proportional to the start
 /// offset in Fable Python.
 ///
 /// Errors. A routine raises `LexFailure` and `next` turns it into `Error`. After an error the cursor is in
 /// no defined state, and the parser stops.
-module Lexer =
+module internal Lexer =
 
     // ---------------------------------------------------------------------------------------------
     // Characters and text helpers
@@ -28,6 +30,11 @@ module Lexer =
     let private isBlank (c: char) = c = ' ' || c = '\t'
 
     let private isBreak (c: char) = c = '\n' || c = '\r'
+
+    /// The byte order mark. [202] l-document-prefix allows it at the start of a document prefix, and
+    /// [27] nb-char and [34] ns-char exclude it everywhere else.
+    [<Literal>]
+    let private byteOrderMark = '\uFEFF'
 
     let private isFlowIndicator (c: char) =
         c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
@@ -66,9 +73,13 @@ module Lexer =
             p <- p + 1
         p
 
-    /// True when `k` is the first character of a line.
+    /// True when `k` is the first character of a line. Where byte order marks at the start of a line are
+    /// allowed ([202] l-document-prefix) the lexer skips them, so the index behind them counts too.
     let private atLineStart (cursor: Cursor) (k: int) =
-        k <= cursor.Origin || isBreak cursor.Text.[k - 1]
+        let mutable j = k
+        while cursor.BomAllowed && j > cursor.Origin && cursor.Text.[j - 1] = byteOrderMark do
+            j <- j - 1
+        j <= cursor.Origin || isBreak cursor.Text.[j - 1]
 
     /// True when a document marker, `---` or `...` with a blank or the end behind it, starts at `k`, which
     /// has to be the first index of a line.
@@ -118,23 +129,57 @@ module Lexer =
         elif c >= 'A' && c <= 'F' then int c - int 'A' + 10
         else -1
 
+    /// Raises the error with the span from `first` up to but excluding `finish`. The span stays on the line
+    /// of its first character, because a caller that reaches for a few characters behind `first` may run
+    /// over the line break, and the end of a span inside a CRLF would get column 0. Only a span from the
+    /// start of one line to the start of a later one, such as the empty lines in front of a block scalar,
+    /// covers whole lines.
     let private fail (cursor: Cursor) (code: string) (message: string) (first: int) (finish: int) (related: SourceSpan list) : 'a =
+        let text = cursor.Text
+        let limit = lineEnd text first
+        let clipped = min finish text.Length
+        let wholeLines =
+            clipped > limit
+            && atLineStart cursor first
+            && isBreak text.[clipped - 1]
+            && not (text.[clipped - 1] = '\r' && clipped < text.Length && text.[clipped] = '\n')
         raise (
             LexFailure
                 { Code = code
                   Message = message
-                  Span = cursor.SpanOf(first, finish)
+                  Span = cursor.SpanOf(first, (if clipped <= limit || wholeLines then clipped else limit))
                   Related = related }
         )
+
+    /// Raises the error for the byte order mark at `position`. A mark at the start of a line takes no column
+    /// in the marks of the cursor, so the span is built from its start mark and is one column wide.
+    let private failBom (cursor: Cursor) (position: int) : 'a =
+        let start = cursor.MarkAt position
+        raise (
+            LexFailure
+                { Code = "invalid-character"
+                  Message = "A byte order mark can only stand at the start of a document prefix."
+                  Span = { Start = start; Finish = { Line = start.Line; Column = start.Column + 1 } }
+                  Related = [] }
+        )
+
+    /// Fails at the first byte order mark among the characters from `first` up to but excluding `finish`.
+    let private checkNoBom (cursor: Cursor) (first: int) (finish: int) =
+        let text = cursor.Text
+        let mutable k = first
+        while k < finish do
+            if text.[k] = byteOrderMark then failBom cursor k
+            k <- k + 1
 
     // ---------------------------------------------------------------------------------------------
     // Properties and aliases
 
-    /// The end of the anchor or alias name that starts at `from`. A name runs to a blank, a line break or a
-    /// flow indicator and may hold every other character, quotes, hashes and colons included.
+    /// The end of the anchor or alias name that starts at `from`. A name runs to a blank, a line break, a
+    /// flow indicator or a byte order mark and may hold every other character, quotes, hashes and colons
+    /// included.
     let private nameEnd (text: string) (from: int) =
         let mutable p = from
-        while p < text.Length && not (isBlank text.[p]) && not (isBreak text.[p]) && not (isFlowIndicator text.[p]) do
+        while p < text.Length && not (isBlank text.[p]) && not (isBreak text.[p]) && not (isFlowIndicator text.[p]) && text.[p] <> byteOrderMark do
             p <- p + 1
         p
 
@@ -146,6 +191,19 @@ module Lexer =
     let private isTagPunctuation (c: char) =
         c = '#' || c = ';' || c = '/' || c = '?' || c = ':' || c = '@' || c = '&' || c = '=' || c = '+'
         || c = '$' || c = '_' || c = '.' || c = '~' || c = '*' || c = '\'' || c = '(' || c = ')'
+
+    /// The length of the ns-uri-char ([39]) at `p`: 3 for a `%` and two hexadecimal digits, 1 for any other
+    /// URI character, and 0 where none stands. A verbatim tag ([98]) and the prefix of a %TAG directive
+    /// ([93] to [95]) hold nothing else. A shorthand tag ([99]) takes the URI characters without `!` and
+    /// the flow indicators.
+    let private uriCharLength (text: string) (p: int) =
+        let c = text.[p]
+        if c = '%' then
+            if p + 2 < text.Length && hexValue text.[p + 1] >= 0 && hexValue text.[p + 2] >= 0 then 3 else 0
+        elif isWordChar c || isTagPunctuation c || c = '!' || c = ',' || c = '[' || c = ']' then
+            1
+        else
+            0
 
     /// The end of the suffix of a shorthand tag that starts at `from`. A `%` has to be followed by two hexadecimal digits.
     let private tagSuffixEnd (cursor: Cursor) (from: int) =
@@ -173,11 +231,17 @@ module Lexer =
         if q + 1 < n && text.[q + 1] = '<' then
             let mutable p = q + 2
             while p < n && text.[p] <> '>' && not (isBlank text.[p]) && not (isBreak text.[p]) do
-                p <- p + 1
+                let length = uriCharLength text p
+                if length = 0 then
+                    fail cursor "invalid-tag" "A verbatim tag holds URI characters only, and a `%` has to be followed by two hexadecimal digits." p (if text.[p] = '%' then p + 3 else p + 1) []
+                p <- p + length
             if p >= n || text.[p] <> '>' then
                 fail cursor "invalid-tag" "A verbatim tag needs a closing `>`." q p []
             if p = q + 2 then
                 fail cursor "invalid-tag" "A verbatim tag needs a name between the angle brackets." q (p + 1) []
+            // A hash glued to the tag cannot start a comment, and no plain scalar starts with one.
+            if p + 1 < n && text.[p + 1] = '#' then
+                fail cursor "glued-comment" "A comment needs a space or a tab before the #." (p + 1) (p + 2) []
             TagToken.Verbatim(copyRange text (q + 2) p), p + 1
         elif q + 1 < n && text.[q + 1] = '!' then
             let finish = tagSuffixEnd cursor (q + 2)
@@ -227,6 +291,7 @@ module Lexer =
         let mutable finish = p
         while finish > q + 1 && isBlank text.[finish - 1] do
             finish <- finish - 1
+        checkNoBom cursor (q + 1) finish
         let starts = ResizeArray<int>()
         let ends = ResizeArray<int>()
         let mutable k = q + 1
@@ -241,8 +306,9 @@ module Lexer =
                 starts.Add s
                 ends.Add w
                 k <- w
-        if starts.Count = 0 then
-            fail cursor "invalid-directive" "A directive needs a name behind the `%`." q (q + 1) []
+        // The name follows the `%` right away ([82] and [84]).
+        if starts.Count = 0 || starts.[0] > q + 1 then
+            fail cursor "invalid-directive" "A directive needs a name right behind the `%`." q (q + 1) []
         let directiveName = copyRange text starts.[0] ends.[0]
         let arguments = starts.Count - 1
         if directiveName = "YAML" then
@@ -271,6 +337,18 @@ module Lexer =
                     if not (isWordChar text.[j]) then valid <- false
             if not valid then
                 fail cursor "invalid-directive" "A tag handle is `!`, `!!` or a word between two `!`." handleFirst handleLast []
+            // The prefix is `!` and URI characters, or URI characters that start with no `!` and no flow indicator ([93] to [95]).
+            let prefixFirst = starts.[2]
+            let prefixLast = ends.[2]
+            let firstChar = text.[prefixFirst]
+            if firstChar = ',' || firstChar = '[' || firstChar = ']' then
+                fail cursor "invalid-directive" "A global tag prefix cannot start with a flow indicator." prefixFirst (prefixFirst + 1) []
+            let mutable k = prefixFirst
+            while k < prefixLast do
+                let length = uriCharLength text k
+                if length = 0 then
+                    fail cursor "invalid-directive" "A tag prefix holds URI characters only, and a `%` has to be followed by two hexadecimal digits." k (if text.[k] = '%' then k + 3 else k + 1) []
+                k <- k + length
             DirectiveKind.TagDirective(copyRange text handleFirst handleLast, copyRange text starts.[2] ends.[2]), finish
         else
             let words = ResizeArray<string>()
@@ -285,7 +363,7 @@ module Lexer =
     /// it, and the index where the scan stopped: the line break, the end of the text, or the character that
     /// ends the scalar. A colon ends the scalar when a blank, a line break or the end follows it, and in a
     /// flow collection also a flow indicator. A hash that follows a blank starts a comment. In a flow
-    /// collection a flow indicator ends the scalar.
+    /// collection a flow indicator ends the scalar. So does a byte order mark, which the next lexeme reports.
     let private plainLine (text: string) (from: int) (flow: bool) : int * int =
         let n = text.Length
         let mutable p = from
@@ -309,17 +387,26 @@ module Lexer =
                 else
                     p <- p + 1
                     textEnd <- p
-            elif flow && isFlowIndicator c then
+            elif (flow && isFlowIndicator c) || c = byteOrderMark then
                 scanning <- false
             else
                 p <- p + 1
                 textEnd <- p
         textEnd, p
 
+    /// True when the blanks from `first` up to `finish`, which make a whole line, hold a tab behind fewer than
+    /// `parentIndent` + 1 spaces. Such a line is no empty line of a folded scalar ([70] l-empty(n,c)): the
+    /// line is either n spaces and then any blanks, or fewer than n spaces and nothing else.
+    let private tabbedEmptyLine (text: string) (first: int) (finish: int) (parentIndent: int) =
+        let mutable p = first
+        while p < finish && text.[p] = ' ' do
+            p <- p + 1
+        p < finish && p - first <= parentIndent
+
     /// Scans the plain scalar that starts at `start`. Returns its folded value and the end of its last line.
     ///
     /// Where the context allows more than one line, a line behind the scalar continues it when it is
-    /// indented deeper than the parent, does not start a document marker or a comment, and does not start
+    /// indented deeper than the parent, does not start a document marker, a comment or a byte order mark, and does not start
     /// with a colon that ends the scalar or, in a flow collection, a flow indicator. The empty lines in
     /// between fold into line feeds, and a single line break folds into a space.
     let private scanPlain (ctx: LexContext) (cursor: Cursor) (start: int) : string * int =
@@ -346,8 +433,12 @@ module Lexer =
                     if s >= n then
                         looking <- false
                     elif isBreak text.[s] then
-                        empties <- empties + 1
-                        r <- afterBreak text s
+                        if tabbedEmptyLine text r s ctx.ParentIndent then
+                            // No empty line, so the scalar stops in front of this line.
+                            looking <- false
+                        else
+                            empties <- empties + 1
+                            r <- afterBreak text s
                     else
                         contentAt <- s
                         looking <- false
@@ -362,6 +453,7 @@ module Lexer =
                         markerAt text r
                         || spaces - r <= ctx.ParentIndent
                         || c = '#'
+                        || c = byteOrderMark
                         || (c = ':' && (blankOrEnd text (contentAt + 1) || (flow && isFlowIndicator text.[contentAt + 1])))
                         || (flow && isFlowIndicator c)
                     if ends then
@@ -389,7 +481,8 @@ module Lexer =
     /// Consumes the line break at `p` inside a quoted scalar together with the empty lines behind it. Returns
     /// the number of empty lines and the index of the first character with content on the next line, or the
     /// end of the text. A document marker at the start of a line is an error, and so is a line that is not
-    /// indented deeper than the parent.
+    /// indented deeper than the parent. An empty line that holds a tab behind too few spaces is such a line
+    /// ([70] l-empty), because a tab is no indentation.
     let private foldBreak (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (p: int) : int * int =
         let text = cursor.Text
         let n = text.Length
@@ -403,6 +496,8 @@ module Lexer =
             if s >= n then
                 result <- s
             elif isBreak text.[s] then
+                if tabbedEmptyLine text r s ctx.ParentIndent then
+                    fail cursor "quoted-indent" "An empty line of a quoted scalar cannot hold a tab in front of the indentation of its parent." r s [ opening ]
                 empties <- empties + 1
                 r <- afterBreak text s
             else
@@ -548,6 +643,9 @@ module Lexer =
                 if empties = 0 then sb.Append(' ') |> ignore else appendLineFeeds sb empties
                 p <- next
                 runStart <- next
+            elif c = byteOrderMark then
+                // A quoted scalar holds the mark through a hexadecimal escape only.
+                failBom cursor p
             else
                 p <- p + 1
         sb.ToString(), p
@@ -555,7 +653,7 @@ module Lexer =
     // ---------------------------------------------------------------------------------------------
     // Block scalars
 
-    /// Scans the block scalar whose indicator, `|` or `>`, stands at `q`. Returns the scalar, the index of
+    /// Scans the block scalar whose indicator, `|` or `>`, stands at `q`. Returns the scalar, the mark of
     /// the end of its last content line (or of its header) and sets the cursor to the start of the line
     /// that ends the body.
     ///
@@ -564,8 +662,9 @@ module Lexer =
     /// least `ParentIndent + 1`, and the lines of spaces in front of that line may not be longer. The body
     /// is the run of lines that are indented at least as deep as the content, with the lines of spaces
     /// among them. A line of spaces is empty when it is no longer than the indentation and holds the
-    /// spaces beyond it otherwise. A document marker ends the body.
-    let private scanBlockScalar (ctx: LexContext) (cursor: Cursor) (q: int) : YamlScalar * int =
+    /// spaces beyond it otherwise ([170] and [171]), so a digit can make a line of spaces content where the
+    /// auto-detected indentation would make it empty. A document marker ends the body.
+    let private scanBlockScalar (ctx: LexContext) (cursor: Cursor) (q: int) : YamlScalar * SourceMark =
         let text = cursor.Text
         let n = text.Length
         let literal = text.[q] = '|'
@@ -593,17 +692,14 @@ module Lexer =
                 inHeader <- false
         let headerEnd = p
         let afterBlanks = skipBlanks text p
-        let mutable headerComment: YamlComment option = None
+        let mutable commentEnd = -1
         let mutable headerLineEnd = afterBlanks
         if afterBlanks < n && not (isBreak text.[afterBlanks]) then
             if text.[afterBlanks] = '#' then
                 if afterBlanks = headerEnd then
                     fail cursor "glued-comment" "A comment needs a space or a tab before the #." afterBlanks (afterBlanks + 1) []
-                let commentEnd = lineEnd text afterBlanks
-                headerComment <-
-                    Some
-                        { Text = copyRange text (afterBlanks + 1) commentEnd
-                          Span = Some (cursor.SpanOf(afterBlanks, commentEnd)) }
+                commentEnd <- lineEnd text afterBlanks
+                checkNoBom cursor afterBlanks commentEnd
                 headerLineEnd <- commentEnd
             else
                 let mutable bad = afterBlanks
@@ -611,6 +707,16 @@ module Lexer =
                     bad <- bad + 1
                 fail cursor "invalid-block-header" "A block scalar header allows only an indentation digit and a chomping sign behind the indicator." q bad []
         let bodyStart = if headerLineEnd >= n then n else afterBreak text headerLineEnd
+        // The marks come in the order of the text, because the tracker of the cursor only moves forward. A
+        // scalar without content ends at its header in front of the comment, so that mark comes first.
+        let headerMark = cursor.MarkAt headerEnd
+        let headerComment =
+            if commentEnd < 0 then
+                None
+            else
+                Some
+                    { Text = copyRange text (afterBlanks + 1) commentEnd
+                      Span = Some (cursor.SpanOf(afterBlanks, commentEnd)) }
 
         // The content indentation.
         let mutable indent = 0
@@ -663,9 +769,10 @@ module Lexer =
             if markerAt text r then
                 reading <- false
             elif (not onlySpaces) && spaces - r < indent then
-                // A comment or a line that is no deeper than the parent ends the scalar. Any other line is
-                // deeper than the node of the scalar without belonging to it.
-                if text.[spaces] <> '#' && spaces - r > ctx.ParentIndent then
+                // A comment or a line of blanks with a tab in it ([78] l-comment) ends the scalar, and so does
+                // a line that is no deeper than the parent. Any other line is deeper than the node of the
+                // scalar without belonging to it.
+                if text.[spaces] <> '#' && spaces - r > ctx.ParentIndent && skipBlanks text spaces < le then
                     fail
                         cursor
                         "block-indent"
@@ -676,9 +783,11 @@ module Lexer =
                 reading <- false
             else
                 if onlySpaces && le - r <= indent then
-                    empties <- empties + 1
+                    // An empty line ends in a line break ([70] l-empty), and a last line of spaces without one is none.
+                    if le < n then empties <- empties + 1
                 else
                     let first = r + indent
+                    checkNoBom cursor first le
                     let moreIndented = first < le && (text.[first] = ' ' || text.[first] = '\t')
                     if literal then
                         // Every line owes the value a line feed, and the empty lines in front of this one have been owed too.
@@ -698,13 +807,17 @@ module Lexer =
                     empties <- 0
                 r <- if le >= n then n else afterBreak text le
         // The line feed that ends the last content line and the empty lines behind it: none when stripped,
-        // one when clipped, and all of them when kept.
+        // one when clipped, and all of them when kept. A last content line that ends the input has no line
+        // break to keep, because [165] b-chomped-last takes the end of the input in place of a line feed.
+        let lastLineBroken = lastContentEnd < n
         let feeds =
             match chomping with
             | ChompingMode.Strip -> 0
-            | ChompingMode.Clip -> if hasContent then 1 else 0
-            | ChompingMode.Keep -> if hasContent then empties + 1 else empties
+            | ChompingMode.Clip -> if hasContent && lastLineBroken then 1 else 0
+            | ChompingMode.Keep -> if hasContent then (if lastLineBroken then empties + 1 else 0) else empties
         appendLineFeeds sb feeds
+        // The scalar ends at its last content line, or at its header when it has no content.
+        let finishMark = if hasContent then cursor.MarkAt lastContentEnd else headerMark
         cursor.Index <- r
         cursor.LineBegin <- true
         let style = if literal then BlockScalarStyle.Literal else BlockScalarStyle.Folded
@@ -712,7 +825,7 @@ module Lexer =
         { Value = sb.ToString()
           Style = ScalarStyle.Block(style, chomping, indicator)
           HeaderComment = headerComment },
-        lastContentEnd
+        finishMark
 
     // ---------------------------------------------------------------------------------------------
     // Lexemes
@@ -755,9 +868,12 @@ module Lexer =
                 fail cursor "flow-dash" "Inside a flow collection a `-` needs a plain character behind it." q (q + 1) []
             checkIndicatorTab cursor q tab separation
             single cursor q start Lexeme.BlockEntry
-        elif c = '?' && (blankOrEnd text (q + 1) || (flow && isFlowIndicator text.[q + 1])) then
+        elif c = '?' && blankOrEnd text (q + 1) then
             if not flow then checkIndicatorTab cursor q tab separation
             single cursor q start Lexeme.ExplicitKey
+        elif c = '?' && flow && isFlowIndicator text.[q + 1] then
+            // [142] and [150] ask for s-separate behind the `?`, and a flow indicator cannot follow a `?` in a plain scalar.
+            fail cursor "reserved-indicator" "A `?` in front of a flow indicator starts no explicit key and no plain scalar." q (q + 1) []
         elif c = ':' && (blankOrEnd text (q + 1) || (flow && (isFlowIndicator text.[q + 1] || q = cursor.JsonLikeEnd))) then
             if not flow then checkIndicatorTab cursor q tab separation
             single cursor q start (Lexeme.Value(q = cursor.JsonLikeEnd))
@@ -793,8 +909,9 @@ module Lexer =
         elif c = '|' || c = '>' then
             if flow || ctx.Grammar = GrammarContext.BlockKey then
                 fail cursor "block-scalar-position" "A block scalar cannot start inside a flow collection or as an implicit key." q (q + 1) []
-            let scalar, finish = scanBlockScalar ctx cursor q
-            located cursor start finish (Lexeme.Scalar scalar)
+            let scalar, finishMark = scanBlockScalar ctx cursor q
+            { Value = Lexeme.Scalar scalar
+              Span = { Start = start; Finish = finishMark } }
         elif c = '\'' || c = '"' then
             let value, closing = scanQuoted ctx cursor q
             cursor.Index <- closing + 1
@@ -823,6 +940,8 @@ module Lexer =
                 fail cursor "glued-comment" "A comment needs a space or a tab before the #." q (q + 1) []
             else
                 fail cursor "reserved-indicator" "A plain scalar cannot start with a `#`." q (q + 1) []
+        elif c = byteOrderMark then
+            failBom cursor q
         else
             let value, finish = scanPlain ctx cursor q
             cursor.Index <- finish
@@ -842,7 +961,12 @@ module Lexer =
     let private lineBegin (ctx: LexContext) (cursor: Cursor) : Located<Lexeme> option =
         let text = cursor.Text
         let n = text.Length
-        let i = cursor.Index
+        // A document prefix may open with a byte order mark ([202] l-document-prefix), and [211] l-yaml-stream
+        // repeats the prefix, so a run of marks is valid. They take no column.
+        let mutable bomEnd = cursor.Index
+        while cursor.BomAllowed && bomEnd < n && text.[bomEnd] = byteOrderMark do
+            bomEnd <- bomEnd + 1
+        let i = bomEnd
         let mutable q = i
         let mutable tabbed = false
         while q < n && isBlank text.[q] do
@@ -866,6 +990,7 @@ module Lexer =
             Some lexeme
         elif text.[q] = '#' then
             let finish = lineEnd text q
+            checkNoBom cursor q finish
             let span = cursor.SpanOf(q, finish)
             cursor.Index <- finish
             cursor.LineBegin <- false
@@ -879,6 +1004,10 @@ module Lexer =
             if i = q && markerAt text i then
                 fail cursor "marker-in-flow" "A document marker cannot stand inside a flow collection." i (i + 3) []
             let isCloser = c = ']' || c = '}'
+            // [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines ask for ParentIndent + 1 spaces
+            // in front of every line of a flow collection, the closer included. A closer at the column of the
+            // owner is a deliberate exception: ruamel and yaml@2.6.1 accept `k: [` ... `]` and real CWL files
+            // lay out `expressionLib` that way.
             if indent < ctx.ParentIndent || (indent = ctx.ParentIndent && not isCloser) then
                 fail cursor "flow-indent" "A line inside a flow collection has to be indented deeper than the node that owns the collection." i (q + 1) []
             cursor.Index <- q
@@ -913,6 +1042,7 @@ module Lexer =
             None
         elif text.[q] = '#' && q > i then
             let finish = lineEnd text q
+            checkNoBom cursor q finish
             let span = cursor.SpanOf(q, finish)
             cursor.Index <- finish
             cursor.SeparationHadTab <- tab
@@ -959,21 +1089,26 @@ module Lexer =
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
+                cursor.BomAllowed <- false
             | Lexeme.ExplicitKey ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
+                cursor.BomAllowed <- false
             | Lexeme.Value _ ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
+                cursor.BomAllowed <- false
             | Lexeme.DocumentEnd ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
                 cursor.InPrelude <- true
+                cursor.BomAllowed <- true
             | Lexeme.Directive _ ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
+                cursor.BomAllowed <- false
             | Lexeme.Comment _ ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
@@ -990,6 +1125,7 @@ module Lexer =
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
                 cursor.InPrelude <- false
+                cursor.BomAllowed <- false
             Ok lexeme
         with LexFailure error ->
             Error error

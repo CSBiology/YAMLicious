@@ -16,36 +16,46 @@ type YamlError =
 
 /// The exception that the lexer raises inside its routines. `Lexer.next` catches it and returns the error.
 /// No other code needs it.
-exception LexFailure of YamlError
+exception internal LexFailure of YamlError
 
-/// The state of a snapshot of a cursor.
-type CursorState =
+/// The state of a snapshot of a cursor. The last four fields are the tracker that turns an index into a
+/// mark, so a restore puts the tracker back where it stood and costs no rescan.
+type internal CursorState =
     { Index: int
       LineBegin: bool
       Started: bool
       InPrelude: bool
+      BomAllowed: bool
       JsonLikeEnd: int
       SeparationHadTab: bool
       FirstOnLine: bool
       LeadingTab: bool
-      AfterIndicator: bool }
+      AfterIndicator: bool
+      TrackIndex: int
+      TrackLine: int
+      TrackLineStart: int
+      TrackPairs: int }
 
 /// The position in the text and the state that the lexer keeps between two lexemes.
 ///
 /// Positions. `Index` counts UTF-16 code units from the start of the string on .NET and JavaScript, and code
 /// points on Python, because a Python string indexes by code point. `MarkAt` turns an index into a
 /// line and a column. Lines count from 1, and a line ends at LF, CRLF or a lone CR. Columns count from 1 in
-/// code points, so a surrogate pair is one column on .NET and JavaScript, and a byte order mark at the
-/// start of the text is skipped and takes no column.
+/// code points, so a surrogate pair is one column on .NET and JavaScript. Byte order marks at the start of a
+/// line take no column, which covers the mark at the start of the text and the ones in front of a later
+/// document ([202] l-document-prefix, repeated by [211] l-yaml-stream).
 ///
 /// `MarkAt` moves one tracker forward through the text, so the calls cost time proportional to the distance
-/// that they cover. The lexer asks for the marks of a lexeme in the order of the text, which makes the cost
-/// linear in the length of the input. A call for an index behind the tracker restarts it at the beginning,
-/// which only the error paths of the lexer do.
+/// that they cover. The lexer asks for the marks of a lexeme in the order of the text on every path that
+/// succeeds, which makes the cost linear in the length of the input. A call for an index behind the tracker
+/// restarts it at the start of the text and costs time proportional to that index. Only the error paths of
+/// the lexer make such a call, because they build the span of an error from a position behind the lexeme
+/// that they were scanning, and an error ends the lexing. `Restore` puts the tracker back to the place it had
+/// at the `Snapshot`, so it forces no rescan.
 ///
 /// The other members hold the state of the lexer. The parser reads `SeparationHadTab`.
 [<AllowNullLiteral>]
-type Cursor(text: string) =
+type internal Cursor(text: string) =
     let length = text.Length
     let origin = if length > 0 && text.[0] = '\uFEFF' then 1 else 0
 
@@ -59,6 +69,7 @@ type Cursor(text: string) =
     let mutable lineBegin = true
     let mutable started = false
     let mutable inPrelude = true
+    let mutable bomAllowed = true
     let mutable jsonLikeEnd = -1
     let mutable separationHadTab = false
     let mutable firstOnLine = false
@@ -94,6 +105,14 @@ type Cursor(text: string) =
         with get () = inPrelude
         and set (value: bool) = inPrelude <- value
 
+    /// True at the start of the stream and right behind a `...`, until a directive or content follows. A
+    /// byte order mark at the start of a line is only valid there: [202] l-document-prefix puts it in front
+    /// of the comment lines of the prefix, and the directives of [209] come behind the prefix. Comment lines
+    /// and blank lines leave it set.
+    member _.BomAllowed
+        with get () = bomAllowed
+        and set (value: bool) = bomAllowed <- value
+
     /// The index right behind the last quoted scalar or flow collection that ended, or -1. A colon at this
     /// index is the adjacent value indicator of a JSON-like node, and a hash at this index is an error.
     member _.JsonLikeEnd
@@ -101,8 +120,10 @@ type Cursor(text: string) =
         and set (value: int) = jsonLikeEnd <- value
 
     /// True when the blanks in front of the last lexeme held a tab. The blanks run from the end of the
-    /// lexeme before it. They are the indentation of the line for the first lexeme of a line, whose
-    /// `LineStart` lexeme reports the tab itself.
+    /// lexeme before it. The first lexeme of a line is false, because the indentation of the line is not
+    /// its separation. A block line reports the tab of its indentation on the `LineStart` lexeme, which
+    /// sets this member too, and so does a comment on a line of its own. A line inside a flow collection
+    /// reports no tab.
     member _.SeparationHadTab
         with get () = separationHadTab
         and set (value: bool) = separationHadTab <- value
@@ -149,10 +170,16 @@ type Cursor(text: string) =
                 trackPairs <- 0
             else
                 let code = int c
-                if code >= 0xDC00 && code <= 0xDFFF && trackIndex > trackLineStart then
-                    let before = int text.[trackIndex - 1]
-                    if before >= 0xD800 && before <= 0xDBFF then trackPairs <- trackPairs + 1
-                trackIndex <- trackIndex + 1
+                if code = 0xFEFF && trackIndex = trackLineStart then
+                    // A byte order mark with no column-taking character in front of it on its line takes no
+                    // column, so a run of them at the start of a line counts as none.
+                    trackIndex <- trackIndex + 1
+                    trackLineStart <- trackIndex
+                else
+                    if code >= 0xDC00 && code <= 0xDFFF && trackIndex > trackLineStart then
+                        let before = int text.[trackIndex - 1]
+                        if before >= 0xD800 && before <= 0xDBFF then trackPairs <- trackPairs + 1
+                    trackIndex <- trackIndex + 1
         { Line = trackLine
           Column = position - trackLineStart - trackPairs + 1 }
 
@@ -168,20 +195,30 @@ type Cursor(text: string) =
           LineBegin = lineBegin
           Started = started
           InPrelude = inPrelude
+          BomAllowed = bomAllowed
           JsonLikeEnd = jsonLikeEnd
           SeparationHadTab = separationHadTab
           FirstOnLine = firstOnLine
           LeadingTab = leadingTab
-          AfterIndicator = afterIndicator }
+          AfterIndicator = afterIndicator
+          TrackIndex = trackIndex
+          TrackLine = trackLine
+          TrackLineStart = trackLineStart
+          TrackPairs = trackPairs }
 
-    /// Returns to a captured state. The tracker needs no reset, because it restarts when a mark lies behind it.
+    /// Returns to a captured state, the tracker of the marks included.
     member _.Restore(state: CursorState) =
         index <- state.Index
         lineBegin <- state.LineBegin
         started <- state.Started
         inPrelude <- state.InPrelude
+        bomAllowed <- state.BomAllowed
         jsonLikeEnd <- state.JsonLikeEnd
         separationHadTab <- state.SeparationHadTab
         firstOnLine <- state.FirstOnLine
         leadingTab <- state.LeadingTab
         afterIndicator <- state.AfterIndicator
+        trackIndex <- state.TrackIndex
+        trackLine <- state.TrackLine
+        trackLineStart <- state.TrackLineStart
+        trackPairs <- state.TrackPairs

@@ -13,6 +13,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="Interop\PyInterop.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="Tag.fs" />
