@@ -470,6 +470,18 @@ let private scalarTests = testList "Scalar spellings" [
         expectNode (mapOf [ "k", sq "a \nb" ]) "k: \"a \\nb\"\n"
         expectNode (mapOf [ "k", sq "a\n b" ]) "k: \"a\\n b\"\n"
 
+    // yaml@2.6.1 reads the expected texts as {"k":"a\uFEFFb"}, {"k":"x\uFEFF\ny"}, ["a\uFEFFb"], {"k":"a\uFEFFb"} (the double-quoted text), {"k":"a\uFEFFb\n"} and {"k":"x\uFEFF y"}.
+    // A quoted scalar holds nb-json characters ([107] and [118]), which include U+FEFF, and single quotes have no escape that could spell it, so a single-quoted scalar holds it raw.
+    // A plain and a block scalar hold nb-char ([27]), which excludes it, so they fall back to double quotes with the escape.
+    testCase "a single-quoted scalar holds U+FEFF raw and a plain or block scalar with it falls back to the escape" <| fun _ ->
+        expectNode (mapOf [ "k", sq "a\uFEFFb" ]) "k: 'a\uFEFFb'\n"
+        expectNode (mapOf [ "k", sq "x\uFEFF\ny" ]) "k: 'x\uFEFF\n\n  y'\n"
+        expectNode (flowSeq [ sq "a\uFEFFb" ]) "['a\uFEFFb']\n"
+        expectNode (mapOf [ "k", sc "a\uFEFFb" ]) "k: \"a\\uFEFFb\"\n"
+        expectNode (mapOf [ "k", lit "a\uFEFFb\n" ]) "k: \"a\\uFEFFb\\n\"\n"
+        expectStable "k: 'a\uFEFFb'\n"
+        expectWritten "k: 'x\uFEFF\n y'\n" "k: 'x\uFEFF y'\n"
+
     // yaml@2.6.1 reads each double-quoted text as the value on its left.
     testCase "a double-quoted scalar writes the shortest escape of each character" <| fun _ ->
         let cases =
@@ -854,6 +866,15 @@ let private policyTests = testList "Style policies" [
         Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", lit "a\u0001\n" ]))).Message "block scalar" "block"
         Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a"; next ]))).Message "chomping" "chomping"
         Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", lit " a\n" ]))).Message "indentation indicator" "indicator"
+
+    // The byte order mark stands raw in single quotes only (see "a single-quoted scalar holds U+FEFF raw" in the scalar spellings).
+    testCase "RequireStored keeps a single-quoted scalar with U+FEFF and raises for a plain or a block scalar with it" <| fun _ ->
+        let single = mapOf [ "k", sq "a\uFEFFb" ]
+        Expect.equal (requireStored single) "k: 'a\uFEFFb'\n" "Single quotes"
+        Expect.equal (requireStored (mapOf [ "k", sq "x\uFEFF\ny" ])) "k: 'x\uFEFF\n\n  y'\n" "Single quotes over several lines"
+        Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", sc "a\uFEFFb" ]))).Message "plain" "plain"
+        Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", lit "a\uFEFFb\n" ]))).Message "block scalar" "block"
+        Expect.equal (canonical single) "k: \"a\\uFEFFb\"\n" "Canonical ignores the stored single quotes"
 
     testCase "RequireStored accepts what the stored styles express" <| fun _ ->
         let node = mapOf [ "a", sc "x"; "b", sq "it's"; "c", dq "\u0001"; "d", lit "t\n"; "e", flowSeq [ sc "1" ]; "f", blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) " t\n" ]

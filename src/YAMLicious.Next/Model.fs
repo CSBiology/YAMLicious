@@ -81,7 +81,7 @@ type LineBreak =
 /// trailing comment of the node (rule R6), and a comment behind the property with the comma on a later line
 /// goes to the `After` of the last property. A key that has properties and no content puts a comment on its
 /// line in the `After` of its last property in a flow mapping as well, also when the `:` follows on a later
-/// line, as in `{ &x # c` and `: v }` (rule R7).
+/// line, as in `{ &x # c` and `: v }`. The trivia lines between such a key and its `:` are the gap of rule R7.
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
@@ -234,8 +234,10 @@ type Collection<'Item> =
 /// `TrailingComment`. A block collection has no closing token and has none either. A missing value has none
 /// (rule R1). A node that has properties and no content has none outside a flow collection (rule R1) and
 /// has the comment behind the comma inside one (rule R6). A comment behind a block collection goes to the
-/// `End` of the collection or to the `Before` of the next entry or item. A key keeps its comment when the
-/// `:` stands on a later line, as in `? "a" # c` and `: v` and in `{ "a" # c` and `: v }` (rule R7).
+/// `End` of the collection or to the `Before` of the next entry or item. A key keeps its comment as its
+/// `TrailingComment` when the `:` stands on a later line, as in `? "a" # c` and `: v` and in `{ "a" # c` and
+/// `: v }`. A key that has properties and no content keeps it in the `After` of its last property (rule R1).
+/// The trivia lines between the key and its `:` are the gap of rule R7.
 [<NoEquality; NoComparison>]
 type YamlNode =
     { Kind: YamlNodeKind

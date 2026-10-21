@@ -223,6 +223,9 @@ let private blockInputs: string list = [
     "k: >+\n  a\n\n\n"
     "k: |+\n\n\n"
     "k: |2\n   a\n  b\n"
+    // A quoted scalar may hold U+FEFF ([107] and [118]). Single quotes have no escape for it, so the writer keeps it raw there.
+    "'a\uFEFFb'"
+    "k: 'x\uFEFF\n y'\n"
 ]
 
 let private flowInputs: string list = [
@@ -309,6 +312,9 @@ let private flowInputs: string list = [
     "{? x:: v}\n"
     "{? k1 :: foo}\n"
     "{x:: v}\n"
+    // U+FEFF in single quotes, in one line and folded over lines, stays raw in a flow collection too.
+    "['a\uFEFFb', 'x\uFEFF\n y']\n"
+    "{k: 'x\uFEFF\n y'}\n"
 ]
 
 let private roundTripList (name: string) (options: WriterOptions) =

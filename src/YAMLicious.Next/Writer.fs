@@ -56,10 +56,10 @@ module internal WriterText =
 
     let isLowSurrogate (c: char) = int c >= 0xDC00 && int c <= 0xDFFF
 
-    /// True for a character that can stand unescaped in a plain scalar, a single-quoted scalar or a block scalar.
-    /// These are the printable characters of YAML 1.2.2 [1] except the line breaks, the byte order mark, the NEL
-    /// character and the two Unicode line separators. A surrogate half is no character of its own, so the writer
-    /// checks the pairs apart.
+    /// True for a character that can stand unescaped in a plain scalar or a block scalar, and in a single-quoted
+    /// scalar except for the byte order mark (`isSingleQuotable`). These are the printable characters of YAML 1.2.2
+    /// [1] except the line breaks, the byte order mark, the NEL character and the two Unicode line separators. A
+    /// surrogate half is no character of its own, so the writer checks the pairs apart.
     let isRawChar (c: char) =
         let code = int c
         code = 0x09
@@ -83,9 +83,9 @@ module internal WriterText =
                 i <- i + 1
         found
 
-    /// True when every character of the text except the line feed can stand raw. A surrogate pair counts as one
-    /// printable character.
-    let isRawText (text: string) =
+    /// True when every character of the text except the line feed can stand raw, where `allowByteOrderMark` tells
+    /// whether U+FEFF counts as one. A surrogate pair counts as one printable character.
+    let private isPrintableText (allowByteOrderMark: bool) (text: string) =
         let mutable ok = true
         let mutable i = 0
         while ok && i < text.Length do
@@ -96,11 +96,19 @@ module internal WriterText =
                 if i + 1 < text.Length && isLowSurrogate text.[i + 1] then i <- i + 2 else ok <- false
             elif isLowSurrogate c then
                 ok <- false
-            elif isRawChar c then
+            elif isRawChar c || (allowByteOrderMark && c = '\uFEFF') then
                 i <- i + 1
             else
                 ok <- false
         ok
+
+    /// True when every character of the text except the line feed can stand raw in a plain scalar or a block scalar.
+    let isRawText (text: string) = isPrintableText false text
+
+    /// True when every character of the text except the line feed can stand raw in single quotes. A quoted scalar
+    /// holds nb-json characters ([107] and [118]), which include the byte order mark, and single quotes have no
+    /// escape that could spell it. A plain or a block scalar holds nb-char ([27]), which excludes it.
+    let isSingleQuotable (text: string) = isPrintableText true text
 
     /// The number of code points of the text, which is the unit of the limit on an implicit key.
     let codePointLength (text: string) =
@@ -167,7 +175,7 @@ module internal WriterText =
     /// True when the value can stand in single quotes. A line feed becomes an empty line, so a line of the
     /// value cannot start or end with a blank where a line break trims it.
     let canBeSingle (text: string) (multiOk: bool) =
-        if not (isRawText text) then
+        if not (isSingleQuotable text) then
             false
         else
             let n = text.Length
@@ -1605,13 +1613,19 @@ type internal Engine(options: WriterOptions) =
 /// validator when the tree breaks a rule. It then puts every comment and blank line back in the place that the
 /// parser reads into the same slot, so `Parser.parseStream` of the output gives a tree that is equal to the input
 /// except for the spans. A tree that a program built can differ in styles that the writer had to change, unless
-/// the policy is `RequireStored`, which raises instead.
+/// the policy is `RequireStored`, which raises instead. A tree that the parser produced has one exception, which
+/// the third paragraph names.
 ///
 /// The output ends every line with `WriterOptions.NewLine`, the last line included. One case differs: a block scalar
 /// with the chomping Clip or Keep whose value has no final line feed can only be the last node of the text. The
 /// writer leaves out its last line break there, because [165] b-chomped-last takes the end of the input in place
 /// of a line feed, and the output depends on the tree alone. Anywhere else such a chomping conflicts with the
 /// value: `PreferStored` writes Strip and `RequireStored` raises.
+///
+/// The one exception to the equal tree is an empty root block scalar without an indentation indicator that has a
+/// comment line behind it, which only a text with a byte order mark in front of the comment line produces. The
+/// content of a root block scalar starts at the first column, so the comment line would read as content. The writer
+/// writes the indicator 1, the tree that comes back has it, and `RequireStored` raises for the tree instead.
 ///
 /// The writer adds a `---` where the text would otherwise change the document count or lose the directives. That
 /// happens for a document with directives or trivia in its prelude and for a document that follows one without
