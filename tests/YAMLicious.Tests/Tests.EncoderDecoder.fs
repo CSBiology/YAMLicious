@@ -460,6 +460,17 @@ let tests_encode_scalars = testList "Encode scalars" [
         Expect.equal (writeValue (Encode.float 1.5)) "k: 1.5\n" "float"
         Expect.equal (Encode.int 5) (YAMLElement.Value(YAMLContent.create("5"))) "The int has no style"
         Expect.equal (Encode.float 1.5) (YAMLElement.Value(YAMLContent.create("1.5"))) "The float has no style"
+
+    // yaml@2.6.1 with { intAsBigInt: true } reads `k: -9223372036854775808` as the bigint -9223372036854775808n and
+    // `k: 9223372036854775807` as 9223372036854775807n. Without intAsBigInt it reads both as a number that has lost
+    // the low digits, so only the bigint reading is exact.
+    testCase "Encode.int64 stays unquoted and round trips Int64.MinValue and Int64.MaxValue" <| fun _ ->
+        Expect.equal (writeValue (Encode.int64 System.Int64.MinValue)) "k: -9223372036854775808\n" "Int64.MinValue"
+        Expect.equal (writeValue (Encode.int64 System.Int64.MaxValue)) "k: 9223372036854775807\n" "Int64.MaxValue"
+        Expect.equal (Encode.int64 3000000000L) (YAMLElement.Value(YAMLContent.create("3000000000"))) "The int64 has no style"
+        for value in [ System.Int64.MinValue; System.Int64.MaxValue; 0L; -1L; 3000000000L ] do
+            let written = writeValue (Encode.int64 value)
+            Expect.equal (readValue Decode.int64 written) value $"{value} reads back"
 ]
 
 let private writeDocument (element: YAMLElement) =
@@ -652,6 +663,57 @@ let tests_decode_core_schema = testList "Decode follows the core schema" [
         Expect.equal (readValue Decode.int "k: !!int \"5\"\n") 5 "An explicit tag fixes the type"
         for text in [ "2147483648"; "-2147483649"; "0x80000000"; "1.5"; "5.0"; "0X1F"; "-0x1"; "0o8"; "1_000"; "\"5\""; "'5'"; "5a" ] do
             Expect.throws (fun _ -> readValue Decode.int $"k: {text}\n" |> ignore) $"{text} is no int"
+
+    // yaml@2.6.1 with { intAsBigInt: true } reads 3000000000, -9223372036854775808, 9223372036854775807, 0x7FFFFFFFFFFFFFFF,
+    // 0o777, -0, +12, 0o777777777777777777777 and 00000000000000000000000000012 as the bigints 3000000000n,
+    // -9223372036854775808n, 9223372036854775807n, 9223372036854775807n, 511n, 0n, 12n, 9223372036854775807n and 12n. It
+    // reads `!!int "3000000000"` as 3000000000n. Without intAsBigInt it reads the 64-bit values as numbers that have lost
+    // the low digits, and -0 as -0.
+    testCase "Decode.int64 reads the ints of the core schema" <| fun _ ->
+        let ints =
+            [ "3000000000", 3000000000L; "-9223372036854775808", System.Int64.MinValue
+              "9223372036854775807", System.Int64.MaxValue; "0x7FFFFFFFFFFFFFFF", System.Int64.MaxValue
+              "0o777", 511L; "-0", 0L; "+12", 12L; "5", 5L; "-5", -5L
+              "0o777777777777777777777", System.Int64.MaxValue; "00000000000000000000000000012", 12L ]
+        for (text, expected) in ints do
+            Expect.equal (readValue Decode.int64 $"k: {text}\n") expected $"{text} is an int64"
+        Expect.equal (readValue Decode.int64 "k: !!int \"3000000000\"\n") 3000000000L "An explicit tag fixes the type"
+
+    // yaml@2.6.1 with { intAsBigInt: true } reads 9223372036854775808, -9223372036854775809, 9223372036854775810,
+    // -9223372036854775810, 92233720368547758070, 18446744073709551616, 0x8000000000000000, 0x10000000000000000 and
+    // 0o1000000000000000000000 as the bigints with the same digits (the hexadecimal and octal texts as
+    // 9223372036854775808n, 18446744073709551616n and 9223372036854775808n). They are ints without a size limit, and
+    // none of them fits in an int64. A wrapped sum would read some of them as a small number, such as 2^64 as 0.
+    testCase "Decode.int64 rejects an int beyond 64 bits" <| fun _ ->
+        let texts =
+            [ "9223372036854775808"; "-9223372036854775809"; "9223372036854775810"; "-9223372036854775810"
+              "92233720368547758070"; "18446744073709551616"
+              "0x8000000000000000"; "0x10000000000000000"; "0o1000000000000000000000" ]
+        for text in texts do
+            Expect.throws (fun _ -> readValue Decode.int64 $"k: {text}\n" |> ignore) $"{text} is no int64"
+            Expect.isNone (Encode.CoreSchema.tryParseInt64 (YAMLContent.create text)) $"{text} has no int64"
+
+    // yaml@2.6.1 reads `k: "3000000000"` and `k: '3000000000'` as the string 3000000000, and a `|` block scalar with
+    // that line as a string too.
+    testCase "Decode.int64 rejects a quoted int" <| fun _ ->
+        for text in [ "\"3000000000\""; "'3000000000'" ] do
+            Expect.throws (fun _ -> readValue Decode.int64 $"k: {text}\n" |> ignore) $"{text} is a string"
+        Expect.throws (fun _ -> readValue Decode.int64 "k: |\n  3000000000\n" |> ignore) "A block scalar is a string"
+
+    // yaml@2.6.1 reads `k: 3000000000` as the number 3000000000 and `k: "9223372036854775808"` as a string. Its
+    // plain 9223372036854775808 is an int, and here it reads as no int64 and as a float, so the writer still
+    // double-quotes the string.
+    testCase "A text beyond 64 bits stays a non-string of the core schema" <| fun _ ->
+        Expect.isTrue (Encode.CoreSchema.resolvesToNonString "9223372036854775808") "9223372036854775808 resolves"
+        Expect.isTrue (sameFloat (readValue Decode.float "k: 9223372036854775808\n") 9223372036854775808.0) "It is a float"
+        Expect.equal (writeValue (Encode.string "9223372036854775808")) "k: \"9223372036854775808\"\n" "The string is quoted"
+
+    // yaml@2.6.1 reads `k: 3000000000` as the number 3000000000. Decode.int stays at 32 bits and Decode.int64 reads it.
+    testCase "Decode.int stays at 32 bits" <| fun _ ->
+        Expect.throws (fun _ -> readValue Decode.int "k: 3000000000\n" |> ignore) "3000000000 is no int"
+        Expect.throws (fun _ -> readValue Decode.int "k: -9223372036854775808\n" |> ignore) "Int64.MinValue is no int"
+        Expect.isNone (Encode.CoreSchema.tryParseInt (YAMLContent.create "3000000000")) "tryParseInt has no int"
+        Expect.equal (Encode.CoreSchema.tryParseInt64 (YAMLContent.create "3000000000")) (Some 3000000000L) "tryParseInt64 has an int64"
 
     // yaml@2.6.1 reads `k: "1.5"` as the string 1.5 and `k: 1.5` as the float 1.5.
     testCase "Decode.float rejects a quoted number" <| fun _ ->

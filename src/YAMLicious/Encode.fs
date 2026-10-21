@@ -97,40 +97,58 @@ module CoreSchema =
         else
             None
 
-    /// The int that a reader of the core schema takes from the scalar, or None when the scalar is not an int
-    /// or does not fit in 32 bits. A decimal int has an optional sign. An octal int starts with 0o and a
-    /// hexadecimal int with 0x. The sum runs in 64 bits and stops once it exceeds the 32 bit range.
-    let tryParseInt (content: YAMLContent) : int option =
+    /// The int64 that a reader of the core schema takes from the scalar, or None when the scalar is not an int
+    /// or does not fit in 64 bits. The core schema sets no size limit for an int. A decimal int has an
+    /// optional sign. An octal int starts with 0o and a hexadecimal int with 0x.
+    let tryParseInt64 (content: YAMLContent) : int64 option =
         let text = content.Value
         let digitValue (c: char) =
             if c <= '9' then int c - int '0'
             elif c >= 'a' then int c - int 'a' + 10
             else int c - int 'A' + 10
 
-        let magnitude (start: int) (radix: int) =
-            let mutable sum = 0L
+        // A negative int counts down from zero and a positive int counts up, so that Int64.MinValue needs no
+        // negation. Each step compares against the bound before it multiplies, so no value leaves the int64
+        // range. Fable emulates int64 on JavaScript and Python, where a product beyond the range wraps.
+        let sum (start: int) (radix: int) (negative: bool) : int64 option =
+            let radix64 = int64 radix
+            let lowestBeforeStep = Int64.MinValue / radix64
+            let highestBeforeStep = Int64.MaxValue / radix64
+            let mutable total = 0L
             let mutable index = start
-            while index < text.Length && sum <= 2147483648L do
-                sum <- sum * int64 radix + int64 (digitValue text.[index])
+            let mutable fits = true
+            while fits && index < text.Length do
+                let digit = int64 (digitValue text.[index])
+                if negative then
+                    if total < lowestBeforeStep || total * radix64 < Int64.MinValue + digit then
+                        fits <- false
+                    else
+                        total <- total * radix64 - digit
+                else
+                    if total > highestBeforeStep || total * radix64 > Int64.MaxValue - digit then
+                        fits <- false
+                    else
+                        total <- total * radix64 + digit
                 index <- index + 1
-            sum
+            if fits then Some total else None
 
         if not (resolvesAs "tag:yaml.org,2002:int" content) then
             None
         elif matches decimalPattern text then
-            let hasSign = text.[0] = '-' || text.[0] = '+'
-            let sum = magnitude (if hasSign then 1 else 0) 10
-            if text.[0] = '-' && sum <= 2147483648L then Some (int (-sum))
-            elif text.[0] <> '-' && sum <= 2147483647L then Some (int sum)
-            else None
+            sum (if text.[0] = '-' || text.[0] = '+' then 1 else 0) 10 (text.[0] = '-')
         elif matches octalPattern text then
-            let sum = magnitude 2 8
-            if sum <= 2147483647L then Some (int sum) else None
+            sum 2 8 false
         elif matches hexadecimalPattern text then
-            let sum = magnitude 2 16
-            if sum <= 2147483647L then Some (int sum) else None
+            sum 2 16 false
         else
             None
+
+    /// The int that a reader of the core schema takes from the scalar, or None when the scalar is not an int
+    /// or does not fit in 32 bits. It is the 32 bit view of `tryParseInt64`.
+    let tryParseInt (content: YAMLContent) : int option =
+        tryParseInt64 content
+        |> Option.filter (fun number -> number >= int64 Int32.MinValue && number <= int64 Int32.MaxValue)
+        |> Option.map int
 
     /// The float that a reader of the core schema takes from the scalar, or None when the scalar is not a
     /// decimal number, an infinity or not-a-number. A text that the number parse of the target accepts but
@@ -168,6 +186,8 @@ module CoreSchema =
         YAMLContent.create(text, ?style = style)
 
 let int (value: int) = (YAMLContent.create(string value)) |> YAMLElement.Value
+
+let int64 (value: int64) = (YAMLContent.create(string value)) |> YAMLElement.Value
 
 #if FABLE_COMPILER_PYTHON
 /// The Python repr of a float is the shortest text that reads back as the same number. It switches to an

@@ -110,6 +110,14 @@ let int (value: YAMLElement) : int =
         | None -> raiseInvalidArg "value" "Expected an int" (scalarValue v)
     | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
 
+let int64 (value: YAMLElement) : int64 =
+    match withoutComments value with
+    | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
+        match Encode.CoreSchema.tryParseInt64 v with
+        | Some number -> number
+        | None -> raiseInvalidArg "value" "Expected an int64" (scalarValue v)
+    | _ -> raiseInvalidArg "value" "Expected an YAMLElement.Value" value
+
 let float (value: YAMLElement) : float =
     match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->

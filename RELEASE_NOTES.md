@@ -26,7 +26,8 @@
 * `Encode.float` writes NaN and the infinities as `.nan`, `.inf` and `-.inf`, negative zero as `-0.0`, and a whole number with `.0`, as in `1.0`, so a core schema reader reads a float and not an int. On Python it writes `1e+21` and `5e-324` instead of every digit.
 * `Decode.bool`, `Decode.int` and `Decode.float` read only plain scalars, or scalars under the matching tag, in the core schema forms. `Decode.bool` accepts `true`, `True`, `TRUE`, `false`, `False` and `FALSE`. `Decode.int` reads decimal, `0o` and `0x` ints. `Decode.float` reads forms such as `.NaN`, `+.Inf` or `1e3` and rejects `NaN` and `Infinity`, which YAML 1.2 reads as strings. A quoted `"true"`, `"5"` or `"1.5"` is a string and fails these decoders.
 * `Encode.values` returns a sequence of string scalars, so `Decode.values` reads back what it wrote. Earlier versions returned sibling scalars that read back as one string.
-* `Encode.CoreSchema` gains `resolvesToNull`, `isNull`, `tryParseBool`, `tryParseInt`, `tryParseFloat`, `floatText` and `stringContent`.
+* `Encode.CoreSchema` gains `resolvesToNull`, `isNull`, `tryParseBool`, `tryParseInt`, `tryParseInt64`, `tryParseFloat`, `floatText` and `stringContent`.
+* `Decode.int64` and `Encode.int64` read and write 64-bit ints in the core schema forms. `CoreSchema.tryParseInt` is the 32-bit view of `CoreSchema.tryParseInt64`. A plain int beyond the int64 range still resolves as a non-string, and `Decode.int64` throws on it.
 * Block scalar content keeps the exact indentation of lines that are indented deeper than the first content line. Earlier versions added two spaces per extra level.
 * The content of a block scalar is indented as deep as its first nonblank line, or as deep as the indentation indicator says counted from the header.
 * An explicit indentation indicator (`|2`) keeps the spaces beyond the indicated indentation as content.
