@@ -33,7 +33,8 @@ module DecodeError =
             first <- false
         sb.ToString()
 
-    /// The error as one line of text: the path, the message and the start of the span.
+    /// The error as one line of text. The path comes first when there is one, then the message and the start of
+    /// its span.
     let text (error: DecodeError) : string =
         let place =
             match error.Span with
@@ -50,6 +51,14 @@ exception YamlDecodeException of DecodeError
     with
         override this.Message = DecodeError.text this.Data0
 
+/// The key of the index that finds duplicate keys. A null key and a not-a-number key are one key each on every
+/// target. The Dictionary of .NET rejects a null key, and the Dictionary of Fable never finds a NaN again.
+[<RequireQualifiedAccess>]
+type internal PairKey<'K> =
+    | Null
+    | NotANumber
+    | Value of 'K
+
 module internal DecodeSupport =
 
     let spanText (span: SourceSpan) : string =
@@ -59,7 +68,8 @@ module internal DecodeSupport =
         let flat = text.Replace("\n", "\\n")
         if flat.Length > 40 then flat.Substring(0, 37) + "..." else flat
 
-    /// A tag as the text shows it: `!!str` for the core namespace, `!local` and `!<uri>` otherwise.
+    /// A tag as the text shows it. The core namespace gives `!!str` and a local tag gives `!local`. Any other
+    /// tag shows as `!<uri>`.
     let tagText (tag: YamlTag) : string =
         match tag with
         | YamlTag.NonSpecific -> "!"
@@ -140,9 +150,22 @@ module internal DecodeSupport =
         with YamlDecodeException error ->
             raise (YamlDecodeException (withSegment ("{" + keyLabel key + "}") error))
 
+    let private isNullTag (tag: YamlTag option) : bool =
+        match tag with
+        | Some explicit -> YamlTag.identifier explicit = YamlTag.coreNamespace + "null"
+        | None -> false
+
+    /// An explicit `!!null` needs a null of the core schema. Any other text under the tag is an error in every
+    /// decoder, as `!!int foo` is an error for an int.
+    let private checkNullTag (node: YamlNode) (scalar: YamlScalar) : unit =
+        if isNullTag node.Properties.Tag && not (CoreSchema.isNull node.Properties.Tag scalar) then
+            fail ("The tag !!null needs null, Null, NULL, ~ or an empty text, found \"" + shorten scalar.Value + "\".") node
+
     let scalarOf (what: string) (node: YamlNode) : YamlScalar =
         match node.Kind with
-        | YamlNodeKind.Scalar scalar -> scalar
+        | YamlNodeKind.Scalar scalar ->
+            checkNullTag node scalar
+            scalar
         | YamlNodeKind.Alias name -> failAlias name node
         | _ -> fail (expected what node) node
 
@@ -156,7 +179,9 @@ module internal DecodeSupport =
 
     let isNullNode (node: YamlNode) : bool =
         match node.Kind with
-        | YamlNodeKind.Scalar scalar -> CoreSchema.isNull node.Properties.Tag scalar
+        | YamlNodeKind.Scalar scalar ->
+            checkNullTag node scalar
+            CoreSchema.isNull node.Properties.Tag scalar
         | _ -> false
 
     let sequenceItems (what: string) (node: YamlNode) : SequenceItem list =
@@ -194,17 +219,34 @@ module internal DecodeSupport =
         else
             items |> List.map (fun item -> item.Node) |> List.toArray
 
+    let private pairKey (key: 'K) : PairKey<'K> =
+        let boxed = box key
+        if isNull boxed then
+            PairKey.Null
+        else
+            match boxed with
+            | :? float as number when Double.IsNaN number -> PairKey.NotANumber
+            | _ -> PairKey.Value key
+
     /// Decodes the entries of a mapping to pairs in source order. The key decoder gets the whole key node. Two
-    /// entries whose decoded keys are equal are an error.
-    let decodePairs (keyDecoder: Decoder<'K>) (valueDecoder: Decoder<'V>) (node: YamlNode) : ResizeArray<'K * 'V> =
+    /// entries whose decoded keys are equal are an error. A dictionary cannot hold a null key on .NET, so
+    /// `allowNullKey` is false for it and a null key is an error on every target.
+    let decodePairs
+        (allowNullKey: bool)
+        (keyDecoder: Decoder<'K>)
+        (valueDecoder: Decoder<'V>)
+        (node: YamlNode)
+        : ResizeArray<'K * 'V> =
         let pairs = ResizeArray<'K * 'V>()
-        let seen = Dictionary<'K, YamlNode>()
+        let seen = Dictionary<PairKey<'K>, YamlNode>()
         let mutable remaining = mappingEntries "a mapping" node
         while not remaining.IsEmpty do
             let entry = remaining.Head
             remaining <- remaining.Tail
             let key = inEntry entry.Key keyDecoder entry.Key
-            match seen.TryGetValue key with
+            if not allowNullKey && isNull (box key) then
+                fail ("The key " + keyLabel entry.Key + " decodes to null, which a dictionary cannot hold. Decode a map instead.") entry.Key
+            match seen.TryGetValue (pairKey key) with
             | true, first ->
                 let firstPlace =
                     match first.Span with
@@ -216,33 +258,124 @@ module internal DecodeSupport =
                     | None -> "a later entry"
                 fail ("The key " + keyLabel entry.Key + " occurs twice, at " + firstPlace + " and at " + place + ".") entry.Key
             | _ ->
-                seen.[key] <- entry.Key
+                seen.[pairKey key] <- entry.Key
                 pairs.Add((key, inEntry entry.Key valueDecoder entry.Value))
         pairs
 
-    /// Reads the text of a scalar as a point in time through the parse of the target.
-    let parseDateTime (text: string) : DateTime option =
-#if FABLE_COMPILER
-        match DateTime.TryParse text with
-#else
-        match DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind) with
-#endif
-        | true, value -> Some value
-        | false, _ -> None
+    /// The number that the `count` characters from `start` spell, or -1 when one of them is no digit or the text
+    /// ends first.
+    let private digitsAt (text: string) (start: int) (count: int) : int =
+        if start + count > text.Length then
+            -1
+        else
+            let mutable value = 0
+            let mutable valid = true
+            for i in start .. start + count - 1 do
+                let c = text.[i]
+                if c >= '0' && c <= '9' then
+                    value <- value * 10 + (int c - int '0')
+                else
+                    valid <- false
+            if valid then value else -1
 
-    let parseDateTimeOffset (text: string) : DateTimeOffset option =
+    let private daysInMonth (year: int) (month: int) : int =
+        if month = 2 then
+            if (year % 4 = 0 && year % 100 <> 0) || year % 400 = 0 then 29 else 28
+        elif month = 4 || month = 6 || month = 9 || month = 11 then
+            30
+        else
+            31
+
+    /// Checks a text against the forms of a timestamp: a date as `2018-10-01`, or a date and a time as
+    /// `2018-10-01T11:12:55` with a `T` or a blank between them. The time has seconds and may have a fraction of
+    /// one to seven digits. A zone may end it, which is `Z` or an offset of `+hh:mm` or `-hh:mm` up to 14:00. The
+    /// date, the time and the zone must be possible values. The parse of a target reads far more than that, such as `1`, `2020`, `5` and
+    /// `12:00`, so the check runs first and every target accepts the same texts.
+    ///
+    /// The result is the text in the one form that every target parses the same way: a `T` between the date and
+    /// the time, and midnight behind a date alone. It is None when the text does not fit, or when `zoneRequired`
+    /// is set and the text has no zone.
+    let normalizeTimestamp (text: string) (zoneRequired: bool) : string option =
+        let length = text.Length
+        if length < 10 || text.[4] <> '-' || text.[7] <> '-' then
+            None
+        else
+            let year = digitsAt text 0 4
+            let month = digitsAt text 5 2
+            let day = digitsAt text 8 2
+            if year < 0 || month < 1 || month > 12 || day < 1 || day > daysInMonth year month then
+                None
+            elif length = 10 then
+                if zoneRequired then None else Some (text + "T00:00:00")
+            elif (text.[10] <> 'T' && text.[10] <> ' ') || length < 19 || text.[13] <> ':' || text.[16] <> ':' then
+                None
+            else
+                let hour = digitsAt text 11 2
+                let minute = digitsAt text 14 2
+                let second = digitsAt text 17 2
+                if hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 then
+                    None
+                else
+                    let mutable index = 19
+                    let mutable valid = true
+                    if index < length && text.[index] = '.' then
+                        index <- index + 1
+                        let start = index
+                        while index < length && text.[index] >= '0' && text.[index] <= '9' do
+                            index <- index + 1
+                        if index - start < 1 || index - start > 7 then
+                            valid <- false
+                    let mutable hasZone = false
+                    if valid && index < length then
+                        if text.[index] = 'Z' && index + 1 = length then
+                            hasZone <- true
+                        elif (text.[index] = '+' || text.[index] = '-') && index + 6 = length && text.[index + 3] = ':' then
+                            let zoneHours = digitsAt text (index + 1) 2
+                            let zoneMinutes = digitsAt text (index + 4) 2
+                            if zoneHours >= 0 && zoneMinutes >= 0 && zoneMinutes <= 59 && zoneHours * 60 + zoneMinutes <= 840 then
+                                hasZone <- true
+                            else
+                                valid <- false
+                        else
+                            valid <- false
+                    if not valid || (zoneRequired && not hasZone) then
+                        None
+                    else
+                        Some (text.Substring(0, 10) + "T" + text.Substring(11))
+
+    /// Reads the text of a scalar as a point in time. The text goes through `normalizeTimestamp` before the parse
+    /// of the target.
+    let parseDateTime (text: string) : DateTime option =
+        match normalizeTimestamp text false with
+        | None -> None
+        | Some normalized ->
 #if FABLE_COMPILER
-        match DateTimeOffset.TryParse text with
+            match DateTime.TryParse normalized with
 #else
-        match DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None) with
+            match DateTime.TryParse(normalized, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind) with
 #endif
-        | true, value -> Some value
-        | false, _ -> None
+            | true, value -> Some value
+            | false, _ -> None
+
+    /// Reads the text of a scalar as a point in time with an offset. A text without a zone has no offset, so it
+    /// is no match.
+    let parseDateTimeOffset (text: string) : DateTimeOffset option =
+        match normalizeTimestamp text true with
+        | None -> None
+        | Some normalized ->
+#if FABLE_COMPILER
+            match DateTimeOffset.TryParse normalized with
+#else
+            match DateTimeOffset.TryParse(normalized, CultureInfo.InvariantCulture, DateTimeStyles.None) with
+#endif
+            | true, value -> Some value
+            | false, _ -> None
 
 /// The decoders. A decoder reads the node and ignores its presentation: comments, anchors, spans and the
 /// style of a collection. A scalar decoder follows the YAML 1.2 core schema with the explicit tag and the
-/// style of the scalar, so `"1"` is a string for `int` and `!!int "1"` is an int. Every decoder except
-/// `alias` and `node` rejects an alias.
+/// style of the scalar, so `"1"` is a string for `int` and `!!int "1"` is an int. An explicit `!!null` needs a
+/// null spelling or an empty text, and any other text under it is an error in every decoder. Every decoder
+/// except `alias` and `node` rejects an alias.
 [<RequireQualifiedAccess>]
 module Decode =
 
@@ -311,8 +444,9 @@ module Decode =
                 member _.Field name decoder =
                     match index.TryGetValue name with
                     | true, i ->
-                        let value = entries.[i].Value
-                        if isNullNode value then None else Some (inSegment name decoder value)
+                        // The null check can raise too, for an explicit !!null with a text that is no null, so it runs inside the segment.
+                        let orNone (value: YamlNode) = if isNullNode value then None else Some (decoder value)
+                        inSegment name orNone entries.[i].Value
                     | _ -> None }
         let multipleOptional =
             { new IMultipleOptionalGetter with
@@ -355,23 +489,30 @@ module Decode =
         let scalar = scalarOf "a char" node
         if scalar.Value.Length = 1 then scalar.Value.[0] else fail (expected "a char" node) node
 
-    /// A point in time in the ISO 8601 form that `Encode.datetime` writes.
+    /// A point in time. The text is a date, or a date and a time with a `T` or a blank between them. The time has
+    /// seconds and may have a fraction of one to seven digits. A zone may end it, which is `Z` or an offset of
+    /// `+hh:mm` or `-hh:mm` up to 14:00. A date alone is midnight. Any other text is an error on every target, also `1`, `2020`, `5` and
+    /// `12:00`, which the parse of a target would read. A text with a zone gives the same instant on every target.
+    /// .NET keeps the UTC kind of a `Z`. Fable gives the kind Local on Python and Unspecified on JavaScript.
     let datetime (node: YamlNode) : DateTime =
         let scalar = scalarOf "a DateTime" node
         match parseDateTime scalar.Value with
         | Some value -> value
         | None -> fail (expected "a DateTime" node) node
 
-    /// A point in time with an offset in the ISO 8601 form that `Encode.datetimeOffset` writes.
+    /// A point in time with an offset. The text has the forms of `datetime` and needs a zone, so `2018-10-01` and
+    /// a time without a zone are errors on every target. A text with a zone gives the same instant on every
+    /// target. .NET and Python keep the offset of the text, and JavaScript gives the offset of the machine.
     let datetimeOffset (node: YamlNode) : DateTimeOffset =
         let scalar = scalarOf "a DateTimeOffset" node
         match parseDateTimeOffset scalar.Value with
         | Some value -> value
         | None -> fail (expected "a DateTimeOffset" node) node
 
-    /// None for a null of the core schema: a plain `null`, `Null`, `NULL` or `~`, an empty plain scalar such
-    /// as a missing value, and the same spellings under `!!null`. A quoted or block scalar is a string, so it is
-    /// never null. A collection is never null. Anything else goes to the decoder.
+    /// None for a null. Under an explicit `!!null` the tag decides: a null spelling or an empty text gives None,
+    /// also in quotes, and any other text is an error. Without that tag only a plain scalar is null, with the text
+    /// `null`, `Null`, `NULL` or `~` or with no text, as a missing value has. A quoted or block scalar is a string.
+    /// A collection is never null. Anything else goes to the decoder.
     let option (decoder: Decoder<'T>) : Decoder<'T option> =
         fun node -> if isNullNode node then None else Some (decoder node)
 
@@ -504,16 +645,17 @@ module Decode =
             (a, b, c, d, e, f, g, h)
 
     /// A mapping as a map. The key decoder gets the whole key node. Two entries with equal decoded keys are an
-    /// error that names both.
+    /// error that names both. Two null keys are equal, and so are two NaN keys.
     let map (keyDecoder: Decoder<'K>) (valueDecoder: Decoder<'V>) : Decoder<Map<'K, 'V>> =
-        fun node -> Map.ofSeq (decodePairs keyDecoder valueDecoder node)
+        fun node -> Map.ofSeq (decodePairs true keyDecoder valueDecoder node)
 
     /// A mapping as a dictionary with the entries in source order. The key decoder gets the whole key node. Two
-    /// entries with equal decoded keys are an error that names both.
+    /// entries with equal decoded keys are an error that names both, and a key that decodes to null is an
+    /// error because a .NET dictionary cannot hold it. `map` takes a null key.
     let dict (keyDecoder: Decoder<'K>) (valueDecoder: Decoder<'V>) : Decoder<Dictionary<'K, 'V>> =
         fun node ->
             let result = Dictionary<'K, 'V>()
-            for (key, value) in decodePairs keyDecoder valueDecoder node do
+            for (key, value) in decodePairs false keyDecoder valueDecoder node do
                 result.[key] <- value
             result
 

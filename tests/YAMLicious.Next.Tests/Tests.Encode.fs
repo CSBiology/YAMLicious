@@ -149,22 +149,24 @@ let private dateTests = testList "Encode.datetime and Encode.datetimeOffset" [
         Expect.isTrue ((scalarText (Encode.datetime moment)).StartsWith("2018-10-01T11:12:55")) (scalarText (Encode.datetime moment))
         Expect.nodeEqual (Encode.datetime moment) (sc (scalarText (Encode.datetime moment))) "The scalar is plain"
         let backMoment = Decode.datetime (Encode.datetime moment)
-        // Fable returns a local time for a time with a Z, so the check compares the instant.
+        // Fable does not keep the UTC kind of a time with a Z, so the check compares the instant.
         let backUtc = backMoment.ToUniversalTime()
         Expect.equal backUtc.Ticks moment.Ticks "The UTC time reads back"
+#if FABLE_COMPILER
+        Expect.notEqual backMoment.Kind System.DateTimeKind.Utc "Fable does not keep the UTC kind"
+#else
+        Expect.equal backMoment.Kind System.DateTimeKind.Utc "RoundtripKind keeps the UTC kind"
+#endif
         let utc = System.DateTimeOffset(2008, 1, 5, 6, 0, 0, System.TimeSpan.Zero)
         Expect.isTrue ((scalarText (Encode.datetimeOffset utc)).StartsWith("2008-01-05T06:00:00")) (scalarText (Encode.datetimeOffset utc))
         Expect.isTrue (Decode.datetimeOffset (Encode.datetimeOffset utc) = utc) "The UTC instant reads back"
-        // The Python library of Fable prints the wall time of a DateTimeOffset with a Z whatever the offset, so a time with an offset is checked on .NET and
-        // JavaScript. Both Fable targets read the offset of a time as the offset of the machine, so the offset itself is checked on .NET only.
-#if !FABLE_COMPILER_PYTHON
         let offset = System.DateTimeOffset(2008, 1, 5, 6, 0, 0, System.TimeSpan(1, 0, 0))
         Expect.isTrue ((scalarText (Encode.datetimeOffset offset)).StartsWith("2008-01-05T06:00:00")) (scalarText (Encode.datetimeOffset offset))
         Expect.isTrue ((scalarText (Encode.datetimeOffset offset)).EndsWith("+01:00")) (scalarText (Encode.datetimeOffset offset))
         let back = Decode.datetimeOffset (Encode.datetimeOffset offset)
         Expect.isTrue (back = offset) "The instant reads back"
-#endif
-#if !FABLE_COMPILER
+        // JavaScript reads the offset of a time as the offset of the machine.
+#if !FABLE_COMPILER_JAVASCRIPT
         Expect.equal back.Offset offset.Offset "The offset reads back"
 #endif
 ]
@@ -396,16 +398,10 @@ let private genOption (gen: Rng -> 'T) (r: Rng) : 'T option = if r.Below 3 = 0 t
 let private genDateTime (r: Rng) : System.DateTime =
     System.DateTime(1990, 1, 1, 0, 0, 0, System.DateTimeKind.Utc).AddMilliseconds(float (r.Below 2000000000) * 100.0 + float (r.Below 1000))
 
-/// A time with an offset of whole hours. The Python library of Fable prints the wall time of any offset with a Z, so the generator keeps the offset
-/// at zero there.
+/// A time with an offset of whole hours.
 let private genDateTimeOffset (r: Rng) : System.DateTimeOffset =
     let local = System.DateTime(1990 + r.Below 100, 1 + r.Below 12, 1 + r.Below 28, r.Below 24, r.Below 60, r.Below 60, r.Below 1000)
-    let hours = r.Below 27 - 12
-#if FABLE_COMPILER_PYTHON
-    System.DateTimeOffset(local, System.TimeSpan.Zero)
-#else
-    System.DateTimeOffset(local, System.TimeSpan(hours, 0, 0))
-#endif
+    System.DateTimeOffset(local, System.TimeSpan(r.Below 27 - 12, 0, 0))
 
 /// Runs the check on 1000 values from the generator.
 let private repeat (seed: int) (check: Rng -> unit) =
@@ -465,9 +461,9 @@ let private roundTripTests = testList "decode (encode x) = x over 1000 generated
         repeat 8 (fun r ->
             let value = genDateTimeOffset r
             let decoded = Decode.datetimeOffset (Encode.datetimeOffset value)
-            // The instants must agree on every target. The offset of the decoded time is the offset of the text on .NET only.
+            // JavaScript reads the offset of a time as the offset of the machine, so only the instant is compared there.
             let sameOffset =
-#if FABLE_COMPILER
+#if FABLE_COMPILER_JAVASCRIPT
                 true
 #else
                 decoded.Offset = value.Offset

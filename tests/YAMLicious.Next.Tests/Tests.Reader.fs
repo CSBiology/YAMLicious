@@ -108,12 +108,24 @@ let private emptyTests = testList "A text without a document" [
             Expect.isTrue problems.IsEmpty (sprintf "%A breaks the slot rules: %s" text (String.concat "; " problems))
             Expect.isTrue (YamlNode.isMissingValue document.Root) (sprintf "The root of %A is missing" text)
 
-    // A `...` with no document in front of it is an extra end marker. The document for the text keeps the first one as its end marker, and the comments of
-    // the stream stay in BeforeRoot.
-    testCase "an end marker without a document closes the document for the text" <| fun _ ->
+    // A `...` with no document in front of it is an extra end marker. The document for the text keeps the first one as its end marker, and every comment and
+    // blank line of the stream goes to BeforeRoot, also the ones behind that marker. A single document cannot hold the shape `# a`, `...`, `# b`, `...`, so
+    // `# b` moves in front of the first marker and the second marker is lost with its comment. readDocuments keeps the shape.
+    testCase "a text without a document keeps its first end marker and moves every comment in front of it" <| fun _ ->
         expectDocument (Reader.read "...") { missingDocument [] with EndMarker = Some(marker None) } "An end marker"
         expectDocument (Reader.read "# c\n... # e") { missingDocument [ note " c" ] with EndMarker = Some(marker (Some " e")) } "A comment and an end marker"
-        expectDocument (Reader.read "...\n...") { missingDocument [] with EndMarker = Some(marker None) } "Only the first end marker stays"
+        expectDocument (Reader.read "...\n...") { missingDocument [] with EndMarker = Some(marker None) } "The second end marker is lost"
+        expectDocument
+            (Reader.read "# a\n...\n# b\n...\n")
+            { missingDocument [ note " a"; note " b" ] with EndMarker = Some(marker None) }
+            "The comment behind the first marker moves in front of it and the second marker is lost"
+        expectDocument
+            (Reader.read "# a\n... # e1\n# b\n... # e2\n")
+            { missingDocument [ note " a"; note " b" ] with EndMarker = Some(marker (Some " e1")) }
+            "The comment of the second marker is lost with it"
+        match (Reader.readDocuments "# a\n...\n# b\n...\n").Parts with
+        | [ StreamPart.Trivia _; StreamPart.ExtraEndMarker _; StreamPart.Trivia _; StreamPart.ExtraEndMarker _ ] -> ()
+        | parts -> failwith (sprintf "readDocuments holds %d parts, not the four of the text" parts.Length)
 
     // yaml@2.6.1 reads `---` followed by `...` as [null], `---` followed by a comment as [null] and `%YAML 1.2` followed by `---` as [null]. A start marker
     // makes a document, so the parser gives it and the reader does not synthesize one.

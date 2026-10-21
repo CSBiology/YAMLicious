@@ -43,8 +43,8 @@ module internal EncodeSupport =
     let int64Text (value: int64) : string = string value
 
 /// The value encoders. They build scalars and block collections with the constructors of `YamlNode`, and an
-/// empty collection becomes the flow collection `[]` or `{}`. The structure of a tree with comments,
-/// properties and styles stays with the constructors of `YamlNode`.
+/// empty collection becomes the flow collection `[]` or `{}`. A tree that needs comments, properties or other
+/// styles takes them from the constructors of `YamlNode`.
 [<RequireQualifiedAccess>]
 module Encode =
 
@@ -72,9 +72,11 @@ module Encode =
 
     let char (value: char) : YamlNode = string (value.ToString())
 
-    /// The round trip format of ISO 8601, as in `2018-10-01T11:12:55.0000000Z`.
+    /// The round trip format of ISO 8601, as in `2018-10-01T11:12:55.0000000Z`. The digits of the fraction depend
+    /// on the target, and `Decode.datetime` reads each form.
     let datetime (value: DateTime) : YamlNode = YamlNode.plain (value.ToString("O", CultureInfo.InvariantCulture))
 
+    /// The round trip format of ISO 8601 with the offset, as in `2018-10-01T11:12:55.0000000+01:00`.
     let datetimeOffset (value: DateTimeOffset) : YamlNode =
         YamlNode.plain (value.ToString("O", CultureInfo.InvariantCulture))
 
@@ -97,8 +99,9 @@ module Encode =
     let resizearray (encoder: Encoder<'T>) : Encoder<ResizeArray<'T>> =
         fun items -> YamlNode.sequence [ for item in items -> YamlNode.item (encoder item) ]
 
-    /// A block sequence of strings, the counterpart of `Decode.values`. Each item goes through `string`, so a
-    /// text such as `true` is double-quoted.
+    /// A block sequence of strings. Each item is `toText item` encoded by `string`, so a text such as `true` or `1`
+    /// is double-quoted and `Decode.values Decode.string` reads the items back. `Decode.values Decode.int` rejects
+    /// them. Use `list` with `int` for a sequence of ints.
     let values (toText: 'T -> string) : Encoder<seq<'T>> =
         fun items -> YamlNode.sequence [ for item in items -> YamlNode.item (string (toText item)) ]
 

@@ -48,9 +48,9 @@ module Reader =
             BeforeRoot = trivia
             EndMarker = marker }
 
-    /// Reads a text with any number of documents, also none. Each document keeps its prelude, its markers and
-    /// the trivia around its root, and the stream keeps the trivia and the end markers that belong to no
-    /// document.
+    /// Reads a text with any number of documents, also none. Each document keeps its prelude and its markers
+    /// besides the trivia around its root, and the stream keeps the trivia and the end markers that belong to
+    /// no document.
     let tryReadDocuments (text: string) : Result<YamlStream, YamlError> = Parser.parseStream text
 
     let readDocuments (text: string) : YamlStream =
@@ -61,8 +61,11 @@ module Reader =
     /// Reads a text with one document. A text with several documents is an error with the code
     /// `MultipleDocuments`, whose span is the second document and whose related span is the first. A text
     /// without any document, such as an empty text or a text with comments only, gives a document with a
-    /// missing root that keeps the comments in `BeforeRoot`. The trivia of the stream around a single
-    /// document are not part of the document, and `readDocuments` keeps them.
+    /// missing root that keeps every comment and blank line of the stream in `BeforeRoot`. The first `...` of
+    /// such a text is its end marker, and the others are lost with their comments. A single document cannot hold
+    /// the shape of `# a`, `...`, `# b` and `...`, which has two comments with an end marker after each, so the
+    /// position of the second comment and the second marker are lost. The trivia of the stream around a single
+    /// document are not part of the document either. `readDocuments` keeps all of them.
     let tryRead (text: string) : Result<YamlDocument, YamlError> =
         match tryReadDocuments text with
         | Error error -> Error error
@@ -86,6 +89,6 @@ module Reader =
         | Ok document -> document
         | Error error -> raise (YamlParseException error)
 
-    /// The root of the only document of the text. It drops the markers, the directives and the comments
-    /// around the root, so it suits a caller that decodes data.
+    /// The root of the only document of the text, and nothing of the document around it. That suits a caller
+    /// that decodes data.
     let readRoot (text: string) : YamlNode = (read text).Root

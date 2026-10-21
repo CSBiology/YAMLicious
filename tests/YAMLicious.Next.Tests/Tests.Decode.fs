@@ -214,6 +214,23 @@ let private charTests = testList "Decode.char" [
         expectError Decode.char aliasNode [] (span 2 4 2 6) "The alias *x"
 ]
 
+/// The fields of a time that has no zone. Such a time is a local time on every target, so the fields compare the same everywhere.
+let private fieldsOf (value: System.DateTime) =
+    (value.Year, value.Month, value.Day, value.Hour, value.Minute, value.Second, value.Millisecond)
+
+/// Texts that are no timestamp. The parse of a target reads some of them as a time, such as `1`, `2020`, `5` and `12:00`.
+let private notTimestamps =
+    [ "1"; "2020"; "5"; "12:00"; "12:00:00"; "yesterday"; ""
+      "20181001"; "2018-1-1"; "2018-10-1"; "2018/10/01"; "-2018-10-01"
+      "2018-10-01T11"; "2018-10-01T11:12"
+      "2018-00-10"; "2018-13-01"; "2018-10-00"; "2018-10-32"; "2018-02-30"; "2019-02-29"; "1900-02-29"
+      "2018-10-01T24:00:00"; "2018-10-01T11:60:00"; "2018-10-01T11:12:60"
+      "2018-10-01T11:12:55."; "2018-10-01T11:12:55.12345678"
+      "2018-10-01T11:12:55z"; "2018-10-01t11:12:55"; "2018-10-01U11:12:55"
+      "2018-10-01T11:12:55Z "; " 2018-10-01"; "2018-10-01T11:12:55 +01:00"
+      "2018-10-01T11:12:55+0100"; "2018-10-01T11:12:55+01"; "2018-10-01T11:12:55+15:00"; "2018-10-01T11:12:55+14:30"; "2018-10-01T11:12:55+01:60"
+      (String.replicate 4 (string (char 0x0661)) + "-10-01") ]
+
 let private dateTests = testList "Decode.datetime and Decode.datetimeOffset" [
     // The old tests of both decoders were pending, because they expected a local time zone. The values below carry their own offset.
     testCase "Decode.datetime reads the ISO 8601 form" <| fun _ ->
@@ -229,6 +246,58 @@ let private dateTests = testList "Decode.datetime and Decode.datetimeOffset" [
         Expect.equal (Decode.datetimeOffset (fieldNode "k: 2008-01-05T05:00:00Z")) expected "The same instant in UTC"
         expectError Decode.datetimeOffset (fieldNode "k: soon") [] (span 1 4 1 8) "Expected a DateTimeOffset, found the plain scalar \"soon\"."
         expectError Decode.datetimeOffset aliasNode [] (span 2 4 2 6) "The alias *x"
+
+    // yaml@2.6.1 with the core schema reads `2018-10-01` and `2018-10-01T11:12:55Z` as strings, and `1` as an int. It reads `!!timestamp 2018-10-01` as the date.
+    // The decoder accepts a date, a date and a time with a T or a blank, a fraction of one to seven digits and a zone of Z or +hh:mm. A time without a zone is a
+    // local time on every target. The tag does not change the check.
+    testCase "Decode.datetime reads a date, a date with a time and an optional zone" <| fun _ ->
+        let withoutZone =
+            [ "2018-10-01", (2018, 10, 1, 0, 0, 0, 0)
+              "2020-02-29", (2020, 2, 29, 0, 0, 0, 0)
+              "2018-10-01T11:12:55", (2018, 10, 1, 11, 12, 55, 0)
+              "2018-10-01 11:12:55", (2018, 10, 1, 11, 12, 55, 0)
+              "2018-10-01T11:12:55.5", (2018, 10, 1, 11, 12, 55, 500)
+              "2018-10-01 11:12:55.25", (2018, 10, 1, 11, 12, 55, 250)
+              "2018-10-01T23:59:59.999", (2018, 10, 1, 23, 59, 59, 999) ]
+        for (text, expected) in withoutZone do
+            Expect.equal (fieldsOf (Decode.datetime (sc text))) expected (sprintf "The fields of %s" text)
+        // A time with a zone is an instant, and the instant is the same on every target.
+        let instant = System.DateTime(2018, 10, 1, 11, 12, 55, System.DateTimeKind.Utc)
+        let withZone =
+            [ "2018-10-01T11:12:55Z"; "2018-10-01 11:12:55Z"; "2018-10-01T11:12:55.0Z"; "2018-10-01T11:12:55.0000000Z"
+              "2018-10-01T12:12:55+01:00"; "2018-10-01T06:12:55-05:00"; "2018-10-01T11:12:55.000+00:00"; "2018-10-01T21:12:55+10:00"
+              "2018-10-01T01:12:55-10:00"; "2018-10-01T22:12:55+11:00" ]
+        for text in withZone do
+            let value = (Decode.datetime (sc text)).ToUniversalTime()
+            Expect.equal value.Ticks instant.Ticks (sprintf "The instant of %s" text)
+        Expect.equal (fieldsOf (Decode.datetime (fieldNode "k: !!timestamp 2018-10-01"))) (2018, 10, 1, 0, 0, 0, 0) "A tag does not change the check"
+
+    testCase "Decode.datetime rejects every other text on every target" <| fun _ ->
+        for text in notTimestamps do
+            expectError Decode.datetime (sc text) [] None "Expected a DateTime, found"
+        // The parse of JavaScript reads the ints, and the parse of .NET reads a time of day. The decoder reads none of them.
+        expectError Decode.datetime (fieldNode "k: 1") [] (span 1 4 1 5) "Expected a DateTime, found the plain scalar \"1\"."
+        expectError Decode.datetime (fieldNode "k: 2020") [] (span 1 4 1 8) "Expected a DateTime, found the plain scalar \"2020\"."
+        expectError Decode.datetime (fieldNode "k: 5") [] (span 1 4 1 5) "Expected a DateTime, found the plain scalar \"5\"."
+        expectError Decode.datetime (fieldNode "k: 12:00") [] (span 1 4 1 9) "Expected a DateTime, found the plain scalar \"12:00\"."
+        expectError Decode.datetime (fieldNode "k: 2018-10-01T11:12") [] (span 1 4 1 20) "Expected a DateTime"
+
+    testCase "Decode.datetimeOffset reads the forms with a zone and gives the same instant on every target" <| fun _ ->
+        let instant = System.DateTimeOffset(2008, 1, 5, 5, 0, 0, System.TimeSpan.Zero)
+        for text in [ "2008-01-05T05:00:00Z"; "2008-01-05 05:00:00Z"; "2008-01-05T06:00:00+01:00"; "2008-01-05T00:00:00-05:00"
+                      "2008-01-05T05:00:00.0000000+00:00"; "2008-01-05T19:00:00+14:00"; "2008-01-05T05:00:00.5Z" ] do
+            let expected = if text.EndsWith(".5Z") then instant.AddMilliseconds(500.0) else instant
+            Expect.isTrue (Decode.datetimeOffset (sc text) = expected) (sprintf "The instant of %s" text)
+
+    testCase "Decode.datetimeOffset rejects a text without a zone and every other text on every target" <| fun _ ->
+        for text in notTimestamps @ [ "2018-10-01"; "2018-10-01T11:12:55"; "2018-10-01 11:12:55.5"; "2018-10-01T11:12:55.123" ] do
+            expectError Decode.datetimeOffset (sc text) [] None "Expected a DateTimeOffset, found"
+        // The parse of .NET reads `2018-10-01` with the offset of the machine, and the parse of JavaScript reads the ints.
+        expectError Decode.datetimeOffset (fieldNode "k: 2018-10-01") [] (span 1 4 1 14) "Expected a DateTimeOffset, found the plain scalar \"2018-10-01\"."
+        expectError Decode.datetimeOffset (fieldNode "k: 1") [] (span 1 4 1 5) "Expected a DateTimeOffset, found the plain scalar \"1\"."
+        expectError Decode.datetimeOffset (fieldNode "k: 2020") [] (span 1 4 1 8) "Expected a DateTimeOffset, found the plain scalar \"2020\"."
+        expectError Decode.datetimeOffset (fieldNode "k: 12:00") [] (span 1 4 1 9) "Expected a DateTimeOffset, found the plain scalar \"12:00\"."
+        expectError Decode.datetimeOffset (fieldNode "k: 2018-10-01T11:12:55") [] (span 1 4 1 23) "Expected a DateTimeOffset"
 ]
 
 // -------------------------------------------------------------------------------------------------------------------
@@ -264,6 +333,22 @@ let private optionTests = testList "Decode.option" [
         Expect.equal (readOption "k: !!null ~\n") None "!!null ~ is null"
         Expect.equal (readOption "k: !foo null\n") (Some "null") "A local tag is not null"
         Expect.equal (readOption "k: ! null\n") (Some "null") "The non-specific tag is not null"
+
+    // yaml@2.6.1 reads `k: !!null foo`, `k: !!null "foo"` and `k: !!null 5` as the strings with the warning TAG_RESOLVE_FAILED, and `k: !!null ""` and
+    // `k: !!null ''` as null. The library takes the failed tag resolution as an error in every decoder, as `!!int foo` is one for an int.
+    testCase "an explicit !!null with a text that is no null is an error" <| fun _ ->
+        let message = "The tag !!null needs null, Null, NULL, ~ or an empty text, found \"foo\"."
+        let node = fieldNode "k: !!null foo"
+        expectError (Decode.option Decode.string) node [] (span 1 4 1 14) message
+        expectError Decode.string node [] (span 1 4 1 14) message
+        expectError Decode.int node [] (span 1 4 1 14) message
+        expectError (Decode.object (fun get -> get.Optional.Field "k" Decode.string)) (parseRoot "k: !!null foo\n") [ "k" ] (span 1 4 1 14) message
+        expectError (Decode.option Decode.string) (fieldNode "k: !!null \"foo\"") [] (span 1 4 1 16) "found \"foo\"."
+        expectError (Decode.option Decode.string) (fieldNode "k: !!null 5") [] (span 1 4 1 12) "found \"5\"."
+        // The null spellings and the empty text stay None, quoted or not.
+        for text in [ "k: !!null\n"; "k: !!null null\n"; "k: !!null ~\n"; "k: !!null Null\n"; "k: !!null NULL\n"; "k: !!null \"\"\n"; "k: !!null ''\n"; "k: !!null \"null\"\n" ] do
+            Expect.equal (readOption text) None (sprintf "%s is null" text)
+        Expect.equal (Decode.string (fieldNode "k: !!null \"\"")) "" "The string decoder reads the empty text"
 
     // yaml@2.6.1 reads `k:` followed by `- a` and `- b` as {"k":["a","b"]}, `k: [a, b]` as {"k":["a","b"]}, `k:` followed
     // by `  a: b` as {"k":{"a":"b"}}, `k: {}` as {"k":{}} and `k:` as {"k":null}. Only the null goes to None. The flow forms
@@ -450,6 +535,32 @@ let private mapTests = testList "Decode.map and Decode.dict" [
         Expect.equal (Decode.map Decode.string Decode.int (parseRoot "1: 1\n01: 2\n")) (Map [ "1", 1; "01", 2 ]) "1 and 01 differ as strings"
         let constructed = YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); YamlNode.entry (sc "a") (sc "2") ]
         expectError (Decode.map Decode.string Decode.int) constructed [] None "The key a occurs twice, at an earlier entry and at a later entry."
+
+    // yaml@2.6.1 rejects `~: 1` followed by `null: 2` with DUPLICATE_KEY. It reads `.nan: 1` followed by `.NaN: 2` as one key without an error. Here both pairs are
+    // duplicates on every target. The Dictionary of .NET rejects a null key and the Dictionary of Fable never finds a NaN again, so the index wraps the keys.
+    testCase "two null keys and two NaN keys are duplicates on every target" <| fun _ ->
+        let nullKey = Decode.option Decode.string
+        let nullKeys = parseRoot "~: 1\nnull: 2\n"
+        expectError (Decode.map nullKey Decode.int) nullKeys [] (span 2 1 2 5) "The key null occurs twice, at line 1, column 1 and at line 2, column 1."
+        let nanKeys = parseRoot ".nan: 1\n.NaN: 2\n"
+        let nanMessage = "The key .NaN occurs twice, at line 1, column 1 and at line 2, column 1."
+        expectError (Decode.map Decode.float Decode.int) nanKeys [] (span 2 1 2 5) nanMessage
+        expectError (Decode.dict Decode.float Decode.int) nanKeys [] (span 2 1 2 5) nanMessage
+        // The empty key of a missing key is a null key too.
+        expectError (Decode.map nullKey Decode.int) (parseRoot "? \n: 1\n~: 2\n") [] (span 3 1 3 2) "The key ~ occurs twice"
+        // One null key is a key in a map, and one NaN key is a key in a dictionary.
+        Expect.equal (Decode.map nullKey Decode.int (parseRoot "~: 1\na: 2\n")) (Map [ None, 1; Some "a", 2 ]) "One null key in a map"
+        let dictionary = Decode.dict Decode.float Decode.int (parseRoot ".nan: 1\n1.5: 2\n")
+        Expect.equal dictionary.Count 2 "One NaN key in a dictionary"
+        Expect.isTrue (dictionary |> Seq.exists (fun pair -> System.Double.IsNaN pair.Key && pair.Value = 1)) "The NaN key keeps its value"
+
+    // A .NET dictionary has no null key, so the decoder reports it on every target.
+    testCase "a dictionary rejects a key that decodes to null on every target" <| fun _ ->
+        let nullKey = Decode.option Decode.string
+        expectError (Decode.dict nullKey Decode.int) (parseRoot "~: 1\n") [] (span 1 1 1 2) "The key ~ decodes to null, which a dictionary cannot hold. Decode a map instead."
+        expectError (Decode.dict nullKey Decode.int) (parseRoot "a: 1\nnull: 2\n") [] (span 2 1 2 5) "The key null decodes to null"
+        let some = Decode.dict nullKey Decode.int (parseRoot "a: 1\nb: 2\n")
+        Expect.equal some.Count 2 "Keys that are not null still work"
 ]
 
 // -------------------------------------------------------------------------------------------------------------------
