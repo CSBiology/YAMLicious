@@ -425,7 +425,6 @@ type internal FlowFrame(isMap: bool, multi: bool, closeCol: int, itemsCol: int, 
     member val Current = Placeholders.entry with get, set
     /// The node of the item in progress in a flow sequence.
     member val Node = Placeholders.node with get, set
-    member val Explicit = false with get, set
     /// True when a line break stands behind the last token, so the next token starts a line.
     member val LineBroken = false with get, set
 
@@ -977,8 +976,9 @@ type internal Engine(options: WriterOptions) =
         flowStack.RemoveAt(flowStack.Count - 1)
 
     /// Writes the properties and the content of a node inside a flow collection. Returns true when the node is a
-    /// collection that pushed a frame, so the item is not complete yet.
-    member private this.FlowNode(node: YamlNode, frame: FlowFrame, emptyOk: bool, multiOk: bool, isKey: bool) : bool =
+    /// collection that pushed a frame, so the item is not complete yet. `beforeColon` is true for a key that a colon
+    /// follows. A plain key may then end with a colon, which the colon of the entry follows without a blank.
+    member private this.FlowNode(node: YamlNode, frame: FlowFrame, emptyOk: bool, multiOk: bool, beforeColon: bool) : bool =
         let propOnly = YamlNode.isPropertyOnly node
         let mutable rest = node.PropertyLayout
         while not rest.IsEmpty do
@@ -1013,7 +1013,7 @@ type internal Engine(options: WriterOptions) =
                     if YamlNode.isMissingValue node then
                         this.Fallback("", "an empty item of a flow sequence cannot stand plain.")
                     else
-                        this.PlanScalar(node, scalar, true, false, (multiOk && frame.Multi), false, (isKey && not frame.Explicit))
+                        this.PlanScalar(node, scalar, true, false, (multiOk && frame.Multi), false, beforeColon)
                 match plan.Shape with
                 | Shape.Line text -> out.Put text
                 | Shape.PlainLines -> this.WriteFoldedLines(scalar.Value, frame.ItemsCol, false)
@@ -1039,15 +1039,27 @@ type internal Engine(options: WriterOptions) =
             if isBlock then
                 this.Fail "A block collection cannot stand inside a flow collection, and the policy requires the stored style."
 
-    /// The comma behind a flow item, the comment of its last token and the line break.
-    member private this.FlowComplete(frame: FlowFrame, tail: YamlComment option) =
+    /// The node that ends the line of the item in progress: the node of a sequence item, the value of an entry, or the
+    /// key of an entry whose value is missing.
+    member private _.ItemTailNode(frame: FlowFrame) : YamlNode =
+        if frame.IsMap then
+            if YamlNode.isMissingValue frame.Current.Value then frame.Current.Key else frame.Current.Value
+        else
+            frame.Node
+
+    /// The comma behind a flow item, the comment of its last token and the line break. The last item has no comma,
+    /// unless it holds properties only and has a comment. The comment would stand behind the property then and read as
+    /// the comment of its line break (rules R1 and R6), so the comma goes in between.
+    member private this.FlowComplete(frame: FlowFrame) =
         frame.Phase <- FlowPhase.NextItem
         if frame.Multi then
+            let tailNode = this.ItemTailNode frame
+            let tail = this.TrailingOf tailNode
             let isLast = if frame.IsMap then frame.Entries.IsEmpty else frame.Items.IsEmpty
             if frame.LineBroken then
                 frame.LineBroken <- false
                 if not isLast then out.Spaces frame.ItemsCol
-            if not isLast then out.Put ","
+            if not isLast || (tail.IsSome && YamlNode.isPropertyOnly tailNode) then out.Put ","
             this.PutOptionalComment tail
             if not out.IsEmptyLine then out.EndLine()
 
@@ -1066,11 +1078,7 @@ type internal Engine(options: WriterOptions) =
                 out.Put ", "
             frame.Phase <- FlowPhase.ItemWritten
             let pushed = this.FlowNode(item.Node, frame, false, true, false)
-            if not pushed then this.FlowComplete(frame, this.TrailingOf item.Node)
-
-    /// True when the key of a flow mapping entry cannot stand without `?`: a collection that needs lines.
-    member private this.FlowKeyNeedsExplicit(entry: MappingEntry) : bool =
-        if this.IsCollection entry.Key && flowCounter < flowFlags.Count then flowFlags.[flowCounter] else false
+            if not pushed then this.FlowComplete frame
 
     member private this.FlowAfterKey(frame: FlowFrame) =
         let entry = frame.Current
@@ -1088,11 +1096,11 @@ type internal Engine(options: WriterOptions) =
                 frame.LineBroken <- false
                 out.Spaces frame.ItemsCol
             else
+                // A blank keeps the colon out of an alias name or of a property.
                 let spaceBefore =
-                    frame.Explicit
-                    || (match entry.Key.Kind with
-                        | YamlNodeKind.Alias _ -> true
-                        | _ -> YamlNode.isPropertyOnly entry.Key)
+                    match entry.Key.Kind with
+                    | YamlNodeKind.Alias _ -> true
+                    | _ -> YamlNode.isPropertyOnly entry.Key
                 if spaceBefore then out.Put " "
             out.Put ":"
             if valueMissing then
@@ -1111,8 +1119,7 @@ type internal Engine(options: WriterOptions) =
                     out.Spaces(frame.ItemsCol + indent)
                 pushed <- this.FlowNode(entry.Value, frame, true, true, false)
         frame.Phase <- FlowPhase.ItemWritten
-        if not pushed then
-            this.FlowComplete(frame, (if valueMissing then keyComment else this.TrailingOf entry.Value))
+        if not pushed then this.FlowComplete frame
 
     /// Starts the next entry of a flow mapping, or closes the mapping when no entry is left.
     member private this.NextFlowMapEntry(frame: FlowFrame) =
@@ -1127,33 +1134,26 @@ type internal Engine(options: WriterOptions) =
                 out.Spaces frame.ItemsCol
             elif frame.Index > 0 then
                 out.Put ", "
-            let needsExplicit = entry.Question.IsNone && this.FlowKeyNeedsExplicit entry
-            if needsExplicit && policy = StylePolicy.RequireStored then
-                this.Fail "The key is a flow collection over several lines, so it needs the stored style `?` that the entry lacks."
-            frame.Explicit <- entry.Question.IsSome || needsExplicit
-            if frame.Explicit then
+            // A key in a flow mapping may run over several lines, and so may a flow collection that is a key ([143] to [147]).
+            // Only the key of a block mapping and of a flow pair stands on one line.
+            if entry.Question.IsSome then
                 out.Put "?"
                 match entry.Question with
                 | Some (Separation.NewLine lineBreak) ->
                     this.EndLineWith lineBreak.Comment
                     this.WriteTrivia(lineBreak.Following, frame.ItemsCol + indent)
                     out.Spaces(frame.ItemsCol + indent)
-                | _ -> if not (YamlNode.isMissingValue entry.Key) then out.Put " "
+                | _ ->
+                    // [142] and [150] ask for a separation behind the question mark, even when the key is empty.
+                    out.Put " "
             frame.Phase <- FlowPhase.AfterKey
-            let pushed = this.FlowNode(entry.Key, frame, true, frame.Explicit, true)
+            let hasColon = entry.Colon.IsSome || not (YamlNode.isMissingValue entry.Value)
+            let pushed = this.FlowNode(entry.Key, frame, true, true, hasColon)
             if not pushed then this.FlowAfterKey frame
-
-    /// The comment that ends the line of the item in progress: the one of the node of a sequence item, of the value of
-    /// an entry, or of the key of an entry whose value is missing.
-    member private this.ItemTail(frame: FlowFrame) : YamlComment option =
-        if frame.IsMap then
-            if YamlNode.isMissingValue frame.Current.Value then this.TrailingOf frame.Current.Key else this.TrailingOf frame.Current.Value
-        else
-            this.TrailingOf frame.Node
 
     member private this.StepFlow(frame: FlowFrame) =
         match frame.Phase with
-        | FlowPhase.ItemWritten -> this.FlowComplete(frame, this.ItemTail frame)
+        | FlowPhase.ItemWritten -> this.FlowComplete frame
         | FlowPhase.AfterKey -> this.FlowAfterKey frame
         | FlowPhase.NextItem -> if frame.IsMap then this.NextFlowMapEntry frame else this.NextFlowSeqItem frame
 

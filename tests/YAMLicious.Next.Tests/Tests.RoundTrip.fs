@@ -286,6 +286,29 @@ let private flowInputs: string list = [
     "{a: {b: {c: {d: e}}}}\n"
     "[a, [b, [c]]]\n"
     "{a: [b, {c: [d]}]}\n"
+    // An empty explicit key needs a blank behind the question mark, also in front of a comma, a closer or a line break.
+    "{?\n}\n"
+    "{? }\n"
+    "{? , a}\n"
+    "{? : v}\n"
+    "{\n? explicit: entry,\nimplicit: entry,\n?\n}\n"
+    "!!map { ?\n , k1\n ,'it''s' :\n 12:45} # c4\n"
+    // The last item has properties only and a comment behind its comma.
+    "[ &a, # c5\n]\n"
+    "{a: &a, # c5\n}\n"
+    "{ &a , # c5\n}\n"
+    "[x, !!str , # c\n]\n"
+    // A key of a flow mapping runs over several lines, as a plain scalar, a quoted scalar or a flow collection.
+    "{a\n\nb}\n"
+    "{a\n\nb: 1}\n"
+    "{'a\n\nb': 1}\n"
+    "{[a, # c\n b]: d}\n"
+    "{[a, # c\n b]}\n"
+    "{{a, # c\n b}: d}\n"
+    // A plain key may end with a colon, and the colon of the entry follows it.
+    "{? x:: v}\n"
+    "{? k1 :: foo}\n"
+    "{x:: v}\n"
 ]
 
 let private roundTripList (name: string) (options: WriterOptions) =

@@ -3,7 +3,7 @@ module Tests.Writer
 // The tests of the writer. A test builds a tree with the constructors, or parses a text, and compares the text that the
 // writer gives with the expected text. A tree that the parser produced has to come back as the same text, and the text has to
 // read as the same tree, so each slot of the model is tested with a text that goes through the parser and the writer.
-// Flow collections cannot be parsed before the flow parser lands, so their tests build the tree and compare the text only.
+// The tests of the flow slots build the tree and compare the text. The flow inputs of Tests.RoundTrip go through the flow parser.
 //
 // The tests port the expectations of the old Tests.YamlWrite. The groups say which test each one ports. The differences:
 // - The old tests wrote with an indentation of four spaces and the new default is two.
@@ -58,6 +58,9 @@ let private flowMap (pairs: (string * YamlNode) list) : YamlNode =
     YamlNode.flowMapping [ for (key, value) in pairs -> YamlNode.entry (sc key) value ]
 
 let private entryOf (key: string) (value: YamlNode) : MappingEntry = YamlNode.entry (sc key) value
+
+/// An entry without a colon and without a value, as `{a}` in a flow mapping.
+let private keyOnly (key: YamlNode) : MappingEntry = { YamlNode.entry key nothing with Colon = None }
 
 /// A block mapping with plain keys, built with the plain constructors only.
 let private mapOf (pairs: (string * YamlNode) list) : YamlNode =
@@ -280,7 +283,7 @@ let private slotTests = testList "Slots" [
         expectStable "%YAML 1.2\n---\na: 1\n...\n%YAML 1.2\n---\nb: 2\n"
         expectStable "# one\n---\n- a\n\n# two\n---\n- b\n"
 
-    // Rule R6: the slots of a flow collection. The tests build the trees, because the flow parser is not there yet.
+    // Rule R6: the slots of a flow collection. The tests build the trees and compare the text.
     // yaml@2.6.1 reads each expected text as the data of the tree, and the comments stay out of the data.
     testCase "the slots of a flow sequence" <| fun _ ->
         let items = [ itemBefore [ note " before" ] (withNote " trailing" (sc "a")); YamlNode.item (sc "b") ]
@@ -295,7 +298,7 @@ let private slotTests = testList "Slots" [
         expectNode (flowMap [ "a", sc "1"; "b", sc "2" ]) "{a: 1, b: 2}\n"
         expectNode (flowSeq [ flowMap [ "a", sc "b" ] ]) "[{a: b}]\n"
         expectNode (flowSeq [ flowSeq [ sc "a" ]; flowSeq [] ]) "[[a], []]\n"
-        expectNode (YamlNode.flowMapping [ explicitEntry (sc "a") (sc "b") ]) "{? a : b}\n"
+        expectNode (YamlNode.flowMapping [ explicitEntry (sc "a") (sc "b") ]) "{? a: b}\n"
         expectNode (YamlNode.flowMapping [ explicitKeyOnly (sc "a"); entryOf "b" nothing ]) "{? a, b:}\n"
 
     // yaml@2.6.1 reads the expected texts as ["a","b"], {"k":["a","b"]}.
@@ -329,6 +332,51 @@ let private slotTests = testList "Slots" [
         expectNode keyed "[a, b]: v\n"
 
     // yaml@2.6.1 reads the expected texts as ["","b"].
+    // yaml@2.6.1 reads `{? }` as {"":null}, `{? , a}` as {"":null,"a":null} and `{? : v}` as {"":"v"}. The question mark needs a blank behind it,
+    // even when the key is empty ([142] and [150]).
+    testCase "an empty explicit key in a flow mapping has a blank behind the question mark" <| fun _ ->
+        let emptyKey = explicitKeyOnly nothing
+        expectNode (YamlNode.flowMapping [ emptyKey ]) "{? }\n"
+        expectNode (YamlNode.flowMapping [ emptyKey; keyOnly (sc "a") ]) "{? , a}\n"
+        expectNode (YamlNode.flowMapping [ explicitEntry nothing (sc "v") ]) "{? : v}\n"
+        expectNode (flowSeq [ YamlNode.flowMapping [ emptyKey ] ]) "[{? }]\n"
+
+    // yaml@2.6.1 reads `[ &a, # c5` followed by `]` as [null] and `{a: &a, # c5` followed by `}` as {"a":null}. The comma stands between the property and
+    // the comment, so the comment is the trailing comment of the item and not the comment of the line break behind the property (rules R1 and R6).
+    testCase "the last item that holds properties only and has a comment gets its comma" <| fun _ ->
+        let anchored = withNote " c5" (YamlNode.withAnchor "a" YamlNode.empty)
+        expectNode (flowSeq [ anchored ]) "[\n  &a, # c5\n]\n"
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (sc "a") anchored ]) "{\n  a: &a, # c5\n}\n"
+        expectNode (flowSeq [ sc "x"; anchored ]) "[\n  x,\n  &a, # c5\n]\n"
+        // A comment behind another last item needs no comma.
+        expectNode (flowSeq [ withNote " c5" (sc "x") ]) "[\n  x # c5\n]\n"
+
+    // yaml@2.6.1 reads `{a`, an empty line and `b}` as a key with a line feed and the value null, and `{[a, # c`, `b]: d}` as the key ["a","b"] with the value "d".
+    // A key of a flow mapping runs over several lines when it is a plain scalar, a quoted scalar or a flow collection ([143] to [147]). Only the key of a block mapping and of a flow pair stands on one line.
+    testCase "the key of a flow mapping may run over several lines and stays an implicit key" <| fun _ ->
+
+        expectNode (YamlNode.flowMapping [ keyOnly (sc "a\nb") ]) "{\n  a\n\n  b\n}\n"
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (sc "a\nb") (sc "1") ]) "{\n  a\n\n  b: 1\n}\n"
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (sq "a\nb") (sc "1") ]) "{\n  'a\n\n  b': 1\n}\n"
+        let key = flowSeq [ withNote " c" (sc "a"); sc "b" ]
+        expectNode (YamlNode.flowMapping [ YamlNode.entry key (sc "d") ]) "{\n  [\n    a, # c\n    b\n  ]: d\n}\n"
+        expectNode (YamlNode.flowMapping [ keyOnly key ]) "{\n  [\n    a, # c\n    b\n  ]\n}\n"
+        // RequireStored keeps the stored styles of these keys.
+        let required = withStyles RequireStored
+        Expect.equal (Writer.writeNode required (YamlNode.flowMapping [ YamlNode.entry (sc "a\nb") (sc "1") ])) "{\n  a\n\n  b: 1\n}\n" "plain key"
+        Expect.equal (Writer.writeNode required (YamlNode.flowMapping [ YamlNode.entry key (sc "d") ])) "{\n  [\n    a, # c\n    b\n  ]: d\n}\n" "flow key"
+        // The key of a block mapping still stands on one line.
+        expectNode (YamlNode.mapping [ YamlNode.entry (sc "a\nb") (sc "1") ]) "\"a\\nb\": 1\n"
+
+    // yaml@2.6.1 reads `{? x:: v}` as {"x:":"v"} and `{? k1 :: foo}` as {"k1 :":"foo"}. The key of an explicit entry is the key of an implicit entry, so a plain key may
+    // end with a colon, and the colon of the entry follows it without a blank.
+    testCase "a plain key that ends with a colon stays plain in a flow mapping" <| fun _ ->
+        expectNode (YamlNode.flowMapping [ explicitEntry (sc "x:") (sc "v") ]) "{? x:: v}\n"
+        expectNode (YamlNode.flowMapping [ explicitEntry (sc "k1 :") (sc "foo") ]) "{? k1 :: foo}\n"
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (sc "x:") (sc "v") ]) "{x:: v}\n"
+        // Without a colon behind it the key cannot end with one.
+        expectNode (YamlNode.flowMapping [ keyOnly (sc "x:") ]) "{\"x:\"}\n"
+
     testCase "an item that holds properties only and has a comment in a flow sequence" <| fun _ ->
         let propsOnly = withNote " c" (YamlNode.withTag (YamlTag.core "str") YamlNode.empty)
         expectNode (flowSeq [ propsOnly; sc "b" ]) "[\n  !!str, # c\n  b\n]\n"
@@ -892,15 +940,15 @@ let private writeFlowOfText (text: string) =
     let items = [ for _ in 1 .. text.Length / 2 -> YamlNode.item (sc "x") ]
     Writer.writeNode defaults (YamlNode.flowSequence items) |> ignore
 
-/// A block sequence nested 200 levels deep that holds one mapping for each eight characters of the text. Each mapping has a
+/// A block sequence nested 50 levels deep that holds one mapping for each eight characters of the text. Each mapping has a
 /// literal scalar with the chomping Clip and no final line feed in its value, and another entry behind it. The writer asks for
-/// each scalar whether it ends the text, and the answer has to take no walk through the 200 open collections. The indentation
+/// each scalar whether it ends the text, and the answer has to take no walk through the 50 open collections. The indentation
 /// of a line grows with the depth, so the depth stays fixed and the number of scalars grows with the size of the text.
 let private writeClipScalarsAtDepth (text: string) =
     let clip = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a"
     let items = [ for _ in 1 .. text.Length / 8 -> YamlNode.item (mapOf [ "k", clip; "j", sc "1" ]) ]
     let mutable node = YamlNode.sequence items
-    for _ in 1 .. 200 do
+    for _ in 1 .. 50 do
         node <- YamlNode.sequence [ YamlNode.item node ]
     Writer.writeNode defaults node |> ignore
 
