@@ -9,7 +9,10 @@ let all =
           Tests.Validate.Main
           Tests.Projection.Main
           Tests.Lexer.Main
-          Tests.Scalars.Main ]
+          Tests.Scalars.Main
+          Tests.Parser.Main
+          Tests.Comments.Main
+          Tests.Documents.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

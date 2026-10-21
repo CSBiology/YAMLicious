@@ -99,8 +99,9 @@ type internal Lexeme =
     | Tag of TagToken
     /// A scalar with its cooked value and style. A plain scalar may span lines. Its value is folded, and its
     /// span runs from its first to its last character. A block scalar carries the comment behind its
-    /// header. Its span ends with its last content line, and the lexer has consumed the empty lines
-    /// behind it.
+    /// header. Its span ends with its last content line. The empty lines behind a body with the chomping
+    /// Keep belong to the value, so the lexer has consumed them. Behind a body with the chomping Strip or
+    /// Clip they come as `BlankLine` lexemes (rule R5).
     | Scalar of YamlScalar
     /// A comment. `ownLine` is true when the comment is the first lexeme of its line.
     | Comment of comment: YamlComment * ownLine: bool

@@ -5,11 +5,120 @@ type Located<'T> =
     { Value: 'T
       Span: SourceSpan }
 
-/// A lexical or syntactic error. `Code` is a short stable label such as `unclosed-quote`, `Message` is the
-/// text for a person, and `Span` is the offending text. `Related` holds further ranges that explain the
-/// error, such as the quote that opened the scalar.
+/// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer and the
+/// others from the parser. `YamlErrorCode.name` gives each case a stable text, which the failure projection
+/// and the tests use.
+[<RequireQualifiedAccess>]
+type YamlErrorCode =
+    // The lexer.
+    | UnclosedQuote
+    | InvalidEscape
+    | MarkerInQuote
+    | QuotedIndent
+    | InvalidBlockHeader
+    | BlockIndent
+    | LeadingEmptyLine
+    | BlockScalarPosition
+    | GluedComment
+    | ReservedIndicator
+    | FlowDash
+    | UnopenedFlow
+    | FlowIndent
+    | MarkerInFlow
+    | TabIndentation
+    | ImplicitKeyLength
+    | ImplicitKeyMultiline
+    | InvalidTag
+    | InvalidDirective
+    | EmptyAnchor
+    | EmptyAlias
+    /// A byte order mark anywhere but at the start of a document prefix.
+    | InvalidCharacter
+    // The parser.
+    /// A line that is deeper than the open block collections allow, or shallower than the node it ends but
+    /// deeper than the collection around it.
+    | BadIndentation
+    /// A sequence entry among mapping entries, or a mapping entry among sequence entries, at one indentation.
+    | MixedCollections
+    /// A second node at the indentation of a collection, or text behind a node that has ended.
+    | UnexpectedContent
+    /// An implicit key without a `:` behind it.
+    | MissingColon
+    /// A block collection on the line of its key, as in `k: - a`, `k: ? a` and `k: a: b`.
+    | BlockCollectionOnKeyLine
+    /// A block collection on the line of a `---`, as in `--- k: v`.
+    | BlockCollectionOnMarkerLine
+    /// Properties on lines of their own in front of an entry of a collection that has started already.
+    | MisplacedProperties
+    | DuplicateTag
+    | DuplicateAnchor
+    | AliasWithProperties
+    | UndefinedAlias
+    | UndeclaredTagHandle
+    | EmptyVerbatimTag
+    | DuplicateYamlDirective
+    | DuplicateTagDirective
+    | DirectiveWithoutDocumentStart
+    /// A `%YAML` directive with a major version other than 1.
+    | UnsupportedYamlVersion
+    /// A tag or an anchor that touches the token behind it, as in `!!str"x"`.
+    | MissingSeparation
+    /// A flow collection. The parser reads block collections only so far.
+    | FlowNotSupportedYet
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module YamlErrorCode =
+
+    /// The stable text of a code, in lower case with hyphens, as in `unclosed-quote`.
+    let name (code: YamlErrorCode) : string =
+        match code with
+        | YamlErrorCode.UnclosedQuote -> "unclosed-quote"
+        | YamlErrorCode.InvalidEscape -> "invalid-escape"
+        | YamlErrorCode.MarkerInQuote -> "marker-in-quote"
+        | YamlErrorCode.QuotedIndent -> "quoted-indent"
+        | YamlErrorCode.InvalidBlockHeader -> "invalid-block-header"
+        | YamlErrorCode.BlockIndent -> "block-indent"
+        | YamlErrorCode.LeadingEmptyLine -> "leading-empty-line"
+        | YamlErrorCode.BlockScalarPosition -> "block-scalar-position"
+        | YamlErrorCode.GluedComment -> "glued-comment"
+        | YamlErrorCode.ReservedIndicator -> "reserved-indicator"
+        | YamlErrorCode.FlowDash -> "flow-dash"
+        | YamlErrorCode.UnopenedFlow -> "unopened-flow"
+        | YamlErrorCode.FlowIndent -> "flow-indent"
+        | YamlErrorCode.MarkerInFlow -> "marker-in-flow"
+        | YamlErrorCode.TabIndentation -> "tab-indentation"
+        | YamlErrorCode.ImplicitKeyLength -> "implicit-key-length"
+        | YamlErrorCode.ImplicitKeyMultiline -> "implicit-key-multiline"
+        | YamlErrorCode.InvalidTag -> "invalid-tag"
+        | YamlErrorCode.InvalidDirective -> "invalid-directive"
+        | YamlErrorCode.EmptyAnchor -> "empty-anchor"
+        | YamlErrorCode.EmptyAlias -> "empty-alias"
+        | YamlErrorCode.InvalidCharacter -> "invalid-character"
+        | YamlErrorCode.BadIndentation -> "bad-indentation"
+        | YamlErrorCode.MixedCollections -> "mixed-collections"
+        | YamlErrorCode.UnexpectedContent -> "unexpected-content"
+        | YamlErrorCode.MissingColon -> "missing-colon"
+        | YamlErrorCode.BlockCollectionOnKeyLine -> "block-collection-on-key-line"
+        | YamlErrorCode.BlockCollectionOnMarkerLine -> "block-collection-on-marker-line"
+        | YamlErrorCode.MisplacedProperties -> "misplaced-properties"
+        | YamlErrorCode.DuplicateTag -> "duplicate-tag"
+        | YamlErrorCode.DuplicateAnchor -> "duplicate-anchor"
+        | YamlErrorCode.AliasWithProperties -> "alias-with-properties"
+        | YamlErrorCode.UndefinedAlias -> "undefined-alias"
+        | YamlErrorCode.UndeclaredTagHandle -> "undeclared-tag-handle"
+        | YamlErrorCode.EmptyVerbatimTag -> "empty-verbatim-tag"
+        | YamlErrorCode.DuplicateYamlDirective -> "duplicate-yaml-directive"
+        | YamlErrorCode.DuplicateTagDirective -> "duplicate-tag-directive"
+        | YamlErrorCode.DirectiveWithoutDocumentStart -> "directive-without-document-start"
+        | YamlErrorCode.UnsupportedYamlVersion -> "unsupported-yaml-version"
+        | YamlErrorCode.MissingSeparation -> "missing-separation"
+        | YamlErrorCode.FlowNotSupportedYet -> "flow-not-supported-yet"
+
+/// A lexical or syntactic error. `Code` says what is wrong, `Message` is the text for a person with the line,
+/// and `Span` is the offending text. `Related` holds further ranges that explain the error, such as the
+/// quote that opened the scalar.
 type YamlError =
-    { Code: string
+    { Code: YamlErrorCode
       Message: string
       Span: SourceSpan
       Related: SourceSpan list }

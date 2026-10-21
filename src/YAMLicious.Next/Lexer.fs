@@ -134,7 +134,7 @@ module internal Lexer =
     /// over the line break, and the end of a span inside a CRLF would get column 0. Only a span from the
     /// start of one line to the start of a later one, such as the empty lines in front of a block scalar,
     /// covers whole lines.
-    let private fail (cursor: Cursor) (code: string) (message: string) (first: int) (finish: int) (related: SourceSpan list) : 'a =
+    let private fail (cursor: Cursor) (code: YamlErrorCode) (message: string) (first: int) (finish: int) (related: SourceSpan list) : 'a =
         let text = cursor.Text
         let limit = lineEnd text first
         let clipped = min finish text.Length
@@ -157,7 +157,7 @@ module internal Lexer =
         let start = cursor.MarkAt position
         raise (
             LexFailure
-                { Code = "invalid-character"
+                { Code = YamlErrorCode.InvalidCharacter
                   Message = "A byte order mark can only stand at the start of a document prefix."
                   Span = { Start = start; Finish = { Line = start.Line; Column = start.Column + 1 } }
                   Related = [] }
@@ -219,7 +219,7 @@ module internal Lexer =
                 if p + 2 < n && hexValue text.[p + 1] >= 0 && hexValue text.[p + 2] >= 0 then
                     p <- p + 3
                 else
-                    fail cursor "invalid-tag" "A `%` in a tag has to be followed by two hexadecimal digits." p (min n (p + 3)) []
+                    fail cursor YamlErrorCode.InvalidTag "A `%` in a tag has to be followed by two hexadecimal digits." p (min n (p + 3)) []
             else
                 scanning <- false
         p
@@ -233,20 +233,20 @@ module internal Lexer =
             while p < n && text.[p] <> '>' && not (isBlank text.[p]) && not (isBreak text.[p]) do
                 let length = uriCharLength text p
                 if length = 0 then
-                    fail cursor "invalid-tag" "A verbatim tag holds URI characters only, and a `%` has to be followed by two hexadecimal digits." p (if text.[p] = '%' then p + 3 else p + 1) []
+                    fail cursor YamlErrorCode.InvalidTag "A verbatim tag holds URI characters only, and a `%` has to be followed by two hexadecimal digits." p (if text.[p] = '%' then p + 3 else p + 1) []
                 p <- p + length
             if p >= n || text.[p] <> '>' then
-                fail cursor "invalid-tag" "A verbatim tag needs a closing `>`." q p []
+                fail cursor YamlErrorCode.InvalidTag "A verbatim tag needs a closing `>`." q p []
             if p = q + 2 then
-                fail cursor "invalid-tag" "A verbatim tag needs a name between the angle brackets." q (p + 1) []
+                fail cursor YamlErrorCode.InvalidTag "A verbatim tag needs a name between the angle brackets." q (p + 1) []
             // A hash glued to the tag cannot start a comment, and no plain scalar starts with one.
             if p + 1 < n && text.[p + 1] = '#' then
-                fail cursor "glued-comment" "A comment needs a space or a tab before the #." (p + 1) (p + 2) []
+                fail cursor YamlErrorCode.GluedComment "A comment needs a space or a tab before the #." (p + 1) (p + 2) []
             TagToken.Verbatim(copyRange text (q + 2) p), p + 1
         elif q + 1 < n && text.[q + 1] = '!' then
             let finish = tagSuffixEnd cursor (q + 2)
             if finish = q + 2 then
-                fail cursor "invalid-tag" "A tag needs a name behind its handle." q finish []
+                fail cursor YamlErrorCode.InvalidTag "A tag needs a name behind its handle." q finish []
             TagToken.Shorthand("!!", copyRange text (q + 2) finish), finish
         else
             let mutable w = q + 1
@@ -255,7 +255,7 @@ module internal Lexer =
             if w > q + 1 && w < n && text.[w] = '!' then
                 let finish = tagSuffixEnd cursor (w + 1)
                 if finish = w + 1 then
-                    fail cursor "invalid-tag" "A tag needs a name behind its handle." q finish []
+                    fail cursor YamlErrorCode.InvalidTag "A tag needs a name behind its handle." q finish []
                 TagToken.Shorthand(copyRange text q (w + 1), copyRange text (w + 1) finish), finish
             else
                 let finish = tagSuffixEnd cursor (q + 1)
@@ -308,12 +308,12 @@ module internal Lexer =
                 k <- w
         // The name follows the `%` right away ([82] and [84]).
         if starts.Count = 0 || starts.[0] > q + 1 then
-            fail cursor "invalid-directive" "A directive needs a name right behind the `%`." q (q + 1) []
+            fail cursor YamlErrorCode.InvalidDirective "A directive needs a name right behind the `%`." q (q + 1) []
         let directiveName = copyRange text starts.[0] ends.[0]
         let arguments = starts.Count - 1
         if directiveName = "YAML" then
             if arguments <> 1 then
-                fail cursor "invalid-directive" "The %YAML directive needs exactly one version." q finish []
+                fail cursor YamlErrorCode.InvalidDirective "The %YAML directive needs exactly one version." q finish []
             let first = starts.[1]
             let last = ends.[1]
             let mutable dot = first
@@ -322,11 +322,11 @@ module internal Lexer =
             let major = digitsValue text first dot
             let minor = digitsValue text (dot + 1) last
             if dot >= last || major < 0 || minor < 0 then
-                fail cursor "invalid-directive" "The version of the %YAML directive has the form 1.2." first last []
+                fail cursor YamlErrorCode.InvalidDirective "The version of the %YAML directive has the form 1.2." first last []
             DirectiveKind.YamlVersion(major, minor), finish
         elif directiveName = "TAG" then
             if arguments <> 2 then
-                fail cursor "invalid-directive" "The %TAG directive needs a handle and a prefix." q finish []
+                fail cursor YamlErrorCode.InvalidDirective "The %TAG directive needs a handle and a prefix." q finish []
             let handleFirst = starts.[1]
             let handleLast = ends.[1]
             // A handle is `!`, `!!` or `!word!`.
@@ -336,18 +336,18 @@ module internal Lexer =
                 for j in handleFirst + 1 .. handleLast - 2 do
                     if not (isWordChar text.[j]) then valid <- false
             if not valid then
-                fail cursor "invalid-directive" "A tag handle is `!`, `!!` or a word between two `!`." handleFirst handleLast []
+                fail cursor YamlErrorCode.InvalidDirective "A tag handle is `!`, `!!` or a word between two `!`." handleFirst handleLast []
             // The prefix is `!` and URI characters, or URI characters that start with no `!` and no flow indicator ([93] to [95]).
             let prefixFirst = starts.[2]
             let prefixLast = ends.[2]
             let firstChar = text.[prefixFirst]
             if firstChar = ',' || firstChar = '[' || firstChar = ']' then
-                fail cursor "invalid-directive" "A global tag prefix cannot start with a flow indicator." prefixFirst (prefixFirst + 1) []
+                fail cursor YamlErrorCode.InvalidDirective "A global tag prefix cannot start with a flow indicator." prefixFirst (prefixFirst + 1) []
             let mutable k = prefixFirst
             while k < prefixLast do
                 let length = uriCharLength text k
                 if length = 0 then
-                    fail cursor "invalid-directive" "A tag prefix holds URI characters only, and a `%` has to be followed by two hexadecimal digits." k (if text.[k] = '%' then k + 3 else k + 1) []
+                    fail cursor YamlErrorCode.InvalidDirective "A tag prefix holds URI characters only, and a `%` has to be followed by two hexadecimal digits." k (if text.[k] = '%' then k + 3 else k + 1) []
                 k <- k + length
             DirectiveKind.TagDirective(copyRange text handleFirst handleLast, copyRange text starts.[2] ends.[2]), finish
         else
@@ -491,13 +491,13 @@ module internal Lexer =
         let mutable result = -1
         while result < 0 do
             if markerAt text r then
-                fail cursor "marker-in-quote" "A document marker cannot stand inside a quoted scalar." r (r + 3) [ opening ]
+                fail cursor YamlErrorCode.MarkerInQuote "A document marker cannot stand inside a quoted scalar." r (r + 3) [ opening ]
             let s = skipBlanks text r
             if s >= n then
                 result <- s
             elif isBreak text.[s] then
                 if tabbedEmptyLine text r s ctx.ParentIndent then
-                    fail cursor "quoted-indent" "An empty line of a quoted scalar cannot hold a tab in front of the indentation of its parent." r s [ opening ]
+                    fail cursor YamlErrorCode.QuotedIndent "An empty line of a quoted scalar cannot hold a tab in front of the indentation of its parent." r s [ opening ]
                 empties <- empties + 1
                 r <- afterBreak text s
             else
@@ -505,7 +505,7 @@ module internal Lexer =
                 while text.[spaces] = ' ' do
                     spaces <- spaces + 1
                 if spaces - r <= ctx.ParentIndent then
-                    fail cursor "quoted-indent" "A line of a quoted scalar has to be indented deeper than its parent." s (s + 1) [ opening ]
+                    fail cursor YamlErrorCode.QuotedIndent "A line of a quoted scalar has to be indented deeper than its parent." s (s + 1) [ opening ]
                 result <- s
         empties, result
 
@@ -530,7 +530,7 @@ module internal Lexer =
         if p + 1 >= n then
             raise (
                 LexFailure
-                    { Code = "unclosed-quote"
+                    { Code = YamlErrorCode.UnclosedQuote
                       Message = sprintf "The quoted scalar that starts on line %d is not closed." opening.Start.Line
                       Span = opening
                       Related = [] }
@@ -558,13 +558,13 @@ module internal Lexer =
         | 'x' ->
             let value = readHex text (p + 2) 2
             if value < 0 then
-                fail cursor "invalid-escape" "The escape \\x needs two hexadecimal digits." p (min n (p + 4)) [ opening ]
+                fail cursor YamlErrorCode.InvalidEscape "The escape \\x needs two hexadecimal digits." p (min n (p + 4)) [ opening ]
             sb.Append(char value) |> ignore
             p + 4
         | 'u' ->
             let value = readHex text (p + 2) 4
             if value < 0 then
-                fail cursor "invalid-escape" "The escape \\u needs four hexadecimal digits." p (min n (p + 6)) [ opening ]
+                fail cursor YamlErrorCode.InvalidEscape "The escape \\u needs four hexadecimal digits." p (min n (p + 6)) [ opening ]
             // Two escapes that spell a surrogate pair are one code point on every target.
             let low = if value >= 0xD800 && value <= 0xDBFF && p + 11 < n && text.[p + 6] = '\\' && text.[p + 7] = 'u' then readHex text (p + 8) 4 else -1
             if low >= 0xDC00 && low <= 0xDFFF then
@@ -572,26 +572,26 @@ module internal Lexer =
                 p + 12
             elif value >= 0xD800 && value <= 0xDFFF then
                 // A lone surrogate is no character, and a Python string cannot hold it through a StringBuilder.
-                fail cursor "invalid-escape" "The escape \\u names a surrogate that no second escape completes to a character." p (p + 6) [ opening ]
+                fail cursor YamlErrorCode.InvalidEscape "The escape \\u names a surrogate that no second escape completes to a character." p (p + 6) [ opening ]
             else
                 sb.Append(char value) |> ignore
                 p + 6
         | 'U' ->
             let value = readHex text (p + 2) 8
             if value < 0 then
-                fail cursor "invalid-escape" "The escape \\U needs eight hexadecimal digits." p (min n (p + 10)) [ opening ]
+                fail cursor YamlErrorCode.InvalidEscape "The escape \\U needs eight hexadecimal digits." p (min n (p + 10)) [ opening ]
             if value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF) then
-                fail cursor "invalid-escape" "The escape \\U does not name a Unicode scalar value." p (p + 10) [ opening ]
+                fail cursor YamlErrorCode.InvalidEscape "The escape \\U does not name a Unicode scalar value." p (p + 10) [ opening ]
             appendCodePoint sb value
             p + 10
         | '\n' | '\r' ->
             if singleLine then
-                fail cursor "implicit-key-multiline" "An implicit key has to stay on one line." p (p + 2) []
+                fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." p (p + 2) []
             let empties, next = foldBreak ctx cursor opening (p + 1)
             appendLineFeeds sb empties
             next
         | _ ->
-            fail cursor "invalid-escape" "The backslash starts an escape that YAML does not define." p (p + 2) [ opening ]
+            fail cursor YamlErrorCode.InvalidEscape "The backslash starts an escape that YAML does not define." p (p + 2) [ opening ]
 
     /// Scans the quoted scalar whose opening quote stands at `q`. Returns the cooked value and the index of
     /// the closing quote.
@@ -612,7 +612,7 @@ module internal Lexer =
         let mutable closed = false
         while not closed do
             if p >= n then
-                fail cursor "unclosed-quote" (sprintf "The quoted scalar that starts on line %d is not closed." opening.Start.Line) q (q + 1) []
+                fail cursor YamlErrorCode.UnclosedQuote (sprintf "The quoted scalar that starts on line %d is not closed." opening.Start.Line) q (q + 1) []
             let c = text.[p]
             if c = quote then
                 if (not isDouble) && p + 1 < n && text.[p + 1] = '\'' then
@@ -637,7 +637,7 @@ module internal Lexer =
                     p <- r
             elif isBreak c then
                 if singleLine then
-                    fail cursor "implicit-key-multiline" "An implicit key has to stay on one line." q p []
+                    fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." q p []
                 appendRange sb text runStart p
                 let empties, next = foldBreak ctx cursor opening p
                 if empties = 0 then sb.Append(' ') |> ignore else appendLineFeeds sb empties
@@ -679,12 +679,12 @@ module internal Lexer =
             let c = text.[p]
             if c >= '1' && c <= '9' then
                 if digit <> 0 then
-                    fail cursor "invalid-block-header" "A block scalar header holds one indentation digit." p (p + 1) []
+                    fail cursor YamlErrorCode.InvalidBlockHeader "A block scalar header holds one indentation digit." p (p + 1) []
                 digit <- int c - int '0'
                 p <- p + 1
             elif c = '-' || c = '+' then
                 if chompingSet then
-                    fail cursor "invalid-block-header" "A block scalar header holds one chomping sign." p (p + 1) []
+                    fail cursor YamlErrorCode.InvalidBlockHeader "A block scalar header holds one chomping sign." p (p + 1) []
                 chompingSet <- true
                 chomping <- if c = '-' then ChompingMode.Strip else ChompingMode.Keep
                 p <- p + 1
@@ -697,7 +697,7 @@ module internal Lexer =
         if afterBlanks < n && not (isBreak text.[afterBlanks]) then
             if text.[afterBlanks] = '#' then
                 if afterBlanks = headerEnd then
-                    fail cursor "glued-comment" "A comment needs a space or a tab before the #." afterBlanks (afterBlanks + 1) []
+                    fail cursor YamlErrorCode.GluedComment "A comment needs a space or a tab before the #." afterBlanks (afterBlanks + 1) []
                 commentEnd <- lineEnd text afterBlanks
                 checkNoBom cursor afterBlanks commentEnd
                 headerLineEnd <- commentEnd
@@ -705,7 +705,7 @@ module internal Lexer =
                 let mutable bad = afterBlanks
                 while bad < n && not (isBlank text.[bad]) && not (isBreak text.[bad]) do
                     bad <- bad + 1
-                fail cursor "invalid-block-header" "A block scalar header allows only an indentation digit and a chomping sign behind the indicator." q bad []
+                fail cursor YamlErrorCode.InvalidBlockHeader "A block scalar header allows only an indentation digit and a chomping sign behind the indicator." q bad []
         let bodyStart = if headerLineEnd >= n then n else afterBreak text headerLineEnd
         // The marks come in the order of the text, because the tracker of the cursor only moves forward. A
         // scalar without content ends at its header in front of the comment, so that mark comes first.
@@ -745,7 +745,7 @@ module internal Lexer =
             if firstSpaces >= 0 && longestEmpty > indent then
                 fail
                     cursor
-                    "leading-empty-line"
+                    YamlErrorCode.LeadingEmptyLine
                     (sprintf "A line of spaces in front of the first content line of a block scalar has %d spaces, more than the %d spaces of the content." longestEmpty indent)
                     bodyStart
                     r
@@ -759,6 +759,9 @@ module internal Lexer =
         let mutable empties = 0
         let mutable previousMoreIndented = false
         let mutable lastContentEnd = headerEnd
+        // The start of the line behind the last content line. A clipped or stripped scalar ends there, and the
+        // empty lines behind it are trivia for the parser (rule R5).
+        let mutable afterContent = bodyStart
         let mutable reading = true
         while reading && r < n do
             let le = lineEnd text r
@@ -777,7 +780,7 @@ module internal Lexer =
                 if text.[spaces] <> '#' && not tabLine && spaces - r > ctx.ParentIndent then
                     fail
                         cursor
-                        "block-indent"
+                        YamlErrorCode.BlockIndent
                         "A line that is more indented than the node of a block scalar, but not enough to continue the scalar, is invalid."
                         spaces
                         (spaces + 1)
@@ -787,7 +790,7 @@ module internal Lexer =
                 // below the root, with or without a comment, because the trail comment takes spaces only. At the
                 // root it is an l-comment of the next document prefix ([211], [78], [202]).
                 if tabLine && ctx.ParentIndent >= 0 then
-                    fail cursor "block-indent" "A line of blanks with a tab, with or without a comment, cannot follow a block scalar below the root." spaces (spaces + 1) []
+                    fail cursor YamlErrorCode.BlockIndent "A line of blanks with a tab, with or without a comment, cannot follow a block scalar below the root." spaces (spaces + 1) []
                 reading <- false
             else
                 if onlySpaces && le - r <= indent then
@@ -812,6 +815,7 @@ module internal Lexer =
                     hasContent <- true
                     previousMoreIndented <- moreIndented
                     lastContentEnd <- le
+                    afterContent <- (if le >= n then n else afterBreak text le)
                     empties <- 0
                 r <- if le >= n then n else afterBreak text le
         // The line feed that ends the last content line and the empty lines behind it: none when stripped,
@@ -826,7 +830,7 @@ module internal Lexer =
         appendLineFeeds sb feeds
         // The scalar ends at its last content line, or at its header when it has no content.
         let finishMark = if hasContent then cursor.MarkAt lastContentEnd else headerMark
-        cursor.Index <- r
+        cursor.Index <- (if chomping = ChompingMode.Keep then r else afterContent)
         cursor.LineBegin <- true
         let style = if literal then BlockScalarStyle.Literal else BlockScalarStyle.Folded
         let indicator = if digit > 0 then Some digit else None
@@ -856,9 +860,9 @@ module internal Lexer =
             let mutable lineBegin = q
             while lineBegin > cursor.Origin && not (isBreak cursor.Text.[lineBegin - 1]) do
                 lineBegin <- lineBegin - 1
-            fail cursor "tab-indentation" "A tab cannot be part of the indentation of a line." lineBegin q []
+            fail cursor YamlErrorCode.TabIndentation "A tab cannot be part of the indentation of a line." lineBegin q []
         elif tab && cursor.AfterIndicator then
-            fail cursor "tab-indentation" "A tab cannot separate a block collection from the indicator in front of it." separation q []
+            fail cursor YamlErrorCode.TabIndentation "A tab cannot separate a block collection from the indicator in front of it." separation q []
 
     /// Scans the lexeme that starts at `q`, a character that is no blank, no line break and no comment.
     /// `separation` is the index where the blanks in front of it start, and `tab` tells whether they hold a tab.
@@ -873,7 +877,7 @@ module internal Lexer =
             located cursor start (q + 3) (if c = '-' then Lexeme.DocumentStart else Lexeme.DocumentEnd)
         elif c = '-' && (blankOrEnd text (q + 1) || (flow && isFlowIndicator text.[q + 1])) then
             if flow then
-                fail cursor "flow-dash" "Inside a flow collection a `-` needs a plain character behind it." q (q + 1) []
+                fail cursor YamlErrorCode.FlowDash "Inside a flow collection a `-` needs a plain character behind it." q (q + 1) []
             checkIndicatorTab cursor q tab separation
             single cursor q start Lexeme.BlockEntry
         elif c = '?' && blankOrEnd text (q + 1) then
@@ -881,13 +885,13 @@ module internal Lexer =
             single cursor q start Lexeme.ExplicitKey
         elif c = '?' && flow && isFlowIndicator text.[q + 1] then
             // [142] and [150] ask for s-separate behind the `?`, and a flow indicator cannot follow a `?` in a plain scalar.
-            fail cursor "reserved-indicator" "A `?` in front of a flow indicator starts no explicit key and no plain scalar." q (q + 1) []
+            fail cursor YamlErrorCode.ReservedIndicator "A `?` in front of a flow indicator starts no explicit key and no plain scalar." q (q + 1) []
         elif c = ':' && (blankOrEnd text (q + 1) || (flow && (isFlowIndicator text.[q + 1] || q = cursor.JsonLikeEnd))) then
             if not flow then checkIndicatorTab cursor q tab separation
             single cursor q start (Lexeme.Value(q = cursor.JsonLikeEnd))
         elif c = ',' then
             if not flow then
-                fail cursor "reserved-indicator" "A plain scalar cannot start with a `,`." q (q + 1) []
+                fail cursor YamlErrorCode.ReservedIndicator "A plain scalar cannot start with a `,`." q (q + 1) []
             single cursor q start Lexeme.FlowEntry
         elif c = '[' then
             single cursor q start Lexeme.FlowSequenceStart
@@ -895,19 +899,19 @@ module internal Lexer =
             single cursor q start Lexeme.FlowMappingStart
         elif c = ']' || c = '}' then
             if not flow then
-                fail cursor "unopened-flow" (sprintf "A `%c` closes no flow collection." c) q (q + 1) []
+                fail cursor YamlErrorCode.UnopenedFlow (sprintf "A `%c` closes no flow collection." c) q (q + 1) []
             cursor.JsonLikeEnd <- q + 1
             single cursor q start (if c = ']' then Lexeme.FlowSequenceEnd else Lexeme.FlowMappingEnd)
         elif c = '&' then
             let finish = nameEnd text (q + 1)
             if finish = q + 1 then
-                fail cursor "empty-anchor" "An anchor needs a name behind the `&`." q (q + 1) []
+                fail cursor YamlErrorCode.EmptyAnchor "An anchor needs a name behind the `&`." q (q + 1) []
             cursor.Index <- finish
             located cursor start finish (Lexeme.Anchor(copyRange text (q + 1) finish))
         elif c = '*' then
             let finish = nameEnd text (q + 1)
             if finish = q + 1 then
-                fail cursor "empty-alias" "An alias needs a name behind the `*`." q (q + 1) []
+                fail cursor YamlErrorCode.EmptyAlias "An alias needs a name behind the `*`." q (q + 1) []
             cursor.Index <- finish
             located cursor start finish (Lexeme.Alias(copyRange text (q + 1) finish))
         elif c = '!' then
@@ -916,7 +920,7 @@ module internal Lexer =
             located cursor start finish (Lexeme.Tag tag)
         elif c = '|' || c = '>' then
             if flow || ctx.Grammar = GrammarContext.BlockKey then
-                fail cursor "block-scalar-position" "A block scalar cannot start inside a flow collection or as an implicit key." q (q + 1) []
+                fail cursor YamlErrorCode.BlockScalarPosition "A block scalar cannot start inside a flow collection or as an implicit key." q (q + 1) []
             let scalar, finishMark = scanBlockScalar ctx cursor q
             { Value = Lexeme.Scalar scalar
               Span = { Start = start; Finish = finishMark } }
@@ -926,7 +930,7 @@ module internal Lexer =
             cursor.JsonLikeEnd <- closing + 1
             let finish = cursor.MarkAt(closing + 1)
             if (ctx.SimpleKey || isKeyGrammar ctx.Grammar) && finish.Column - start.Column > MaxKeyLength then
-                fail cursor "implicit-key-length" "An implicit key can have at most 1024 characters." q (closing + 1) []
+                fail cursor YamlErrorCode.ImplicitKeyLength "An implicit key can have at most 1024 characters." q (closing + 1) []
             let style = if c = '"' then ScalarStyle.DoubleQuoted else ScalarStyle.SingleQuoted
             { Value =
                 Lexeme.Scalar
@@ -940,14 +944,14 @@ module internal Lexer =
                 cursor.Index <- finish
                 located cursor start finish (Lexeme.Directive kind)
             else
-                fail cursor "reserved-indicator" "A plain scalar cannot start with a `%`." q (q + 1) []
+                fail cursor YamlErrorCode.ReservedIndicator "A plain scalar cannot start with a `%`." q (q + 1) []
         elif c = '@' || c = '`' then
-            fail cursor "reserved-indicator" (sprintf "A plain scalar cannot start with a `%c`." c) q (q + 1) []
+            fail cursor YamlErrorCode.ReservedIndicator (sprintf "A plain scalar cannot start with a `%c`." c) q (q + 1) []
         elif c = '#' then
             if q = cursor.JsonLikeEnd then
-                fail cursor "glued-comment" "A comment needs a space or a tab before the #." q (q + 1) []
+                fail cursor YamlErrorCode.GluedComment "A comment needs a space or a tab before the #." q (q + 1) []
             else
-                fail cursor "reserved-indicator" "A plain scalar cannot start with a `#`." q (q + 1) []
+                fail cursor YamlErrorCode.ReservedIndicator "A plain scalar cannot start with a `#`." q (q + 1) []
         elif c = byteOrderMark then
             failBom cursor q
         else
@@ -955,7 +959,7 @@ module internal Lexer =
             cursor.Index <- finish
             let finishMark = cursor.MarkAt finish
             if (ctx.SimpleKey || isKeyGrammar ctx.Grammar) && finishMark.Column - start.Column > MaxKeyLength then
-                fail cursor "implicit-key-length" "An implicit key can have at most 1024 characters." q finish []
+                fail cursor YamlErrorCode.ImplicitKeyLength "An implicit key can have at most 1024 characters." q finish []
             { Value =
                 Lexeme.Scalar
                     { Value = value
@@ -1010,14 +1014,14 @@ module internal Lexer =
         elif isFlowGrammar ctx.Grammar then
             let c = text.[q]
             if i = q && markerAt text i then
-                fail cursor "marker-in-flow" "A document marker cannot stand inside a flow collection." i (i + 3) []
+                fail cursor YamlErrorCode.MarkerInFlow "A document marker cannot stand inside a flow collection." i (i + 3) []
             let isCloser = c = ']' || c = '}'
             // [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines ask for ParentIndent + 1 spaces
             // in front of every line of a flow collection, the closer included. A closer at the column of the
             // owner is a deliberate exception: ruamel and yaml@2.6.1 accept `k: [` ... `]` and real CWL files
             // lay out `expressionLib` that way.
             if indent < ctx.ParentIndent || (indent = ctx.ParentIndent && not isCloser) then
-                fail cursor "flow-indent" "A line inside a flow collection has to be indented deeper than the node that owns the collection." i (q + 1) []
+                fail cursor YamlErrorCode.FlowIndent "A line inside a flow collection has to be indented deeper than the node that owns the collection." i (q + 1) []
             cursor.Index <- q
             cursor.LineBegin <- false
             cursor.SeparationHadTab <- false
@@ -1137,3 +1141,55 @@ module internal Lexer =
             Ok lexeme
         with LexFailure error ->
             Error error
+
+    /// True when the next lexeme is a block entry, a `-` followed by a blank or the end of the line. Call it
+    /// right behind a `LineStart`, where the cursor stands on the first character of the content. The parser
+    /// needs it to tell an indentless sequence from the end of a value without lexing the line twice.
+    let nextIsBlockEntry (cursor: Cursor) : bool =
+        cursor.Index < cursor.Length
+        && cursor.Text.[cursor.Index] = '-'
+        && blankOrEnd cursor.Text (cursor.Index + 1)
+
+    /// The text of a tag suffix with its `%XX` escapes decoded as UTF-8, or None when the escaped bytes are no
+    /// UTF-8 text. The lexer has checked that two hexadecimal digits follow every `%`.
+    let decodeTagEscapes (text: string) : string option =
+        if text.IndexOf('%') < 0 then
+            Some text
+        else
+            let sb = StringBuilder()
+            let mutable valid = true
+            let mutable i = 0
+            let byteAt (index: int) = hexValue text.[index + 1] * 16 + hexValue text.[index + 2]
+            while valid && i < text.Length do
+                if text.[i] <> '%' then
+                    sb.Append(text.[i]) |> ignore
+                    i <- i + 1
+                else
+                    let lead = byteAt i
+                    let extra =
+                        if lead < 0x80 then 0
+                        elif lead >= 0xC2 && lead <= 0xDF then 1
+                        elif lead >= 0xE0 && lead <= 0xEF then 2
+                        elif lead >= 0xF0 && lead <= 0xF4 then 3
+                        else -1
+                    if extra < 0 || i + 3 * (extra + 1) > text.Length then
+                        valid <- false
+                    else
+                        let mutable codePoint =
+                            if extra = 0 then lead
+                            elif extra = 1 then lead &&& 0x1F
+                            elif extra = 2 then lead &&& 0x0F
+                            else lead &&& 0x07
+                        for k in 1 .. extra do
+                            let at = i + 3 * k
+                            if text.[at] <> '%' then
+                                valid <- false
+                            else
+                                let next = byteAt at
+                                if next &&& 0xC0 <> 0x80 then valid <- false
+                                codePoint <- (codePoint <<< 6) ||| (next &&& 0x3F)
+                        let overlong = (extra = 2 && codePoint < 0x800) || (extra = 3 && codePoint < 0x10000)
+                        if overlong || codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF) then valid <- false
+                        if valid then appendCodePoint sb codePoint
+                        i <- i + 3 * (extra + 1)
+            if valid then Some(sb.ToString()) else None

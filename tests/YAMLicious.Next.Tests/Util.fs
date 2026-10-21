@@ -12,6 +12,11 @@ module Expect =
         if not (YamlNode.equalIgnoringSpans actual expected) then
             failwith (message + "\nActual:\n" + YamlNode.show actual + "Expected:\n" + YamlNode.show expected)
 
+    /// Fails with the printouts of both streams when they differ.
+    let streamEqual (actual: YamlStream) (expected: YamlStream) (message: string) =
+        if not (YamlStream.equalIgnoringSpans actual expected) then
+            failwith (message + "\nActual:\n" + YamlStream.show actual + "Expected:\n" + YamlStream.show expected)
+
     /// Fails with the printout of the tree when the two trees are equal.
     let nodeNotEqual (actual: YamlNode) (expected: YamlNode) (message: string) =
         if YamlNode.equalIgnoringSpans actual expected then

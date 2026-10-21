@@ -647,6 +647,11 @@ module Projection =
     /// them as it gets them.
     let failure (errors: (string * int) list) : string = "{" + failureFields errors + "}"
 
+    /// The failure projection of one error from the lexer or the parser: the stable text of its code and the
+    /// line where the error starts.
+    let failureOf (error: YamlError) : string =
+        failure [ (YamlErrorCode.name error.Code, error.Span.Start.Line) ]
+
     /// One line of a corpus run, in the format of the files in m0/ref and m0/old, without a line break:
     /// `{"set":S,"id":I,"sha256":H, ...}`. An accepted stream adds the fields of `data` and a `presentation`
     /// member. A rejected one adds the fields of `failure`.

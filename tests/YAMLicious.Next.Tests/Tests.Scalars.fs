@@ -577,7 +577,7 @@ let private blockTests = testList "Block scalars" [
     // Tests.BlockScalars "A trailing comment between two levels joins the outer level of a scalar item". yaml@2.6.1: {"k":["x\n"]} and {"k":[""]}
     testCase "a scalar item and a scalar with an indicator and no content are followed by their comment" <| fun _ ->
         expectLexemes "k:\n    - |\n      x\n  # note\n" [ "plain:k"; ":"; "-"; "literal:x\\n"; "#own: note" ]
-        expectLexemes "k:\n    - |4-\n\n  # note\n" [ "plain:k"; ":"; "-"; "literal-4:"; "#own: note" ]
+        expectLexemes "k:\n    - |4-\n\n  # note\n" [ "plain:k"; ":"; "-"; "literal-4:"; "blank"; "#own: note" ]
 
     // Tests.BlockScalars "A comment before a scalar header precedes the key", "A comment after a scalar body belongs to the next sibling or to the
     // dedented node". yaml@2.6.1: {"a":"x\n"}, {"top":{"k":1,"s":"body\n"}}, {"a":{"s":"body\n","t":1}} and {"a":{"s":"body\n"},"b":1}
@@ -725,6 +725,25 @@ let private lineBreakTests = testList "Line breaks in scalars" [
         expectScalars "k: |+\n  a\n  " [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Keep None "a\n" ]
         // A line of spaces beyond the indentation is content, and it ends the input here.
         expectScalars "k: |\n  a\n    " [ pl "k"; lit "a\n  " ]
+
+    // YAML 1.2.2 l-empty: a line with at least as many spaces as the scalar is indented, or a line of fewer spaces and nothing else, is an empty line inside a scalar. A tab behind
+    // too few spaces makes the line something else. yaml@2.6.1 rejects `k: two`, a blank line, ` words`, a tab-only line and ` here` with BAD_INDENT.
+    testCase "a line of a tab behind too few spaces is no empty line inside a scalar" <| fun _ ->
+        // Enough spaces in front of the tab: the line is empty.
+        expectScalars "k: a\n  \t\n   b" [ pl "k"; pl "a\nb" ]
+        expectScalars "k: 'a\n  \t\n   b'" [ pl "k"; sq "a\nb" ]
+        // Too few spaces: the plain scalar ends in front of the line, and the quoted scalar is an error.
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "a\n\t\n b") [ "plain:a"; "blank"; "plain:b" ] "The plain scalar ends"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"a\n\t\n b\"") [ "error:quoted-indent" ] "The quoted scalar is invalid"
+        // At the root every line is deep enough.
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\t\n b") [ "plain:a\\nb" ] "A root scalar"
+
+    // Rule R5 of the model: a blank line behind the body of a clipped or stripped block scalar is trivia, so the lexer leaves it to the next lexeme. Behind a kept body it is content.
+    testCase "the empty lines behind a clipped or stripped body come as blank line lexemes" <| fun _ ->
+        expectLexemes "k: |\n  x\n\nj: 1" [ "plain:k"; ":"; "literal:x\\n"; "blank"; "plain:j"; ":"; "plain:1" ]
+        expectLexemes "k: >-\n  x\n\n\nj: 1" [ "plain:k"; ":"; "folded-:x"; "blank"; "blank"; "plain:j"; ":"; "plain:1" ]
+        expectLexemes "k: |+\n  x\n\nj: 1" [ "plain:k"; ":"; "literal+:x\\n\\n"; "plain:j"; ":"; "plain:1" ]
+        expectLexemes "k: |\n\n\nj: 1" [ "plain:k"; ":"; "literal:"; "blank"; "blank"; "plain:j"; ":"; "plain:1" ]
 ]
 
 let private flowScalarTests = testList "Scalars in flow collections" [

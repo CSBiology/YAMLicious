@@ -591,7 +591,7 @@ let private positionTests = testList "Lexer positions" [
         Expect.equal (lexSpans "k:\n  a\n  b") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "plain:a b 2:3-3:4" ] "Plain"
         Expect.equal (lexSpans "\"a\n b\"") [ "double:a b 1:1-2:4" ] "Double-quoted"
         Expect.equal (lexSpans "k: |\n  a\n  b\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal:a\\nb\\n 1:4-3:4"; "plain:j 4:1-4:2"; ": 4:2-4:3"; "plain:1 4:4-4:5" ] "Block"
-        Expect.equal (lexSpans "k: |\n\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal: 1:4-1:5"; "plain:j 3:1-3:2"; ": 3:2-3:3"; "plain:1 3:4-3:5" ] "A block scalar without content ends at its header"
+        Expect.equal (lexSpans "k: |\n\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal: 1:4-1:5"; "blank 2:1-2:1"; "plain:j 3:1-3:2"; ": 3:2-3:3"; "plain:1 3:4-3:5" ] "A block scalar without content ends at its header and leaves the empty line to the parser"
         Expect.equal (lexSpans "k: | # c\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "literal: 1:4-1:5"; "plain:j 2:1-2:2"; ": 2:2-2:3"; "plain:1 2:4-2:5" ] "A header comment is no part of the span"
         Expect.equal (lexSpans "k: >- # c\n  a\nj: 1") [ "plain:k 1:1-1:2"; ": 1:2-1:3"; "folded-:a 1:4-2:4"; "plain:j 3:1-3:2"; ": 3:2-3:3"; "plain:1 3:4-3:5" ] "Nor is it with content"
 
@@ -765,6 +765,41 @@ let private errorTests = testList "Lexer errors" [
 ]
 
 let private apiTests = testList "Lexer API" [
+    // YAML 1.2.2, example 6.26: the tag !e!tag%21 with the prefix tag:example.com,2000:app/ is the tag tag:example.com,2000:app/tag!. The % escapes of a suffix are UTF-8 bytes.
+    testCase "the escapes of a tag suffix decode as UTF-8" <| fun _ ->
+        Expect.equal (Lexer.decodeTagEscapes "tag%21") (Some "tag!") "An ASCII escape"
+        Expect.equal (Lexer.decodeTagEscapes "plain") (Some "plain") "No escape"
+        Expect.equal (Lexer.decodeTagEscapes "%C3%A9") (Some "é") "Two bytes"
+        Expect.equal (Lexer.decodeTagEscapes "a%E2%82%ACb") (Some "a€b") "Three bytes"
+        Expect.equal (Lexer.decodeTagEscapes "%F0%9F%98%80") (Some "\U0001F600") "Four bytes, a character beyond the BMP"
+        Expect.equal (Lexer.decodeTagEscapes "%7e%7E") (Some "~~") "Lower case and upper case digits"
+        // Bytes that spell no UTF-8 text: a lone continuation byte, a cut-off sequence, an overlong sequence, a surrogate and a byte that never starts a sequence.
+        for bad in [ "%80"; "%C3"; "%C3%28"; "%E0%80%80"; "%ED%A0%80"; "%FF"; "%F4%90%80%80" ] do
+            Expect.equal (Lexer.decodeTagEscapes bad) None (sprintf "%s is no UTF-8 text" bad)
+
+    // The parser asks whether a dash follows the indentation of a line before it decides that the value of a key has ended.
+    testCase "a block entry ahead is a dash followed by a blank or the end" <| fun _ ->
+        let aheadOf (text: string) =
+            let cursor = Cursor(text)
+            let context = { Grammar = GrammarContext.BlockOut; ParentIndent = -1; SimpleKey = false }
+            let mutable finished = false
+            // Read up to the first line start, where the cursor stands on the first character of the content.
+            while not finished do
+                match Lexer.next context cursor with
+                | Ok lexeme ->
+                    match lexeme.Value with
+                    | Lexeme.LineStart _ -> finished <- true
+                    | Lexeme.StreamEnd -> finished <- true
+                    | _ -> ()
+                | Error failure -> failwith (describeError failure)
+            Lexer.nextIsBlockEntry cursor
+        Expect.isTrue (aheadOf "- a") "A dash and a blank"
+        Expect.isTrue (aheadOf "  -") "A dash at the end"
+        Expect.isTrue (aheadOf "-\n") "A dash and a line break"
+        Expect.isFalse (aheadOf "-a") "A dash and a letter"
+        Expect.isFalse (aheadOf "--- a") "A document start marker"
+        Expect.isFalse (aheadOf "a: -") "A key"
+
     testCase "a snapshot restores the cursor to the lexeme that follows it" <| fun _ ->
         let cursor = Cursor("k: [a, \"b c\"] # c\nj: |\n  x\n")
         let context = { Grammar = GrammarContext.BlockOut; ParentIndent = -1; SimpleKey = false }
@@ -793,24 +828,12 @@ let private apiTests = testList "Lexer API" [
     testCase "the error of a call carries a code, a message and a span" <| fun _ ->
         match errorOfInput "a: 'x" with
         | Some failure ->
-            Expect.equal failure.Code "unclosed-quote" "code"
+            Expect.equal (YamlErrorCode.name failure.Code) "unclosed-quote" "code"
             Expect.isTrue (failure.Message.Length > 0) "message"
             Expect.equal (showSpan failure.Span) "1:4-1:5" "span"
             Expect.equal failure.Related [] "related"
         | None -> failwith "The input is invalid"
 ]
-
-/// The reference of the scaling tests, a single pass over the characters of the input. The count goes to
-/// a cell that outlives the call, so the compiler cannot drop the loop.
-let private lineBreakCount = ref 0
-
-let private countLineBreaks (input: string) =
-    let mutable count = 0
-    let mutable i = 0
-    while i < input.Length do
-        if input.[i] = '\n' then count <- count + 1
-        i <- i + 1
-    lineBreakCount.Value <- count
 
 /// One plain scalar over the given number of lines.
 let private plainScalarInput (lines: int) =

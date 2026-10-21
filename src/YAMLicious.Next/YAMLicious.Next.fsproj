@@ -23,6 +23,7 @@
     <Compile Include="Source.fs" />
     <Compile Include="Lexeme.fs" />
     <Compile Include="Lexer.fs" />
+    <Compile Include="Parser.fs" />
     <Compile Include="Validate.fs" />
     <Compile Include="Projection.fs" />
   </ItemGroup>

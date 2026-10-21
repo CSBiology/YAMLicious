@@ -130,6 +130,8 @@ type TagName =
 /// An explicit tag. The non-specific tag `!` is always `NonSpecific`. A `Named` tag never has an empty
 /// suffix: the parser does not produce `Named { Prefix = "!"; Suffix = "" }`, and `YamlTag.local` and
 /// `YamlTag.core` reject an empty suffix. Two tags are the same tag exactly when their identifiers are equal.
+/// A verbatim tag `!<uri>` is a `Named` tag with the empty prefix and the URI as its suffix, because no
+/// handle binds a prefix to it.
 [<RequireQualifiedAccess>]
 type YamlTag =
     /// The non-specific tag `!`.
@@ -177,10 +179,12 @@ type YamlScalar =
 /// document ends at the end of the stream or in front of a `...`. In front of a `---` or a directive the run
 /// goes to the `Prelude` of the next document (rule R3). Each split comment goes to the `End` of the
 /// deepest open block collection whose entries stand at a column less than or equal to the column of the
-/// comment, and to the `End` of the root collection when no deeper collection qualifies. A blank line goes
-/// with the comment that follows it. A blank line behind the last comment goes to the same `End` as that
-/// comment, or to the `End` of the root collection when no comment follows. A block collection has no
-/// closing token, so `End` is the only place for the trivia behind it.
+/// comment, and to the `End` of the root collection when no deeper collection qualifies. A comment goes to
+/// no deeper `End` than the comment before it in the same run, so the comments keep the order of the text
+/// when the writer prints the `End` of the inner collection first. A blank line goes with the comment that
+/// follows it. A blank line behind the last comment goes to the same `End` as that comment, or to the `End`
+/// of the root collection when no comment follows. A block collection has no closing token, so `End` is
+/// the only place for the trivia behind it.
 ///
 /// Rule R6 (flow collection). A comment behind the opener on its line is the `OpeningComment`. A comment on
 /// the same line behind an item or an entry and its comma is the trailing comment of the node of the item,
@@ -337,7 +341,8 @@ type StreamPart =
 /// A stream of documents. It may hold no document.
 ///
 /// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds trivia that stand behind a `...`
-/// and in front of no document. That includes the trivia between a `...` and an `ExtraEndMarker`. A `...`
+/// and in front of no document. That includes the trivia between a `...` and an `ExtraEndMarker` and the trivia in
+/// front of an `ExtraEndMarker` that no document precedes, as in `# c` followed by `...` and a document. A `...`
 /// is the end marker of a document part or an `ExtraEndMarker` part. When the stream has no document,
 /// `StreamPart.Trivia` holds the whole input. Trivia behind a `...` and in front of a following document go
 /// to that document, to its `Prelude` when it has directives or a `---` and otherwise by the rule on
