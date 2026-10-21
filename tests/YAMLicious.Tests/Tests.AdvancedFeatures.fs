@@ -171,42 +171,24 @@ rbi:
         let actual = Reader.read yaml
         Expect.equal actual expected "Explicit quoted keys should restore placeholder content and preserve style"
 
+    // yaml@2.6.1 reads this as {"[ Detroit Tigers, Chicago cubs ]":["2001-07-23"]}, a key that it makes from the
+    // sequence. The rejection is deliberate, because YAMLicious keeps only scalar keys.
     testCase "5.1.2 Sequence as mapping key" <| fun _ ->
         let yaml = """? - Detroit Tigers
   - Chicago cubs
 : - 2001-07-23"""
-        let actual = Reader.read yaml
-        let expectedKey = "- Detroit Tigers\n- Chicago cubs"
-        // Since we flatten complex keys to string for now:
-        let expected = YAMLElement.Object [
-            YAMLElement.Mapping(
-                 YAMLContent.create(expectedKey),
-                 YAMLElement.Object [YAMLElement.Sequence [YAMLElement.Object [YAMLElement.Value(YAMLContent.create("2001-07-23"))]]]
-            )
-        ]
-        Expect.equal actual expected "Complex key (sequence) should be flattened string"
+        let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        Expect.stringContains message "cannot be the key of an entry, because YAMLicious keeps only scalar keys" "A sequence cannot be the key"
 
+    // yaml@2.6.1: {"[ New York Yankees, Atlanta Braves ]":["2001-07-02","2001-08-12","2001-08-14"]}. It makes the key
+    // from the flow sequence. The rejection is deliberate, because YAMLicious keeps only scalar keys.
     testCase "5.1.3 Nested mapping as key" <| fun _ ->
-        // yaml@2.6.1: {"[ New York Yankees, Atlanta Braves ]":["2001-07-02","2001-08-12","2001-08-14"]}
         let yaml = """? [ New York Yankees,
     Atlanta Braves ]
 : [ 2001-07-02, 2001-08-12,
     2001-08-14 ]"""
-        let actual = Reader.read yaml
-        let expectedKey = "[ New York Yankees, Atlanta Braves ]"
-        let expected = YAMLElement.Object [
-            YAMLElement.Mapping(
-                 YAMLContent.create(expectedKey),
-                 YAMLElement.Object [
-                     YAMLElement.Sequence [
-                         YAMLElement.Object[YAMLElement.Value(YAMLContent.create("2001-07-02"))]
-                         YAMLElement.Object[YAMLElement.Value(YAMLContent.create("2001-08-12"))]
-                         YAMLElement.Object[YAMLElement.Value(YAMLContent.create("2001-08-14"))]
-                     ]
-                 ]
-            )
-        ]
-        Expect.equal actual expected "Nested mapping key should be flattened string"
+        let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        Expect.stringContains message "cannot be the key of an entry, because YAMLicious keeps only scalar keys" "A flow sequence cannot be the key"
 
     testCase "An explicit value reads the strings and comments of its own document" <| fun _ ->
         // yaml@2.6.1: {"k":"q","a":"x"}, {"a":1,"b":"c","d":2} and {"a":"b"}
@@ -288,11 +270,11 @@ rbi:
 
     testCase "An explicit key on several lines and a multiline explicit value read from the document" <| fun _ ->
         // yaml@2.6.1: {"k":"q","a b":"x"} for the first two inputs and {"k":"q","a":"c d"} for the last one.
-        // The reader keeps the line break of a plain scalar on several lines and gives it the plain style.
+        // The reader folds the key. It keeps the line break of a value over several lines and gives it the plain style.
         let expected =
             YAMLElement.Object [
                 scalarEntry (YAMLContent.create "k") (doubleQuoted "q")
-                scalarEntry (YAMLContent.create("a\nb", style=ScalarStyle.Plain)) (doubleQuoted "x")
+                scalarEntry (YAMLContent.create "a b") (doubleQuoted "x")
             ]
         Expect.equal (Reader.read "k: \"q\"\n? a\n  b\n: \"x\"") expected "The key continues on the next line"
         Expect.equal (Reader.read "k: \"q\"\n?\n  a\n  b\n: \"x\"") expected "The key starts on the next line"

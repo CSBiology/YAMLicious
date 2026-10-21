@@ -138,7 +138,8 @@ let (|ExplicitKey|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let line = trimForPattern s
-        if line.StartsWith("?") then
+        // The indicator needs a blank or the end of the line behind it. Text such as `?a: b` is a plain key.
+        if line.StartsWith("?") && (line.Length = 1 || line.[1] = ' ' || line.[1] = '\t') then
             let value = line.Substring(1).Trim()
             Some (if value = "" then None else Some value)
         else

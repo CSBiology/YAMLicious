@@ -1572,8 +1572,8 @@ let private readerTests = testList "Reader on scanner output" [
         Expect.equal (Reader.read "k: a\n  b #c") expected "the value and its comment"
 
     testCase "a plain scalar can be the explicit key or the explicit value" <| fun _ ->
-        // yaml@2.6.1: {"a b":"c"} and {"key":"a b"}. Decode does not fold the line break of a key.
-        let key = YAMLContent.create("a\nb", style = ScalarStyle.Plain)
+        // yaml@2.6.1: {"a b":"c"} and {"key":"a b"}. The Reader folds the key, which has no Decode step.
+        let key = YAMLContent.create "a b"
         Expect.equal (Reader.read "? a\n  b\n: c") (YAMLElement.Object [ YAMLElement.Mapping(key, plainNode "c") ]) "the key"
         Expect.equal (Reader.read "? key\n: a\n  b" |> Decode.object (fun get -> get.Required.Field "key" Decode.string)) "a b" "the value"
 

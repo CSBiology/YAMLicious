@@ -14,9 +14,9 @@ let CommentPattern =
 
 let AnchorPattern =
     #if FABLE_COMPILER_PYTHON
-    "&(?P<anchor>[^\\s\\[\\]{},:]+)"
+    "&(?P<anchor>[^\\s\\[\\]{},]+)"
     #else
-    "&(?<anchor>[^\\s\\[\\]{},:]+)"
+    "&(?<anchor>[^\\s\\[\\]{},]+)"
     #endif
 
 let AliasPattern =
@@ -35,9 +35,9 @@ let VerbatimTagPattern =
 
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s*({CommentPattern})?$"
+    $"^(?P<key>(?:[!&]\S*\s+)+|(?:[!&]\S*\s+)*[^!&\s\{{\[](?:(?!:(?:\s|$)).)*?):\s*({CommentPattern})?$"
     #else
-    $"^(?<key>(?:[!&]\S*\s+)*[^!&\s\\{{\\[].*?):\s*({CommentPattern})?$"
+    $"^(?<key>(?:[!&]\S*\s+)+|(?:[!&]\S*\s+)*[^!&\s\\{{\\[](?:(?!:(?:\s|$)).)*?):\s*({CommentPattern})?$"
     #endif
 
 let ExplicitKeyPattern = "^\\?\\s*$"
@@ -49,9 +49,9 @@ let ExplicitValuePattern = "^:\\s*(.*)$"
 [<Literal>]
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s+(?P<value>.*)$"
+    "^(?P<key>(?:[!&]\S*\s+)+|(?:[!&]\S*\s+)*[^!&\s\{{\[](?:(?!:(?:\s|$)).)*?):\s+(?P<value>.*)$"
     #else
-    "^(?<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s+(?<value>(.*))$"
+    "^(?<key>(?:[!&]\S*\s+)+|(?:[!&]\S*\s+)*[^!&\s\{{\[](?:(?!:(?:\s|$)).)*?):\s+(?<value>(.*))$"
     #endif
 
 let LineCommentPattern =

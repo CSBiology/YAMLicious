@@ -550,6 +550,43 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         else
             None
 
+    /// The content of a key that stands behind `?`. A plain scalar over several lines folds like any other
+    /// plain scalar. A quoted scalar is folded already, and a block scalar keeps its lines.
+    let createKeyContent (raw: string) (comment: string option) =
+        let content = createScalarContent raw comment
+        let isPlain =
+            match content.Style with
+            | None -> true
+            | Some ScalarStyle.Plain -> true
+            | _ -> false
+        if isPlain && content.Value.Contains("\n") then
+            let lines = (Line.normalizeNewlines content.Value).Split([| '\n' |], System.StringSplitOptions.None)
+            { content with Value = BlockScalar.foldLines (Array.toList lines); Style = None }
+        else
+            content
+
+    /// The element model keeps only scalar keys, so a node behind `?` that is a flow collection, or that
+    /// starts a block sequence or mapping (`- a`, `a: b`, `? a`), is an error. The Reader has no source
+    /// line, so the message quotes the key. `line` is the first line of the node, with its properties.
+    let failOnCollectionKey (line: string) =
+        let node = (extractProperties handles line).Value
+        let startsWithIndicator (indicator: char) =
+            node.Length > 0 && node.[0] = indicator && (node.Length = 1 || node.[1] = ' ' || node.[1] = '\t')
+        let kind =
+            if node.StartsWith("[") || node.StartsWith("{") then
+                Some "flow collection"
+            elif startsWithIndicator '-' || startsWithIndicator '?' || startsWithIndicator ':' then
+                Some "block collection"
+            else
+                match PreprocessorElement.Line node with
+                | Key _
+                | KeyValue _ -> Some "block collection"
+                | _ -> None
+        match kind with
+        | Some what ->
+            failwithf "A %s cannot be the key of an entry, because YAMLicious keeps only scalar keys. The key behind the `?` starts with: %s" what (restoreStringReplace stringDict node)
+        | None -> ()
+
     /// A comment between the items goes into the sequence list as a Comment element. An empty item is Nil.
     /// `read` reads the lines of any other item. It is a parameter so that `loopRead` stays the one function
     /// of its own recursion, which Fable turns into a loop for the long runs of comments and keys.
@@ -608,25 +645,33 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | Some s -> Placeholder.splitTrailingComment s
                 | None -> "", None
 
-            // A key is one scalar, so the lines of a key that spans several lines become one text. A
-            // complex key such as a sequence is flattened to its text the same way. A comment behind the
-            // last line of such a key goes to the key, and a comment behind the `?` then stands in front
-            // of the entry.
+            // A key is one scalar. The scanner joins a scalar over several lines, so the key stands behind the
+            // `?` or alone on the lines below it, and a collection there is an error. The last comment of the
+            // key goes to the key and the comments before it stand in front of the entry.
             let keyContent, commentsBefore, afterKey =
                 match rest with
                 | Intendation body::afterBody when BlockScalar.isHeaderValue keyText ->
                     readBlockScalarContent keyText markCommentId body, [], afterBody
                 | Intendation keyBody::afterBody ->
-                    let lines = (if keyText = "" then [] else [keyText]) @ collectContentLines keyBody
+                    // The node stands on the lines below, with the properties of the `?` line in front. Of the
+                    // comments on these lines, the last one goes to the key and the others stand in front of the entry.
+                    let bodyLines = collectContentLines keyBody |> List.filter (fun line -> line.Trim() <> "")
+                    let commentLines, nodeLines = bodyLines |> List.partition Placeholder.isCommentOnlyLine
+                    let lines = (if keyText = "" then [] else [keyText]) @ nodeLines
+                    lines
+                    |> List.tryFind (fun line -> (extractProperties handles line).Value <> "")
+                    |> Option.iter failOnCollectionKey
                     let text, lastLineCommentId = Placeholder.splitTrailingComment (String.concat "\n" lines)
-                    let keyCommentId, beforeCommentId =
-                        match lastLineCommentId with
-                        | Some _ -> lastLineCommentId, markCommentId
-                        | None -> markCommentId, None
-                    let before = restoreCommentReplace commentDict beforeCommentId |> Option.map YAMLElement.Comment |> Option.toList
-                    createScalarContent text (restoreCommentReplace commentDict keyCommentId), before, afterBody
+                    let commentIds = Option.toList markCommentId @ List.choose Placeholder.tryParseComment commentLines @ Option.toList lastLineCommentId
+                    let keyCommentId, beforeCommentIds =
+                        match List.rev commentIds with
+                        | last :: earlier -> Some last, List.rev earlier
+                        | [] -> None, []
+                    let before = beforeCommentIds |> List.map (fun id -> YAMLElement.Comment commentDict.[id])
+                    createKeyContent text (restoreCommentReplace commentDict keyCommentId), before, afterBody
                 | _ ->
-                    createScalarContent keyText (restoreCommentReplace commentDict markCommentId), [], rest
+                    failOnCollectionKey keyText
+                    createKeyContent keyText (restoreCommentReplace commentDict markCommentId), [], rest
             let acc = commentsBefore @ acc
 
             // The lines behind the colon read as the lines behind a key do. A colon with nothing behind

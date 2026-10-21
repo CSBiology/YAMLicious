@@ -2857,21 +2857,15 @@ expression: >
                     get.Required.Field "requirements" (Decode.list (Decode.object (fun item -> item.Required.Field "expressionLib" (Decode.list Decode.string)))))
             Expect.equal decoded [ expected ] $"The expressionLib of {yaml}"
 
-    // yaml@2.6.1: {"[ a ]":"b"}, {"a":["b"]} and {"[ a ]":["b"]}. The Reader reads a complex key as its text.
+    // yaml@2.6.1: {"[ a ]":"b"}, {"a":["b"]} and {"[ a ]":["b"]}. It makes a key from the flow sequence, and the Reader
+    // rejects that key on purpose, because YAMLicious keeps only scalar keys.
     testCase "Flow collections over several lines as explicit keys and values" <| fun _ ->
-        let key (text: string) = YAMLContent.create text
-        Expect.equal
-            (Reader.read "? [\n  a\n]\n: b")
-            (YAMLElement.Object [ YAMLElement.Mapping(key "[ a ]", scalarNode "b") ])
-            "A key"
+        Expect.throws (fun () -> Reader.read "? [\n  a\n]\n: b" |> ignore) "A key"
         Expect.equal
             (Reader.read "? a\n: [\n  b\n]")
             (YAMLElement.Object [ entry "a" (sequenceNode [ scalarNode "b" ]) ])
             "A value"
-        Expect.equal
-            (Reader.read "? [\n  a\n]\n: [\n  b\n]")
-            (YAMLElement.Object [ YAMLElement.Mapping(key "[ a ]", sequenceNode [ scalarNode "b" ]) ])
-            "A key and a value"
+        Expect.throws (fun () -> Reader.read "? [\n  a\n]\n: [\n  b\n]" |> ignore) "A key and a value"
 
     // yaml@2.6.1: {"k":["x <s f=0/> y"]} and {"k":{"a":"x <c f=0/>"}}. Text in the shape of a placeholder is text.
     testCase "Text in front of a placeholder inside a flow collection stays" <| fun _ ->
@@ -3281,6 +3275,101 @@ expression: >
                             get.Required.Field "tags" (Decode.list Decode.string),
                             get.Required.Field "parameters" (Decode.list (Decode.object (fun p -> p.Required.Field "name" Decode.string, p.Required.Field "in" Decode.string))))))))))
         Expect.equal decoded ([ "participants" ], [ ("id", "path") ]) "The operation behind the braces key"
+
+    // yaml@2.6.1 accepts each of these and makes a string key from the collection: {"[ a ]":"b"}, {"{ a: 1 }":"b"},
+    // {"[ a ]":"b"} for `? - a`, {"{ a: b }":"c"}, {"[ a, b ]":"v"}, {"{ a: 1, b: 2 }":"v"}, {"[ a ]":"v"} for the tagged
+    // sequence and {"[ a ]":"b"} inside a sequence. The rejection is deliberate, because YAMLicious keeps only scalar keys.
+    testCase "A collection behind a question mark is an error" <| fun _ ->
+        let inputs =
+            [ "? [a]\n: b"; "? {a: 1}\n: b"; "? - a\n: b"; "? a: b\n: c"; "?\n  - a\n  - b\n: v"; "?\n  a: 1\n  b: 2\n: v"
+              "? !!seq [a]\n: v"; "- ? [a]\n  : b"; "? []\n: v"; "? [a,\n   b]\n: v" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "cannot be the key of an entry, because YAMLicious keeps only scalar keys" $"{yaml} has a collection as its key"
+
+    // yaml@2.6.1 reads these keys as the strings "-a", "?a", ":a", "a:b", "a: b" and "a - b".
+    testCase "A scalar behind a question mark stays a key although it looks like an indicator" <| fun _ ->
+        for text in [ "-a"; "?a"; ":a"; "a:b"; "a - b" ] do
+            Expect.equal (Reader.read $"? {text}\n: v") (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create text, scalarNode "v") ]) $"{text} is a plain key"
+        Expect.equal
+            (Reader.read "? \"a: b\"\n: v")
+            (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create("a: b", style=ScalarStyle.DoubleQuoted), scalarNode "v") ])
+            "A quoted key can hold a colon and a blank"
+
+    // yaml@2.6.1 reads `?a: b` and `?c: d` as {"?a":"b","?c":"d"}, and `?arc:x:` followed by an indented `?class: y` as
+    // {"?arc:x":{"?class":"y"}}. A question mark without a blank behind it begins a plain key.
+    testCase "A question mark without a blank behind it begins a plain key" <| fun _ ->
+        Expect.equal
+            (Reader.read "?a: b\n?c: d")
+            (YAMLElement.Object [ entry "?a" (scalarNode "b"); entry "?c" (scalarNode "d") ])
+            "Two keys"
+        Expect.equal
+            (Reader.read "?arc:x:\n    ?class: y")
+            (YAMLElement.Object [ entry "?arc:x" (YAMLElement.Object [ entry "?class" (scalarNode "y") ]) ])
+            "A key with a block behind it"
+
+    // yaml@2.6.1 reads `? a` and `  b` followed by `: v` as {"a b":"v"}, with a blank line between a and c as {"a b\nc":"v"},
+    // the double-quoted "a" and "  b" as {"a b":"v"}, the single-quoted a, a blank line and b as {"a\nb":"v"}, a literal
+    // block as {"a\nb\n":"v"} and a folded block as {"a b\n":"v"}.
+    testCase "A scalar over several lines folds as an explicit key" <| fun _ ->
+        let single (key: YAMLContent) = YAMLElement.Object [ YAMLElement.Mapping(key, scalarNode "v") ]
+        Expect.equal (Reader.read "? a\n  b\n: v") (single (YAMLContent.create "a b")) "A plain scalar"
+        Expect.equal (Reader.read "?\n  a\n  b\n: v") (single (YAMLContent.create "a b")) "A plain scalar that starts on the next line"
+        Expect.equal (Reader.read "? a\n  b\n\n  c\n: v") (single (YAMLContent.create "a b\nc")) "A blank line is a line break"
+        Expect.equal
+            (Reader.read "? \"a\n  b\"\n: v")
+            (single (YAMLContent.create("a b", style=ScalarStyle.DoubleQuoted)))
+            "A double-quoted scalar folds by its own rules"
+        Expect.equal
+            (Reader.read "? 'a\n\n  b'\n: v")
+            (single (YAMLContent.create("a\nb", style=ScalarStyle.SingleQuoted)))
+            "A single-quoted scalar folds by its own rules"
+        Expect.equal
+            (Reader.read "? |\n  a\n  b\n: v")
+            (single (YAMLContent.create("a\nb\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None))))
+            "A literal block scalar keeps its lines"
+        Expect.equal
+            (Reader.read "? >\n  a\n  b\n: v")
+            (single (YAMLContent.create("a b\n", style=ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Clip, None))))
+            "A folded block scalar folds"
+
+    // yaml@2.6.1 reads `&a : v`, `!!str : v` and `&a !!str : v` as {"":"v"}, `&a :` as {"":null}, `- &a : v` as
+    // [{"":"v"}], `&a :` followed by `  x: 1` as {"":{"x":1}} and `? &a` followed by `: v` as {"":"v"}.
+    testCase "An empty key with properties is a mapping entry" <| fun _ ->
+        let key (tag: string option) (anchor: string option) = YAMLContent.create("", ?tag=tag, ?anchor=anchor)
+        let strTag = Some "tag:yaml.org,2002:str"
+        let entryOf (content: YAMLContent) (value: YAMLElement) = YAMLElement.Object [ YAMLElement.Mapping(content, value) ]
+        Expect.equal (Reader.read "&a : v") (entryOf (key None (Some "a")) (scalarNode "v")) "An anchor"
+        Expect.equal (Reader.read "!!str : v") (entryOf (key strTag None) (scalarNode "v")) "A tag"
+        Expect.equal (Reader.read "&a !!str : v") (entryOf (key strTag (Some "a")) (scalarNode "v")) "A tag and an anchor"
+        Expect.equal (Reader.read "? &a\n: v") (Reader.read "&a : v") "The explicit form reads the same"
+        Expect.equal (Reader.read "&a :") (entryOf (key None (Some "a")) YAMLElement.Nil) "Without a value"
+        Expect.equal
+            (Reader.read "&a :\n  x: 1")
+            (entryOf (key None (Some "a")) (YAMLElement.Object [ entry "x" (scalarNode "1") ]))
+            "With a block behind it"
+        Expect.equal
+            (Reader.read "- &a : v")
+            (YAMLElement.Object [ YAMLElement.Sequence [ entryOf (key None (Some "a")) (scalarNode "v") ] ])
+            "As the entry of a sequence item"
+
+    // yaml@2.6.1 reads `k: &a:b x` as {"k":"x"}, `&a: b` as "b", `k: &a:` as {"k":null} and `&a:b : v` as {"":"v"}. The
+    // anchors are a:b, a:, a: and a:b, because an anchor name can hold any character except blanks and flow indicators.
+    testCase "An anchor name may hold colons" <| fun _ ->
+        let anchored (text: string) (anchor: string) = YAMLContent.create(text, anchor=anchor)
+        Expect.equal
+            (Reader.read "k: &a:b x")
+            (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "k", YAMLElement.Object [ YAMLElement.Value(anchored "x" "a:b") ]) ])
+            "A name with a colon in the middle"
+        Expect.equal (Reader.read "&a: b") (YAMLElement.Object [ YAMLElement.Value(anchored "b" "a:") ]) "A name that ends with a colon"
+        Expect.equal
+            (Reader.read "k: &a:")
+            (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "k", YAMLElement.Object [ YAMLElement.Value(anchored "" "a:") ]) ])
+            "A name that ends with a colon and no value"
+        Expect.equal
+            (Reader.read "&a:b : v")
+            (YAMLElement.Object [ YAMLElement.Mapping(anchored "" "a:b", scalarNode "v") ])
+            "A name with a colon on an empty key"
 
     // yaml@2.6.1 reads `? a` followed by `:` as {"a":null}, and the same with a comment behind the colon. `? a` followed
     // by `: {}` is {"a":{}}.
