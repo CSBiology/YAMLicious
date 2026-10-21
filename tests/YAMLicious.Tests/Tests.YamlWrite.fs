@@ -316,4 +316,30 @@ let Main = testList "YamlWrite" [
         let last = write (inMapping [ b; anchored ]) None
         Expect.trimEqual last "k: [b, &a]" "The anchor stands in front of the bracket"
         Expect.equal (Reader.read last) (readBack [ b; anchored ]) "The last item reads back as an empty scalar with the anchor"
+
+    // yaml@2.6.1 reads the written texts `&a : v`, `!<tag:yaml.org,2002:str> : v`, `!<tag:yaml.org,2002:str> &a : v` and
+    // `&a :` followed by `    x: 1` as {"":"v"}, {"":"v"}, {"":"v"} and {"":{"x":1}}, and `&a :` alone as {"":null}.
+    testCase "An empty key with properties is written as its properties and a colon" <| fun _ ->
+        let cases =
+            [ "&a : v", "&a : v"
+              "!!str : v", "!<tag:yaml.org,2002:str> : v"
+              "&a !!str : v", "!<tag:yaml.org,2002:str> &a : v"
+              "&a :", "&a :" ]
+        for (source, expected) in cases do
+            let parsed = Reader.read source
+            let written = write parsed None
+            Expect.trimEqual written expected $"The key of {source} stands as properties and a colon"
+            Expect.equal (Reader.read written) parsed $"The text of {source} reads back as the same element"
+        let nested = Reader.read "&a :\n  x: 1"
+        let writtenNested = write nested None
+        Expect.equal (writtenNested.Replace("\r\n", "\n").Split('\n').[0]) "&a :" "The block stands behind the key line"
+        Expect.equal (Reader.read writtenNested) nested "The block reads back as the value of the key"
+
+    // yaml@2.6.1 reads `&a "": v` and `&a '': v` as {"":"v"}. An explicit quoted style keeps the quotes.
+    testCase "An empty quoted key with properties keeps its quotes" <| fun _ ->
+        for (source, expected) in [ "&a \"\": v", "&a \"\": v"; "&a '': v", "&a '': v" ] do
+            let parsed = Reader.read source
+            let written = write parsed None
+            Expect.trimEqual written expected $"The quotes of {source} stay"
+            Expect.equal (Reader.read written) parsed $"The text of {source} reads back as the same element"
 ]

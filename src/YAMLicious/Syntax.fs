@@ -534,8 +534,10 @@ module FlowTokens =
                 tokens.Add(Token.Property(copyRange p e))
                 p <- e
             elif c = '*' && p + 1 < n && not (isSpace input.[p + 1]) && not (isFlowIndicator input.[p + 1]) then
+                // An alias name follows the rule of an anchor name: any character except blanks and flow
+                // indicators, a colon included. A colon behind the name needs a blank in front of it.
                 let mutable e = p + 1
-                while e < n && not (isSpace input.[e]) && not (isFlowIndicator input.[e]) && not (input.[e] = ':' && isIndicator (e + 1)) do
+                while e < n && not (isSpace input.[e]) && not (isFlowIndicator input.[e]) do
                     e <- e + 1
                 tokens.Add(Token.Alias(copyRange (p + 1) e))
                 p <- e

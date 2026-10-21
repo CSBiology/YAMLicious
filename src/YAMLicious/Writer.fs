@@ -188,21 +188,24 @@ module Formatting =
     /// that carries properties is written as the properties alone, as in `k: &a` and `- !!null`. Quotes would
     /// turn the null of `k: &a` into the string "" and the plain style into a double-quoted one. An empty
     /// scalar with a quoted style keeps its quotes.
+    let private isEmptyPlainWithProperties (content: YAMLContent) =
+        content.Value = ""
+        && (content.Tag.IsSome || content.Anchor.IsSome)
+        && (match content.Style with
+            | None
+            | Some ScalarStyle.Plain -> true
+            | _ -> false)
+
     let private mkNodeText (content: YAMLContent) (text: string) =
-        let isEmptyPlain =
-            content.Value = ""
-            && (content.Tag.IsSome || content.Anchor.IsSome)
-            && (match content.Style with
-                | None
-                | Some ScalarStyle.Plain -> true
-                | _ -> false)
-        if isEmptyPlain then (mkNodePrefix content).TrimEnd() else mkNodePrefix content + text
+        if isEmptyPlainWithProperties content then (mkNodePrefix content).TrimEnd() else mkNodePrefix content + text
 
     let mkKeyContent (options: WriterOptions) (content: YAMLContent) =
         mkNodePrefix content + scalarToInlineText StyleVerifier.PlainContext.Block options content
 
+    /// An empty key that carries properties is written as `&a :`. The blank keeps the colon out of the anchor
+    /// name, because a name can hold colons. A quoted empty key keeps its quotes.
     let mkMappingKey (options: WriterOptions) (key: YAMLContent) =
-        mkKey (mkKeyContent options key)
+        if isEmptyPlainWithProperties key then (mkNodePrefix key).TrimEnd() + " :" else mkKey (mkKeyContent options key)
 
     let shouldEmitBlockScalar (options: WriterOptions) (content: YAMLContent) =
         let hasMultiline = content.Value.Contains("\n")

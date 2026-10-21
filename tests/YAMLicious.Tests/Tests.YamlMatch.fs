@@ -90,4 +90,25 @@ let Main = testList "YamlMatch" [
             Expect.equal res.Value "abc, def, hij" ""
             Expect.equal res.Comment (Some 11) ""
         | _ -> Expect.isFalse true ""
+
+    // yaml@2.6.1 reads `x: &a:b 1` and `k: *a:b` as {"x":1,"k":1}. An alias name follows the rule of an anchor name.
+    testCase "Match AliasNode with a colon in the name" <| fun _ ->
+        for (text, name) in [ "*a", "a"; "*a:b", "a:b"; "*a:", "a:" ] do
+            match Line text with
+            | AliasNode res -> Expect.equal res name $"The name of {text}"
+            | _ -> Expect.isFalse true $"{text} is an alias"
+        match Line "*a : v" with
+        | AliasNode _ -> Expect.isFalse true "A blank ends the name, so this line is an entry"
+        | _ -> ()
+
+    // yaml@2.6.1 reads `:a` as the string ":a", `:a: b` as {":a":"b"} and `- :a` as [":a"].
+    testCase "Match ExplicitValue needs a blank behind the colon" <| fun _ ->
+        for (text, value) in [ ": v", "v"; ":", ""; ":\tv", "v" ] do
+            match Line text with
+            | ExplicitValue res -> Expect.equal res value $"The value of {text}"
+            | _ -> Expect.isFalse true $"{text} is an explicit value"
+        for text in [ ":a"; ":a: b"; "::" ] do
+            match Line text with
+            | ExplicitValue _ -> Expect.isFalse true $"{text} is no explicit value"
+            | _ -> ()
 ]

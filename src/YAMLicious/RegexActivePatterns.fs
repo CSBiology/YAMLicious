@@ -150,7 +150,8 @@ let (|ExplicitValue|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let line = trimForPattern s
-        if line.StartsWith(":") then
+        // The indicator needs a blank or the end of the line behind it. Text such as `:a` is a plain scalar.
+        if line.StartsWith(":") && (line.Length = 1 || line.[1] = ' ' || line.[1] = '\t') then
             let v = line.Substring(1).Trim()
             Some v
         else

@@ -21,9 +21,9 @@ let AnchorPattern =
 
 let AliasPattern =
     #if FABLE_COMPILER_PYTHON
-    "^\\*(?P<alias>[^\\s\\[\\]{},:]+)$"
+    "^\\*(?P<alias>[^\\s\\[\\]{},]+)$"
     #else
-    "^\\*(?<alias>[^\\s\\[\\]{},:]+)$"
+    "^\\*(?<alias>[^\\s\\[\\]{},]+)$"
     #endif
 
 let VerbatimTagPattern =

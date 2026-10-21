@@ -50,7 +50,8 @@
 * A collection behind `?` in block context is an error too, as in `? [a]`, `? {a: 1}`, `? - a`, `? a: b` and a `?` with an indented block sequence or mapping below it. Earlier versions flattened such a key to its source text. The message quotes the start of the key.
 * A plain scalar over several lines behind `?` folds like any plain scalar, so `? a` followed by `  b` reads the key `a b`. Earlier versions kept the line break.
 * A key that holds only properties, as in `&a : v` and `!!str : v`, is an entry with an empty key that carries them. Earlier versions read the scalar `: v`. A `?` without a blank behind it, as in `?a: b`, begins a plain key.
-* An anchor name may hold a colon, as in `k: &a:b x`, following YAML 1.2.2.
+* An anchor name and an alias name may hold a colon, as in `k: &a:b x` and `k: *a:b`, following YAML 1.2.2.
+* A `:` without a blank behind it, as in `:a`, is plain text and no explicit value indicator.
 * Tags and anchors inside a flow collection belong to the node behind them, as in block context. `[!!int "2", &a "x"]`, `{&a "q": !t "v"}` and `[!!str a` followed by `b]` keep the tag and the anchor on the scalar or the key. A verbatim tag such as `!<tag:yaml.org,2002:str>` is one tag, also in front of an empty item. Properties with no node behind them, as in `[!!str , a]` and `{a: &x}`, make an empty scalar that carries them. On a nested collection the core tag of its kind is dropped, and an anchor or any other tag is an error, as in block context. Earlier versions lost the properties or read them as text.
 * An alias inside a flow collection reads as `YAMLElement.Alias`, as in block context. Earlier versions read the text `*a`.
 * Text in front of a placeholder-shaped text inside a flow collection stays, so `[x <s f=0/> y]` is one item with that text. Earlier versions kept only the placeholder.
@@ -77,6 +78,7 @@
 * An empty sequence item `-` and an explicit key with an empty value (`? a` followed by `:`) read as `YAMLElement.Nil`, and the writer writes an empty item as `-`. Earlier versions read `Object []`, the same as the empty flow mapping `{}`, and wrote `- {}`. `Object []` now stands for `{}` only. In `- # c` the comment stays behind the empty item.
 * The writer has no legacy path for sibling plain scalars any more. A multi-line plain value is one `YAMLElement.Value` with the plain style.
 * The writer writes an empty plain scalar that carries a tag or an anchor as its properties alone, as in `k: &a` and `- !!null`, so it reads back as the same node. Earlier versions wrote `""`, which turned the null of `k: &a` into the empty string. An empty scalar with a quoted style keeps its quotes.
+* The writer writes an empty key that carries a tag or an anchor as `&a : v`, which reads back as the same entry. Earlier versions wrote `&a "": v`. A quoted empty key keeps its quotes.
 * A comment ends a plain scalar, so a deeper line behind it, as in `k: a # c` followed by `  b`, is an error. A colon followed by a blank on a line that continues a plain scalar is an error too, because a plain scalar cannot hold a mapping key.
 * A plain scalar cannot start with `%`, `@` or a backquote, wherever a node starts. This covers `k: %x`, `- %x`, `[%bad]`, `{@a: 1}` and a `%YAML` line inside the content of a document. The error names the line.
 * A comma or a `#` that starts no comment cannot start a node either, and a `]` or `}` that closes no flow collection is an error. Inside a flow collection a `-` needs a plain character behind it, as in `[-x]`.

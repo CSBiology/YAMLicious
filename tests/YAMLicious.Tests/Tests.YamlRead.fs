@@ -3371,6 +3371,67 @@ expression: >
             (YAMLElement.Object [ YAMLElement.Mapping(anchored "" "a:b", scalarNode "v") ])
             "A name with a colon on an empty key"
 
+    // yaml@2.6.1 reads `x: &a:b 1` followed by `k: *a:b` as {"x":1,"k":1}, the sequence `- &a:b 1`, `- *a:b` as [1,1],
+    // `k: [*a:b]` as {"k":[1]} and `k: [*a:, x]` after the anchor `&a:` as {"k":[1,"x"]}. An alias name follows the
+    // rule of an anchor name, and the Reader keeps the alias unresolved.
+    testCase "An alias name may hold colons" <| fun _ ->
+        let anchored = YAMLElement.Object [ entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a:b")) ]) ]
+        let withEntry (item: YAMLElement) =
+            match anchored with
+            | YAMLElement.Object items -> YAMLElement.Object (items @ [ item ])
+            | other -> other
+        Expect.equal
+            (Reader.read "x: &a:b 1\nk: *a:b")
+            (withEntry (entry "k" (YAMLElement.Object [ YAMLElement.Alias "a:b" ])))
+            "In a mapping value"
+        Expect.equal
+            (Reader.read "- &a:b 1\n- *a:b")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a:b")) ]; YAMLElement.Object [ YAMLElement.Alias "a:b" ] ] ])
+            "In a sequence item"
+        Expect.equal
+            (Reader.read "x: &a:b 1\nk: [*a:b]")
+            (withEntry (entry "k" (sequenceNode [ YAMLElement.Object [ YAMLElement.Alias "a:b" ] ])))
+            "In a flow sequence"
+        Expect.equal
+            (Reader.read "x: &a: 1\nk: [*a:, x]")
+            (YAMLElement.Object [
+                entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a:")) ])
+                entry "k" (sequenceNode [ YAMLElement.Object [ YAMLElement.Alias "a:" ]; scalarNode "x" ])
+            ])
+            "A name that ends with a colon in front of a comma"
+
+    // yaml@2.6.1 reads `x: &a 1` followed by `*a : v` as {"1":"v","x":1}, and `x: &a:b 1` followed by `k: {*a:b : v}` as
+    // {"x":1,"k":{"1":"v"}}. The Reader does not resolve the alias, so the key keeps the text of the alias.
+    testCase "An alias in front of a colon is a key" <| fun _ ->
+        Expect.equal
+            (Reader.read "x: &a 1\n*a : v")
+            (YAMLElement.Object [
+                entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a")) ])
+                entry "*a" (scalarNode "v")
+            ])
+            "In a block mapping"
+        Expect.equal
+            (Reader.read "x: &a:b 1\nk: {*a:b : v}")
+            (YAMLElement.Object [
+                entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a:b")) ])
+                entry "k" (YAMLElement.Object [ entry "*a:b" (scalarNode "v") ])
+            ])
+            "In a flow mapping, with a colon in the name"
+
+    // yaml@2.6.1 reads `:a` as the string ":a", `:a: b` as {":a":"b"}, `- :a` as [":a"], `k:` followed by `  :a` as
+    // {"k":":a"}, and `? k` followed by `: v` and `:a: w` as {"k":"v",":a":"w"}. It rejects `? k` followed by `:a`, which
+    // the Reader no longer reads as the value "a".
+    testCase "A colon without a blank behind it is no explicit value" <| fun _ ->
+        Expect.equal (Reader.read ":a") (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create ":a") ]) "At the root"
+        Expect.equal (Reader.read ":a: b") (YAMLElement.Object [ entry ":a" (scalarNode "b") ]) "As a key"
+        Expect.equal (Reader.read "- :a") (YAMLElement.Object [ YAMLElement.Sequence [ scalarNode ":a" ] ]) "As a sequence item"
+        Expect.equal (Reader.read "k:\n  :a") (YAMLElement.Object [ entry "k" (scalarNode ":a") ]) "Behind a key"
+        Expect.equal
+            (Reader.read "? k\n: v\n:a: w")
+            (YAMLElement.Object [ entry "k" (scalarNode "v"); entry ":a" (scalarNode "w") ])
+            "Behind an explicit entry"
+        Expect.notEqual (Reader.read "? k\n:a") (YAMLElement.Object [ entry "k" (scalarNode "a") ]) "Not the value a of the key k"
+
     // yaml@2.6.1 reads `? a` followed by `:` as {"a":null}, and the same with a comment behind the colon. `? a` followed
     // by `: {}` is {"a":{}}.
     testCase "An explicit key with an empty value maps to Nil" <| fun _ ->
