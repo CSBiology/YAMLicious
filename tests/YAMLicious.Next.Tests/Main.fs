@@ -12,7 +12,10 @@ let all =
           Tests.Scalars.Main
           Tests.Parser.Main
           Tests.Comments.Main
-          Tests.Documents.Main ]
+          Tests.Documents.Main
+          Tests.Decode.Main
+          Tests.Encode.Main
+          Tests.Reader.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

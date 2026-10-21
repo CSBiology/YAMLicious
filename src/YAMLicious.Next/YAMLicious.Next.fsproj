@@ -26,6 +26,9 @@
     <Compile Include="Parser.fs" />
     <Compile Include="Validate.fs" />
     <Compile Include="Projection.fs" />
+    <Compile Include="Decode.fs" />
+    <Compile Include="Encode.fs" />
+    <Compile Include="Reader.fs" />
   </ItemGroup>
 
   <ItemGroup>

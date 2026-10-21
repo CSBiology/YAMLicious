@@ -7,8 +7,9 @@ type Located<'T> =
 
 /// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer, and the
 /// parser raises four of them too: `InvalidTag`, `TabIndentation`, `ImplicitKeyLength` and
-/// `ImplicitKeyMultiline`. The other cases come from the parser only. `YamlErrorCode.name` gives each case a
-/// stable text, which the failure projection and the tests use.
+/// `ImplicitKeyMultiline`. The other cases come from the parser only, except `MultipleDocuments`, which the
+/// reader raises. `YamlErrorCode.name` gives each case a stable text, which the failure projection and the
+/// tests use.
 [<RequireQualifiedAccess>]
 type YamlErrorCode =
     // The lexer.
@@ -59,6 +60,9 @@ type YamlErrorCode =
     | UndeclaredTagHandle
     | DuplicateYamlDirective
     | DuplicateTagDirective
+    /// A text with more than one document where the caller expects one. `Reader.tryRead` returns it. `Span` is
+    /// the second document and `Related` holds the first.
+    | MultipleDocuments
     | DirectiveWithoutDocumentStart
     /// A `%YAML` directive with a major version other than 1.
     | UnsupportedYamlVersion
@@ -109,6 +113,7 @@ module YamlErrorCode =
         | YamlErrorCode.UndeclaredTagHandle -> "undeclared-tag-handle"
         | YamlErrorCode.DuplicateYamlDirective -> "duplicate-yaml-directive"
         | YamlErrorCode.DuplicateTagDirective -> "duplicate-tag-directive"
+        | YamlErrorCode.MultipleDocuments -> "multiple-documents"
         | YamlErrorCode.DirectiveWithoutDocumentStart -> "directive-without-document-start"
         | YamlErrorCode.UnsupportedYamlVersion -> "unsupported-yaml-version"
         | YamlErrorCode.MissingSeparation -> "missing-separation"
