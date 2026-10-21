@@ -1902,19 +1902,20 @@ key: value
             | _ -> failwith "Expected mapping in document"
         | _ -> failwith "Expected object in document"
 
+    // yaml@2.6.1 reads the first input as {"key":"value"}, also with a comment behind the end marker. It rejects the
+    // second input with "Source contains multiple documents; please use YAML.parseAllDocuments()", because the text
+    // behind the end marker is a second document.
     testCase "Reader.read stops at document end marker" <| fun _ ->
-        let yaml = """---
-key: value
-...
-trailing: ignored"""
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                 YAMLContent.create("key"),
                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
             )
         ]
-        let actual = Reader.read yaml
-        Expect.equal actual expected "Reader.read should ignore content after explicit document end"
+        Expect.equal (Reader.read "---\nkey: value\n...\n") expected "The end marker closes the document"
+        Expect.equal (Reader.read "---\nkey: value\n...\n# c\n") expected "A comment behind the end marker is no document"
+        let message = try (Reader.read "---\nkey: value\n...\ntrailing: ignored" |> ignore; "") with e -> e.Message
+        Expect.stringContains message "Use Reader.readDocuments" "Text behind the end marker is a second document"
 
     testCase "Reader.read keeps inline root after document start marker" <| fun _ ->
         let yaml = "--- foo"
@@ -2995,6 +2996,31 @@ expression: >
         let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
         Expect.stringContains (message "k: [&a *b]") "An alias cannot have properties" "An alias with an anchor"
 
+    // yaml@2.6.1 rejects the first five inputs with UNEXPECTED_TOKEN or MISSING_CHAR and reads `s: &a x` followed by `k: *a` as
+    // {"s":"x","k":"x"}. It reads the alias keys in flow collections with the alias resolved, for example `{&a x : 1, *a : v}` as
+    // {"x":"v"}. YAMLicious keeps only scalar keys and never resolves an alias, so rejecting an alias key is deliberate.
+    testCase "Text behind an alias and an alias as the key of a flow entry are errors" <| fun _ ->
+        let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        for yaml in [ "s: &a x\nk: *a b"; "s: &a x\nk: *a,b"; "s: &a x\nl:\n- *a b"; "s: &a x\nk: [*a b]"; "s: &a x\nk: {j: *a b}" ] do
+            Expect.stringContains (message yaml) "an alias ends its node" $"The error of {yaml}"
+        for yaml in [ "s: &a x\nk: {*a : v}"; "s: &a x\nk: [*a : v]"; "s: &a x\nk: {? *a : v}"; "s: &a x\nk: {*a}"; "s: &a x\nk: [? *a]" ] do
+            Expect.stringContains
+                (message yaml)
+                "Line 2: an alias cannot be the key of an entry, because YAMLicious keeps only scalar keys."
+                $"The error of {yaml}"
+        // A property in front of the alias hides the key from the scanner, and the flow parser reports it.
+        Expect.stringContains
+            (message "s: &a x\nk: {&y *a}")
+            "An alias cannot be the key of an entry, because YAMLicious keeps only scalar keys"
+            "The flow parser names the rule"
+        Expect.equal
+            (Reader.read "s: &a x\nk: [*a , b # c\n ]")
+            (YAMLElement.Object [
+                entry "s" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("x", anchor = "a")) ])
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Alias "a" ]; scalarNode "b"; YAMLElement.Comment " c" ] ])
+            ])
+            "A comma behind an alias is a separator in a flow collection"
+
     // yaml@2.6.1: {"k":{"a":"b"}}, {"k":[{"a":"b"}]}, {"k":{"a":null}}, {"foo":null,"":"bar"}, [{"a":"b"},{"c":null}], {"":"b"},
     // {"":null} and [{"":null}]. A question mark followed by a blank starts an explicit key.
     testCase "An explicit key inside a flow collection" <| fun _ ->
@@ -3400,27 +3426,25 @@ expression: >
             ])
             "A name that ends with a colon in front of a comma"
 
-    // yaml@2.6.1 reads `x: &a 1` followed by `*a : v` as {"1":"v","x":1}, and `x: &a:b 1` followed by `k: {*a:b : v}` as
-    // {"x":1,"k":{"1":"v"}}. The Reader does not resolve the alias, so the key keeps the text of the alias.
-    testCase "An alias in front of a colon is a key" <| fun _ ->
-        Expect.equal
-            (Reader.read "x: &a 1\n*a : v")
-            (YAMLElement.Object [
-                entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a")) ])
-                entry "*a" (scalarNode "v")
-            ])
-            "In a block mapping"
-        Expect.equal
-            (Reader.read "x: &a:b 1\nk: {*a:b : v}")
-            (YAMLElement.Object [
-                entry "x" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1", anchor="a:b")) ])
-                entry "k" (YAMLElement.Object [ entry "*a:b" (scalarNode "v") ])
-            ])
+    // yaml@2.6.1 reads `x: &a 1` followed by `*a : v` as {"1":"v","x":1}, `- *a : v` after the same anchor as [{"1":"v"}],
+    // and `? *a` followed by `: v` as {"1":"v","x":1}. It resolves the alias to make the key. The rejection is deliberate,
+    // because YAMLicious keeps only scalar keys and never resolves an alias.
+    testCase "An alias as a block key is an error" <| fun _ ->
+        for yaml in [ "x: &a 1\n*a : v"; "x: &a 1\nk:\n  - *a : v"; "x: &a 1\n? *a\n: v"; "x: &a:b 1\n*a:b : v" ] do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "An alias cannot be the key of an entry, because YAMLicious keeps only scalar keys" $"{yaml} has an alias as its key"
+
+    // yaml@2.6.1 reads `x: &a:b 1` followed by `k: {*a:b : v}` as {"x":1,"k":{"1":"v"}}. It resolves the alias to make
+    // the key. The rejection is deliberate, because YAMLicious keeps only scalar keys and never resolves an alias.
+    testCase "An alias as the key of a flow entry is an error" <| fun _ ->
+        Expect.stringContains
+            (try (Reader.read "x: &a:b 1\nk: {*a:b : v}" |> ignore; "") with e -> e.Message)
+            "Line 2: an alias cannot be the key of an entry, because YAMLicious keeps only scalar keys."
             "In a flow mapping, with a colon in the name"
 
     // yaml@2.6.1 reads `:a` as the string ":a", `:a: b` as {":a":"b"}, `- :a` as [":a"], `k:` followed by `  :a` as
-    // {"k":":a"}, and `? k` followed by `: v` and `:a: w` as {"k":"v",":a":"w"}. It rejects `? k` followed by `:a`, which
-    // the Reader no longer reads as the value "a".
+    // {"k":":a"}, and `? k` followed by `: v` and `:a: w` as {"k":"v",":a":"w"}. It rejects `? k` followed by `:a`, and so
+    // does the Reader, which no longer reads `:a` as the value "a".
     testCase "A colon without a blank behind it is no explicit value" <| fun _ ->
         Expect.equal (Reader.read ":a") (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create ":a") ]) "At the root"
         Expect.equal (Reader.read ":a: b") (YAMLElement.Object [ entry ":a" (scalarNode "b") ]) "As a key"
@@ -3430,7 +3454,128 @@ expression: >
             (Reader.read "? k\n: v\n:a: w")
             (YAMLElement.Object [ entry "k" (scalarNode "v"); entry ":a" (scalarNode "w") ])
             "Behind an explicit entry"
-        Expect.notEqual (Reader.read "? k\n:a") (YAMLElement.Object [ entry "k" (scalarNode "a") ]) "Not the value a of the key k"
+        Expect.throws (fun () -> Reader.read "? k\n:a" |> ignore) "The scalar :a has no colon of its own"
+
+    // yaml@2.6.1 rejects each of these with "Could not resolve tag". YAML 1.2.2 6.8.2 requires a %TAG directive in the
+    // document for every named handle. It reads `%TAG !e! tag:example.com,2000:`, `---` and `k: !e!b c` as {"k":"c"}, and
+    // the handles ! and !! need no directive. A directive holds for its own document only.
+    testCase "A named tag handle needs a TAG directive in its document" <| fun _ ->
+        let inputs =
+            [ "k: !e!b c"; "k: [!e!b c]"; "- !e!b c"; "k: &a !e!b c"; "? !e!b k\n: v"; "!e!b c"
+              "%TAG !e! tag:example.com,2000:\n---\nk: !f!b c" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "is not declared by a %TAG directive" $"{yaml} uses a handle that no directive declares"
+        let tagged = YAMLElement.Value(YAMLContent.create("c", tag="tag:example.com,2000:b"))
+        Expect.equal
+            (Reader.read "%TAG !e! tag:example.com,2000:\n---\nk: !e!b c")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ tagged ]) ])
+            "A declared handle in block context"
+        Expect.equal
+            (Reader.read "%TAG !e! tag:example.com,2000:\n---\nk: [!e!b c]")
+            (YAMLElement.Object [ entry "k" (sequenceNode [ YAMLElement.Object [ tagged ] ]) ])
+            "A declared handle in flow context"
+        Expect.equal
+            (Reader.read "k: !<tag:example.com,2000:b> c")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ tagged ]) ])
+            "A verbatim tag"
+        Expect.equal
+            (Reader.read "%TAG ! tag:example.com,2000:\n---\nk: !b c")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ tagged ]) ])
+            "The primary handle with a directive"
+        Expect.equal
+            (Reader.read "k: !local c")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("c", tag="!local")) ]) ])
+            "The primary handle without a directive"
+        Expect.equal
+            (Reader.read "k: !!str c")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("c", tag="tag:yaml.org,2002:str")) ]) ])
+            "The secondary handle without a directive"
+        Expect.throws
+            (fun () -> Reader.readDocuments "%TAG !e! tag:example.com,2000:\n---\na: !e!b c\n---\nb: !e!b c" |> ignore)
+            "The second document has no directive of its own"
+
+    // yaml@2.6.1 rejects each of these with "Implicit map keys need to be followed by map values", and `a: 1` followed by
+    // `|` and ` x` with "Implicit keys need to be on a single line".
+    testCase "A scalar among the entries of a block mapping is an error" <| fun _ ->
+        let inputs =
+            [ "? a\n:b"; "a: 1\nb"; "- a: 1\n  b"; "a:\n  b: 1\n  c"; "a: 1\n*b"; "a: 1\n&b"; "a: 1\n'q'"; "? a\n: 1\nb"
+              "a: !!str\nb"; "a: 1\n|\n x" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "A scalar cannot stand among the entries of a block mapping" $"{yaml} has a scalar without a colon"
+
+    // yaml@2.6.1 rejects `a: 1` followed by `- x`, `k: v`, `- x` and `j: 2`, and `- a: 1` followed by `  - b` ("A block
+    // sequence may not be used as an implicit map key"), and `- a` followed by `b: 1` or `b` ("Unexpected scalar at node
+    // end"). It reads `k:` followed by `- x` and `k: !!seq` followed by `- x` as {"k":["x"]}, `- a`, a comment and `- b` as
+    // ["a","b"], and `k:`, a comment, `- x`, a comment and `j: 1` as {"k":["x"],"j":1}.
+    testCase "A block sequence and a block mapping do not share an indentation" <| fun _ ->
+        let inputs = [ "a: 1\n- x"; "- a\nb: 1"; "k: v\n- x\nj: 2"; "- a: 1\n  - b"; "- a\n#c\nb: 1" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "A block mapping and a block sequence cannot stand at one indentation" $"{yaml} puts both at one indentation"
+        let scalarMessage = try (Reader.read "- a\nb" |> ignore; "") with e -> e.Message
+        Expect.stringContains scalarMessage "A scalar cannot stand among the items of a block sequence" "A scalar behind the items of a sequence"
+        let x = scalarNode "x"
+        Expect.equal (Reader.read "k:\n- x") (YAMLElement.Object [ entry "k" (sequenceNode [ x ]) ]) "A sequence at the indentation of its key"
+        Expect.equal (Reader.read "k: !!seq\n- x") (YAMLElement.Object [ entry "k" (sequenceNode [ x ]) ]) "The same behind a core tag"
+        Expect.equal
+            (Reader.read "k:\n# c\n- x\n# d\nj: 1")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Sequence [ x ] ])
+                YAMLElement.Comment " d"
+                entry "j" (scalarNode "1")
+            ])
+            "Comments next to a sequence and a mapping"
+        Expect.equal
+            (Reader.read "- a\n# c\n- b")
+            (YAMLElement.Object [ YAMLElement.Sequence [ scalarNode "a"; YAMLElement.Comment " c"; scalarNode "b" ] ])
+            "A comment between the items of a root sequence"
+
+    // yaml@2.6.1 reads `x: &a 1` followed by `k: *a # c` as {"x":1,"k":1}, and `- &a 1` followed by `- *a # c` as [1,1]. An
+    // alias has no comment field, so the Reader puts the comment in front of it, as it does in front of a flow collection.
+    testCase "An alias followed by a comment is an alias" <| fun _ ->
+        let anchored = YAMLElement.Value(YAMLContent.create("1", anchor="a"))
+        let aliasWithComment = YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Alias "a" ]
+        Expect.equal
+            (Reader.read "x: &a 1\nk: *a # c")
+            (YAMLElement.Object [ entry "x" (YAMLElement.Object [ anchored ]); entry "k" aliasWithComment ])
+            "A mapping value"
+        Expect.equal
+            (Reader.read "- &a 1\n- *a # c")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ anchored ]; aliasWithComment ] ])
+            "A sequence item"
+        Expect.equal (Reader.read "*a # c") aliasWithComment "At the root"
+        for yaml in [ "x: &a 1\nk: *a # c"; "- &a 1\n- *a # c"; "*a # c" ] do
+            let parsed = Reader.read yaml
+            let label = yaml.Replace("\n", "|")
+            Expect.equal (Reader.read ((Writer.write parsed None).Replace("\r\n", "\n"))) parsed $"The text of {label} reads back as the same element"
+
+    // yaml@2.6.1 rejects each of these with "An alias node must not specify any properties".
+    testCase "An alias with properties is an error" <| fun _ ->
+        for yaml in [ "k: !!str *a"; "k: &b *a"; "- !t *a"; "k: !!str\n  *a"; "- &b\n  *a"; "!!str *a" ] do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "An alias cannot have properties, got: *a" $"{yaml} puts properties on an alias"
+
+    // yaml@2.6.1 reads `a: 1` followed by an indented `b` as {"a":"1 b"}, `a: 1`, a comment line and `b: 2` as {"a":1,"b":2},
+    // and `? a`, a comment line and `: v` as {"a":"v"}.
+    testCase "Deeper lines and comment lines stay valid among the entries of a block mapping" <| fun _ ->
+        Expect.equal
+            (Reader.read "a: 1\n  b")
+            (YAMLElement.Object [ entry "a" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("1\nb", style=ScalarStyle.Plain)) ]) ])
+            "A deeper line continues the value"
+        Expect.equal
+            (Reader.read "a: 1\n# c\nb: 2")
+            (YAMLElement.Object [ entry "a" (scalarNode "1"); YAMLElement.Comment " c"; entry "b" (scalarNode "2") ])
+            "A comment line between the entries"
+        Expect.equal
+            (Reader.read "? a\n# c\n: v")
+            (YAMLElement.Object [ YAMLElement.Comment " c"; entry "a" (scalarNode "v") ])
+            "A comment line between an explicit key and its colon stands in front of the entry"
+        Expect.equal
+            (Reader.read "?\n  a\n  # c\n: v")
+            (YAMLElement.Object [ YAMLElement.Comment " c"; entry "a" (scalarNode "v") ])
+            "A comment line behind a key on its own line too"
 
     // yaml@2.6.1 reads `? a` followed by `:` as {"a":null}, and the same with a comment behind the colon. `? a` followed
     // by `: {}` is {"a":{}}.

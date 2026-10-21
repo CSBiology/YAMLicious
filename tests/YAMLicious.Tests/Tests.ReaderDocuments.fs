@@ -184,21 +184,26 @@ doc2"""
         let actual = Reader.readDocuments yaml
         let expected = [
             YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc1"))]
-            YAMLElement.Object [YAMLElement.Comment(" Just a comment")]
+            YAMLElement.Object [YAMLElement.Comment(" Just a comment"); YAMLElement.Nil]
             YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc2"))]
         ]
-        Expect.equal actual expected "Comment-only documents should be preserved as document content"
+        Expect.equal actual expected "Comment-only documents should be preserved as document content, with the null node behind the comments"
         
-        // Test ignoring truly empty documents:
+        // yaml@2.6.1 reads this as ["doc1", null, "doc2"]. A start marker makes a document without a body.
         let yaml2 = """---
 doc1
 ---
 ---
 doc2"""
         let actual2 = Reader.readDocuments yaml2
-        // Usage of empty document markers (e.g. adjacent ---) is valid YAML.
-        // Reader.readDocuments is designed to filter out these truly empty documents.
-        Expect.equal actual2.Length 2 "Should skip empty document"
+        Expect.equal
+            actual2
+            [
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc1"))]
+                YAMLElement.Nil
+                YAMLElement.Object [YAMLElement.Value(YAMLContent.create("doc2"))]
+            ]
+            "The empty document between the markers reads as Nil"
 
     testCase "Directive prelude comments are kept with the same document" <| fun _ ->
         let yaml = """%YAML 1.2
@@ -426,4 +431,72 @@ next: v"""
             (errorOf (fun () -> Reader.readDocuments "a: 'x\n---\nb: 1\n" |> ignore))
             "Line 1: the quoted scalar that starts here is not closed."
             "The error names the line of the quote"
+
+    // yaml@2.6.1 gives null for an empty input, a blank one, a lone comment, `---` followed by `...` and `---` followed by a
+    // comment. The middle document of spec Example 9.6 is null too: ["Document",null,{"matches %":20}]. The comments of a
+    // document without a node stay in front of the null node, so that Decode.option can tell the document from `{}`.
+    testCase "A document without a node reads as Nil and keeps its comments" <| fun _ ->
+        Expect.equal (Reader.read "") YAMLElement.Nil "An empty input"
+        Expect.equal (Reader.read "\n\n") YAMLElement.Nil "Blank lines"
+        Expect.equal (Reader.read "---\n...") YAMLElement.Nil "A start marker and an end marker"
+        Expect.equal (Reader.read "# c") (YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Nil ]) "A comment"
+        Expect.equal
+            (Reader.read "# c1\n# c2")
+            (YAMLElement.Object [ YAMLElement.Comment " c1"; YAMLElement.Comment " c2"; YAMLElement.Nil ])
+            "Two comments"
+        Expect.equal
+            (Reader.readDocuments "---\n# c\n...")
+            [ YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Nil ] ]
+            "A comment between the markers"
+        Expect.equal
+            (Reader.readDocuments "Document\n---\n# Empty\n...\n%YAML 1.2\n---\nmatches %: 20")
+            [ YAMLElement.Object [ YAMLElement.Value(YAMLContent.create "Document") ]
+              YAMLElement.Object [ YAMLElement.Comment " Empty"; YAMLElement.Nil ]
+              YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "matches %", YAMLElement.Object [ YAMLElement.Value(YAMLContent.create "20") ]) ] ]
+            "The middle document of Example 9.6"
+        Expect.equal (Reader.read "{}") (YAMLElement.Object []) "The empty flow mapping is no empty document"
+
+    // yaml@2.6.1 parse rejects each of these inputs with "Source contains multiple documents; please use
+    // YAML.parseAllDocuments()". It reads `a: 1` followed by `...`, with or without a comment behind it, as {"a":1}.
+    testCase "Reader.read rejects input with more than one document" <| fun _ ->
+        let inputs = [ "a: 1\n---\nb: 2"; "---\na: 1\n---\nb: 2"; "a: 1\n...\n---\nb: 2"; "---\n---\na: 1"; "a: 1\n---\n"; "# c\n...\na: 1" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            let label = yaml.Replace("\n", "|")
+            Expect.stringContains message "Use Reader.readDocuments to read all of them" $"{label} holds two documents"
+            let decodeMessage = try (Decode.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains decodeMessage "Use Reader.readDocuments" "Decode.read reads one document too"
+        let expected = YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "a", YAMLElement.Object [ YAMLElement.Value(YAMLContent.create "1") ]) ]
+        Expect.equal (Reader.read "a: 1\n...\n") expected "An end marker closes the only document"
+        Expect.equal (Reader.read "a: 1\n...\n# c\n") expected "A comment behind the end marker is no document"
+
+    // yaml@2.6.1 reads `---` followed by `...` and `%YAML 1.2` followed by `---` as [null], `---` twice followed by `a: 1` as
+    // [null,{"a":1}], and `%YAML 1.2` alone as no document.
+    testCase "A start marker makes a document without a body" <| fun _ ->
+        Expect.equal (Reader.readDocuments "---\n...\n") [ YAMLElement.Nil ] "A start and an end marker"
+        Expect.equal (Reader.readDocuments "%YAML 1.2\n---\n") [ YAMLElement.Nil ] "A directive and a start marker"
+        Expect.equal
+            (Reader.readDocuments "---\n---\na: 1")
+            [ YAMLElement.Nil
+              YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "a", YAMLElement.Object [ YAMLElement.Value(YAMLContent.create "1") ]) ] ]
+            "An empty document in front of another"
+        Expect.equal (Reader.readDocuments "%YAML 1.2\n") [] "A directive alone makes no document"
+        Expect.equal (Reader.readDocuments "") [] "An empty input makes no document"
+
+    // yaml@2.6.1 reads {} as {} and the documents above as null.
+    testCase "Decode.option reads a document without a node as None" <| fun _ ->
+        let decode (yaml: string) = Decode.read yaml |> Decode.option (Decode.map id Decode.string)
+        for yaml in [ ""; "\n\n"; "# c"; "# c1\n# c2"; "---\n# c" ] do
+            let label = yaml.Replace("\n", "|")
+            Expect.equal (decode yaml) None $"The document {label} is null"
+        Expect.equal (decode "{}") (Some Map.empty) "The empty flow mapping is no null"
+
+    testCase "A document without a node round trips through the writer" <| fun _ ->
+        let written (element: YAMLElement) = (Writer.write element None).Replace("\r\n", "\n")
+        Expect.equal (written YAMLElement.Nil) "" "Nil writes nothing"
+        Expect.equal (written (YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Nil ])) "# c\n" "The comment stays"
+        for yaml in [ ""; "# c"; "# c1\n# c2" ] do
+            let parsed = Reader.read yaml
+            let label = yaml.Replace("\n", "|")
+            Expect.equal (Reader.read (written parsed)) parsed $"The text of the document {label} reads back as the same element"
 ]

@@ -125,7 +125,11 @@ let (|AliasNode|_|) (input: PreprocessorElement) =
     match input with
     | Line s ->
         let m = Regex.Match(s.Trim(), AliasPattern)
-        if m.Success then Some m.Groups.["alias"].Value
+        if m.Success then
+            let comment: int option =
+                let v = m.Groups.["comment"].Value
+                if v = "" then None else Some (int v)
+            Some {| Name = m.Groups.["alias"].Value; Comment = comment |}
         else None
     | _ -> None
 

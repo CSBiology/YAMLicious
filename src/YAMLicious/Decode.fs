@@ -188,6 +188,8 @@ let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
     // An empty node is null. `k:` and an empty sequence item `-` both give Nil. Object [] is the empty
     // flow mapping `{}`, which is not null.
     | YAMLElement.Nil -> None
+    // A document with comments and no node is Object [comments; Nil], which is null with its comments.
+    | YAMLElement.Object [YAMLElement.Nil] -> None
     // A sequence or a mapping is not null either, so the decoder reads it, as in Thoth.Json.
     | _ -> Some (decoder value)
 

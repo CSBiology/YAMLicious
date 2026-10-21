@@ -176,6 +176,9 @@ type private Scanner(s: string) =
     // True right behind a flow collection that closed, until a separator follows. Only a comment, a `,` or
     // a closer can follow it, so text, a bracket or a colon there is an error.
     let mutable afterCloser = false
+    // True right behind an alias, until a separator follows. An alias ends its node, so only a comment, the
+    // end of the line and, in a flow collection, a `,`, a closer or a colon can follow it.
+    let mutable afterAlias = false
     // True when a comment inside a flow collection ended a node. Only a `,` or a closer can follow it.
     let mutable commentEndedNode = false
     // True right behind a `[`, a `{` or a `,` of a flow collection, until a node or another indicator follows.
@@ -434,12 +437,15 @@ type private Scanner(s: string) =
     let rejectGlued () =
         if afterCloser then
             failwithf "Line %d: a flow collection ends its node, so only a comment, a `,` or a closer can follow it." (physicalLine ())
+        if afterAlias then
+            failwithf "Line %d: an alias ends its node, so only a comment or the end of the line can follow it, and in a flow collection a `,` or a closer." (physicalLine ())
         if commentEndedNode then
             failwithf "Line %d: a comment ended the node in front of it, so only a `,` or a closer can follow." (physicalLine ())
 
-    /// The Reader keeps only scalar keys, so a flow collection cannot be the key of an entry.
-    let failComplexKey () =
-        failwithf "Line %d: a flow collection cannot be the key of an entry, because YAMLicious keeps only scalar keys." (physicalLine ())
+    /// The Reader keeps only scalar keys and never resolves an alias, so a flow collection or an alias
+    /// cannot be the key of an entry.
+    let failKey (what: string) =
+        failwithf "Line %d: %s cannot be the key of an entry, because YAMLicious keeps only scalar keys." (physicalLine ()) what
 
     /// Folds a plain scalar that starts at the cursor inside a flow collection and goes on in the next
     /// lines (YAML 1.2.2 7.3.3). Each line of the scalar is one segment of a string table entry, as in
@@ -527,6 +533,7 @@ type private Scanner(s: string) =
         atNodeStart <- startsNode
         plainOpen <- false
         afterCloser <- false
+        afterAlias <- false
         commentEndedNode <- false
         emptySlot <- flowOpeners.Count > 0 && (c = '[' || c = '{' || c = ',')
         explicitKey <- false
@@ -638,7 +645,7 @@ type private Scanner(s: string) =
         found
 
     /// Brings the stack of owners up to date with the finished line. It returns the owner of the plain
-    /// scalar that the line opens, or NoPlain.
+    /// scalar or the alias that ends the line, or NoPlain.
     let trackStructure (kind: LineKind) (text: string) (codeEnd: int) : int =
         if kind = LineKind.DocumentStart || kind = LineKind.DocumentEnd then
             owners.Clear()
@@ -867,6 +874,32 @@ type private Scanner(s: string) =
         foldedBreaks <- foldedBreaks + nextBreaks
         i <- nextAt
 
+    /// Scans the alias that starts at the cursor, a node start. The name runs to a blank or a flow indicator
+    /// and may hold any other character, quotes and hashes included. An alias ends its node, so afterAlias
+    /// makes the text behind it an error. A `*` with no name is no alias and stays text. YAMLicious never
+    /// resolves an alias, so an alias in the place of a key inside a flow collection is an error: behind a
+    /// `?`, at the start of an entry of a flow mapping, or in front of a colon.
+    let scanAlias () =
+        let mutable e = i + 1
+        while e < n && not (endsFlowToken e) do
+            e <- e + 1
+        if e = i + 1 then
+            appendPlain '*'
+        else
+            rejectGlued ()
+            let inFlow = flowOpeners.Count > 0
+            if inFlow && (explicitKey || (emptySlot && flowOpeners.[flowOpeners.Count - 1] = '{')) then
+                failKey "an alias"
+            for k in i .. e - 1 do
+                emit s.[k]
+            atNodeStart <- false
+            plainOpen <- false
+            hasCode <- true
+            emptySlot <- false
+            explicitKey <- false
+            afterAlias <- true
+            i <- e
+
     /// Scans the content of one emitted line up to an unquoted line break or the end of the input. A line
     /// break inside a flow collection does not end the line.
     let scanContent () =
@@ -906,7 +939,7 @@ type private Scanner(s: string) =
                         rejectGlued ()
                         if not atNodeStart then
                             failwithf "Line %d: a node in front of this flow collection needs a `,` or a `:` behind it." (physicalLine ())
-                        if explicitKey then failComplexKey ()
+                        if explicitKey then failKey "a flow collection"
                         flowOpeners.Add c
                         flowLines.Add(physicalLine ())
                         flowColons.Add false
@@ -945,11 +978,12 @@ type private Scanner(s: string) =
                     if not separates then
                         appendPlain c
                     else
-                        if afterCloser then failComplexKey ()
+                        if afterCloser then failKey "a flow collection"
                         if flowOpeners.Count > 0 then
                             let top = flowColons.Count - 1
                             if flowColons.[top] then
                                 failwithf "Line %d: an entry of a flow collection can hold only one `:`." (physicalLine ())
+                            if afterAlias then failKey "an alias"
                             flowColons.[top] <- true
                         else
                             // The first colon ends the key. The value behind it, plain or quoted, ends at
@@ -996,6 +1030,8 @@ type private Scanner(s: string) =
                         i <- e
                     else
                         appendPlain c
+                | '*' ->
+                    if atNodeStart then scanAlias () else appendPlain c
                 | _ ->
                     appendPlain c
 
@@ -1013,6 +1049,7 @@ type private Scanner(s: string) =
         keySeparated <- false
         flowOwner <- OwnerUnknown
         afterCloser <- false
+        afterAlias <- false
         commentEndedNode <- false
         emptySlot <- false
         explicitKey <- false
@@ -1063,8 +1100,8 @@ let parseTagDirective (line: string) : (string * string) option =
 
 /// The input of Preprocessing: the lines that follow the prelude of a document, together with the
 /// version and the tag handles that its directives set. `prepareDocuments` returns one value for each
-/// document of an input. `pipeline` returns the whole input as one value, so every document marker
-/// after the first stays a line.
+/// document of an input. `pipeline` returns the one document of an input and raises an error when the
+/// input holds a second one.
 type PreparedYaml =
     { Lines: TokenLine[]
       StringMap: Dictionary<int, StringMapEntry>
@@ -1109,6 +1146,8 @@ type private Opening =
       /// The comments and blank lines of the prelude, the comment behind a directive and the content
       /// behind the start marker.
       PreludeLines: TokenLine[]
+      /// True when a `---` marker opens the document.
+      Explicit: bool
       /// The index of the first line of the body.
       BodyStart: int }
 
@@ -1143,7 +1182,8 @@ let private openDocument (lines: TokenLine[]) (start: int) : Opening =
             prelude.Add record
         index <- index + 1
 
-    if index < lines.Length && lines.[index].Kind = LineKind.DocumentStart then
+    let explicitStart = index < lines.Length && lines.[index].Kind = LineKind.DocumentStart
+    if explicitStart then
         let inlineLine = tryInlineContent lines.[index]
         match inlineLine with
         | Some line -> prelude.Add line
@@ -1153,6 +1193,7 @@ let private openDocument (lines: TokenLine[]) (start: int) : Opening =
     { Version = yamlVersion
       Handles = tagHandles
       PreludeLines = prelude.ToArray()
+      Explicit = explicitStart
       BodyStart = index }
 
 /// The document that opens with `opening` and takes the lines up to but excluding line `stop`.
@@ -1176,32 +1217,49 @@ let private indexOfLine (lines: TokenLine[]) (start: int) (matches: TokenLine ->
 ///
 /// The comments between the start of the input or a `...` and the next `---` are the prelude of the
 /// document that this `---` starts, and they stay with it. Comments between the content of a document
-/// and the next `---` stay in the earlier document. A document with no line besides blank lines, such
-/// as one that holds only directives, is dropped.
-let prepareDocuments (tokenized: TokenizedYaml) : PreparedYaml list =
+/// and the next `---` stay in the earlier document. A `---` or a `...` makes a document even with no
+/// body, as it does for a YAML reader, which reads such a document as null. A prelude with no marker
+/// and no line besides blank lines, such as one that holds only directives, is no document.
+///
+/// Each document comes with a flag. It is true for a document that a reader of the input would count:
+/// one with a marker or with a line besides comments. A comment-only piece at the end of the input is
+/// kept as a document, so that its comments stay, but it does not count.
+let private splitDocuments (tokenized: TokenizedYaml) : (PreparedYaml * bool) list =
     let lines = cut tokenized.Lines
-    let documents = ResizeArray<PreparedYaml>()
+    let documents = ResizeArray<PreparedYaml * bool>()
     let isMarker (line: TokenLine) = line.Kind = LineKind.DocumentStart || line.Kind = LineKind.DocumentEnd
 
     let mutable index = 0
     while index < lines.Length do
         let opening = openDocument lines index
         let stop = indexOfLine lines opening.BodyStart isMarker
+        let closed = stop < lines.Length && lines.[stop].Kind = LineKind.DocumentEnd
 
         let document = assemble tokenized lines opening stop
-        if document.Lines |> Array.exists (fun line -> line.Kind <> LineKind.Blank) then
-            documents.Add document
-        index <- if stop < lines.Length && lines.[stop].Kind = LineKind.DocumentEnd then stop + 1 else stop
+        let marked = opening.Explicit || closed
+        if marked || document.Lines |> Array.exists (fun line -> line.Kind <> LineKind.Blank) then
+            let counts =
+                marked
+                || document.Lines |> Array.exists (fun line -> line.Kind <> LineKind.Blank && line.Kind <> LineKind.CommentOnly)
+            documents.Add((document, counts))
+        index <- if closed then stop + 1 else stop
 
     List.ofSeq documents
 
-/// Tokenizes once and prepares the first document for Preprocessing. It reads the directives and removes
-/// them together with the leading `---`, and the comments of the prelude stay. The document ends at the
-/// first line that the scanner classified as a `...`, and the lines behind it are dropped. Every `---`
-/// before that stays a line. The line kinds stay available for the stages that follow.
+let prepareDocuments (tokenized: TokenizedYaml) : PreparedYaml list =
+    splitDocuments tokenized |> List.map fst
+
+/// Tokenizes once and prepares the document of the input for Preprocessing. It reads the directives and
+/// removes them together with the leading `---`, and the comments of the prelude stay. More than one
+/// document is an error, because the result holds one. An input without a document gives an empty one.
+/// The line kinds stay available for the stages that follow.
 let pipeline (yamlString: string) : PreparedYaml =
     let tokenized = tokenize yamlString
-    let lines = cut tokenized.Lines
-    let opening = openDocument lines 0
-    let stop = indexOfLine lines opening.BodyStart (fun line -> line.Kind = LineKind.DocumentEnd)
-    assemble tokenized lines opening stop
+    match splitDocuments tokenized with
+    | [] ->
+        let lines = cut tokenized.Lines
+        assemble tokenized lines (openDocument lines 0) 0
+    | (first, _) :: rest ->
+        if rest |> List.exists snd then
+            failwith "The input holds more than one document. Use Reader.readDocuments to read all of them."
+        first

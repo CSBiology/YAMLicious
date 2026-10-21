@@ -916,6 +916,56 @@ let private flowScannerTests = testList "Flow collections across lines in the sc
         for input in [ "{a: b:c}"; "[a: b, c: d]"; "{a: [x: y], b: {c: d}}" ] do
             Persil.tokenize input |> ignore
 
+    testCase "text behind an alias is an error that names the line" <| fun _ ->
+        // yaml@2.6.1 rejects all nine inputs with UNEXPECTED_TOKEN or MISSING_CHAR when the anchor `s: &a x` stands in front
+        // of them. Outside a flow collection a comma is text, so `k: *a,b` is an alias followed by text.
+        let expectGlued (input: string) (line: int) =
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: an alias ends its node, so only a comment or the end of the line can follow it, and in a flow collection a `,` or a closer."
+                $"The error of {input}"
+        expectGlued "k: *a b" 1
+        expectGlued "k: *a,b" 1
+        expectGlued "l:\n- *a b" 2
+        expectGlued "*a b: c" 1
+        expectGlued "l: [*a b]" 1
+        expectGlued "l: {k: *a b}" 1
+        expectGlued "l: [*a\n b]" 2
+        expectGlued "l: [*a \"q\"]" 1
+        expectGlued "l: [*a [b]]" 1
+
+    testCase "an alias may be followed by blanks, a comment, a comma, a closer or the end" <| fun _ ->
+        // yaml@2.6.1 reads these inputs, after the anchor `s: &a x`, with the alias resolved. The name of an alias ends at a blank or a
+        // flow indicator and may hold quotes, hashes and colons, so `k: *a'q'` and `k: *a:b` name other anchors.
+        let afterBlanks = [ "k: *a"; "k: *a # c"; "k: *a   "; "- *a"; "k: *a\t" ]
+        let inFlow = [ "l: [*a]"; "l: [*a,b]"; "l: [*a ,b]"; "l: [*a # c\n ]"; "l: {k: *a, j: *a }" ]
+        let withName = [ "k: *a'q'"; "k: *a#c"; "k: *a:b"; "l: [*a:b]" ]
+        for input in afterBlanks @ inFlow @ withName do
+            let actual = Persil.tokenize input
+            Expect.equal actual.StringMap.Count 0 $"No string in {input}"
+        let kept = expectLines "k: *a'q'" "k: *a'q'" [code]
+        Expect.equal kept.StringMap.Count 0 "A quote inside the name opens no scalar"
+
+    testCase "an alias in the place of a key inside a flow collection is an error that names the line" <| fun _ ->
+        // yaml@2.6.1 reads all inputs, with the anchor `&a x : 1` in front of them, as {"x":"v"}, ["x",{"x":"v"}] and {"x":null}. YAMLicious
+        // keeps only scalar keys and never resolves an alias, so the rejection is deliberate.
+        let expectKey (input: string) (line: int) =
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: an alias cannot be the key of an entry, because YAMLicious keeps only scalar keys."
+                $"The error of {input}"
+        expectKey "{*a : v}" 1
+        expectKey "[*a : v]" 1
+        expectKey "{? *a : v}" 1
+        expectKey "{? *a}" 1
+        expectKey "[? *a : v]" 1
+        expectKey "{k: 1, *a}" 1
+        expectKey "{k: 1,\n  *a : v}" 2
+        expectKey "{ # c\n  *a : v}" 2
+        expectKey "{&y *a : v}" 1
+        for input in [ "{k: *a}"; "[*a]"; "{? k : *a}"; "[k, *a]"; "{k: *a, j: *b}"; "[*a, *b]" ] do
+            Persil.tokenize input |> ignore
+
     testCase "a flow collection as the key of an entry is an error that names the line" <| fun _ ->
         // yaml@2.6.1 reads all inputs with the collection as a text key such as "[ a ]". The message says
         // that YAMLicious keeps only scalar keys and gives no hint to write the key behind `?`.
@@ -1193,17 +1243,16 @@ let private pipelineTests = testList "Persil.pipeline" [
     testCase "a duplicate YAML directive throws" <| fun _ ->
         Expect.throws (fun () -> Persil.pipeline "%YAML 1.2\n%YAML 1.1\n---\na: 1\n" |> ignore) "duplicate"
 
-    testCase "a later marker stays a line" <| fun _ ->
-        let prepared = Persil.pipeline "a: 1\n---\nb: 2\n"
-        Expect.equal (linesOf prepared) ["a: 1", code; "---", start; "b: 2", code] "only the leading marker is removed"
+    // yaml@2.6.1 parse throws "Source contains multiple documents" for each of these inputs. It reads `a: 1` followed by
+    // `...` as {"a":1}, also with a comment behind the end marker.
+    testCase "a second document is an error" <| fun _ ->
+        for yaml in [ "a: 1\n---\nb: 2\n"; "a: 1\n...\nb: 2\n"; "a: 1\n...\n---\nb: 2\n"; "a: 1\n---\nb: 2\n...\nc: 3\n"; "---\n---\na: 1\n"; "a: 1\n---\n" ] do
+            let message = try (Persil.pipeline yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "more than one document" $"{yaml} holds two documents"
+        Expect.equal (linesOf (Persil.pipeline "a: 1\n...\n")) ["a: 1", code] "an end marker closes the only document"
+        Expect.equal (linesOf (Persil.pipeline "a: 1\n...\n# c\n")) ["a: 1", code] "a comment behind the end marker is no document"
 
     testCase "the body ends at the first end marker the scanner found" <| fun _ ->
-        // yaml@2.6.1 reads the first input as {"a":1} and {"b":2}, and the second as {"a":1}, {"b":2} and {"c":3}
-        Expect.equal (linesOf (Persil.pipeline "a: 1\n...\nb: 2\n")) ["a: 1", code] "the lines behind the marker are dropped"
-        Expect.equal
-            (linesOf (Persil.pipeline "a: 1\n---\nb: 2\n...\nc: 3\n"))
-            ["a: 1", code; "---", start; "b: 2", code]
-            "a start marker in front of it stays a line"
         Expect.equal (linesOf (Persil.pipeline "k:\n  - ...\n  - y\n")) ["k:", code; "  - ...", code; "  - y", code] "an indented triple dot is no marker"
 
     testCase "the empty first and last line are cut and body blanks stay" <| fun _ ->
@@ -1230,13 +1279,26 @@ let private documentsTests = testList "Persil.prepareDocuments" [
         | other -> failwithf "Expected two documents, got %d" other.Length
 
     testCase "a start marker does not pass its directives on" <| fun _ ->
-        // yaml@2.6.1: [null, {"b":2}]. The empty first document is dropped.
+        // yaml@2.6.1: [null, {"b":2}]. A start marker makes a document, also without a body.
         let documents = Persil.prepareDocuments (Persil.tokenize "%YAML 1.2\n---\n---\nb: 2\n")
         match documents with
-        | [only] ->
-            Expect.isNone only.YAMLVersion "the second document has no directive"
-            Expect.equal (linesOf only) ["b: 2", code] "lines"
-        | other -> failwithf "Expected one document, got %d" other.Length
+        | [first; second] ->
+            Expect.equal first.YAMLVersion (Some { Major = 1; Minor = 2 }) "the first document has the directive"
+            Expect.equal (linesOf first) [] "the first document has no line"
+            Expect.isNone second.YAMLVersion "the second document has no directive"
+            Expect.equal (linesOf second) ["b: 2", code] "lines"
+        | other -> failwithf "Expected two documents, got %d" other.Length
+
+    // yaml@2.6.1: [null] for `---` followed by `...`, for `%YAML 1.2` followed by `---`, and [null,null] for `---` twice.
+    // A prelude of directives with no marker is no document.
+    testCase "a marker makes a document without a body" <| fun _ ->
+        let count (yaml: string) = (Persil.prepareDocuments (Persil.tokenize yaml)).Length
+        Expect.equal (count "---\n...\n") 1 "start and end marker"
+        Expect.equal (count "%YAML 1.2\n---\n") 1 "directive and start marker"
+        Expect.equal (count "---\n---\n") 2 "two start markers"
+        Expect.equal (count "a: 1\n---\n") 2 "a start marker behind a document"
+        Expect.equal (count "a: 1\n...\n...\n") 2 "a second end marker"
+        Expect.equal (count "%YAML 1.2\n") 0 "directives alone"
 
     testCase "a document that holds only directives is dropped" <| fun _ ->
         // yaml@2.6.1: [{"a":1}]
@@ -1532,7 +1594,8 @@ let private readerTests = testList "Reader on scanner output" [
         Expect.equal (Reader.read "-\n  a\n- b" |> Decode.list Decode.string) [ "a"; "b" ] "the next item ends the scalar"
 
     testCase "a triple dot that is not at column 0 is text and one at column 0 ends the document" <| fun _ ->
-        // yaml@2.6.1: {"k":["x","...","y"]}, {"k":"...","j":1}, ["...","y"], {"k":"..."} and {"a":1}
+        // yaml@2.6.1: {"k":["x","...","y"]}, {"k":"...","j":1}, ["...","y"], {"k":"..."} and {"a":1}. It rejects `a: 1`,
+        // `...` and `b: 2` for its second document.
         let items (yaml: string) = Reader.read yaml |> Decode.object (fun get -> get.Required.Field "k" (Decode.list Decode.string))
         Expect.equal (items "k:\n  - x\n  - ...\n  - y") [ "x"; "..."; "y" ] "an indented item"
         let pair (yaml: string) =
@@ -1540,7 +1603,8 @@ let private readerTests = testList "Reader on scanner output" [
         Expect.equal (pair "k: ...\nj: 1") ("...", "1") "a value"
         Expect.equal (Reader.read "- ...\n- y" |> Decode.list Decode.string) [ "..."; "y" ] "a dash"
         Expect.equal (Reader.read "k:\n  ..." |> Decode.object (fun get -> get.Required.Field "k" Decode.string)) "..." "a line of its own"
-        Expect.equal (Reader.read "a: 1\n...\nb: 2\n") (YAMLElement.Object [ mapping "a" (plainNode "1") ]) "the end marker at column 0"
+        Expect.equal (Reader.read "a: 1\n...\n") (YAMLElement.Object [ mapping "a" (plainNode "1") ]) "the end marker at column 0"
+        Expect.throws (fun () -> Reader.read "a: 1\n...\nb: 2\n" |> ignore) "the lines behind it are a second document"
 
     testCase "the lines of a plain scalar are one value that no stage reads as structure" <| fun _ ->
         // yaml@2.6.1: {"k":"a - x"}, {"k":"v ? | x"}, {"k":"a [x, \"y\"]"} and [{"k":"v ? |"},"b"]

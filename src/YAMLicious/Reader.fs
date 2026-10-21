@@ -143,6 +143,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 let suffix = m.Groups.[2].Value
                 match Map.tryFind handle handles with
                 | Some prefix -> prefix + suffix
+                // `!` and `!!` always have a prefix. A named handle needs a %TAG directive in its document.
+                | None when handle <> "!" && handle <> "!!" ->
+                    failwithf "The tag handle %s is not declared by a %%TAG directive in this document: %s" handle shorthand
                 | None -> shorthand
             else shorthand
 
@@ -368,9 +371,9 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         match afterComments with
         | FlowTokens.Token.String value :: rest when not (isFlowCommentToken afterComments.Head) ->
             Some (foldFlowKey (flowScalar value tag anchor)), commentTokens @ rest
-        | FlowTokens.Token.Alias name :: rest ->
-            if hasProperties then failwithf "An alias cannot have properties, got: *%s" name
-            Some (YAMLContent.create("*" + name)), rest
+        | FlowTokens.Token.Alias name :: _ ->
+            // The scanner rejects an alias in the place of a key, so this only guards a caller that skips it.
+            failwithf "An alias cannot be the key of an entry, because YAMLicious keeps only scalar keys, got: *%s" name
         | next :: _ when isFlowEntryEnd next ->
             Some (emptyFlowScalar tag anchor), commentTokens @ afterComments
         | _ ->
@@ -471,7 +474,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     let keyContent =
                         match item with
                         | YAMLElement.Value content -> foldFlowKey content
-                        | YAMLElement.Alias name -> YAMLContent.create("*" + name)
+                        | YAMLElement.Alias name -> failwithf "An alias cannot be the key of an entry, because YAMLicious keeps only scalar keys, got: *%s" name
                         | YAMLElement.Nil -> YAMLContent.create ""
                         | other -> failwithf "A flow collection cannot be the key of an entry, got: %A" other
                     let nextAcc, afterPair = readPair keyContent afterItem acc
@@ -524,6 +527,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | YAMLElement.Value content ->
                     YAMLElement.Value { content with Tag = singleProperty content.Tag props.Tag "tag"; Anchor = singleProperty content.Anchor props.Anchor "anchor" }
                 | other -> other))
+        | [ YAMLElement.Alias name ] ->
+            failwithf "An alias cannot have properties, got: *%s" name
         | collection ->
             let coreTag =
                 collection |> List.tryPick (function
@@ -565,11 +570,25 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         else
             content
 
+    /// The element model keeps only scalar keys and the Reader never resolves an alias, so an alias as the key
+    /// of an entry is an error. The Reader has no source line, so the message quotes the key.
+    let failOnAliasKey (key: string) =
+        let node = key.TrimStart()
+        if node.StartsWith("*") then
+            failwithf "An alias cannot be the key of an entry, because YAMLicious keeps only scalar keys and never resolves an alias. The key is: %s" (node.TrimEnd())
+
+    /// A key in front of a colon on its own line. An alias is no key.
+    let createImplicitKey (raw: string) (comment: string option) =
+        failOnAliasKey raw
+        createScalarContent raw comment
+
     /// The element model keeps only scalar keys, so a node behind `?` that is a flow collection, or that
-    /// starts a block sequence or mapping (`- a`, `a: b`, `? a`), is an error. The Reader has no source
-    /// line, so the message quotes the key. `line` is the first line of the node, with its properties.
+    /// starts a block sequence or mapping (`- a`, `a: b`, `? a`), is an error, and so is an alias. The
+    /// Reader has no source line, so the message quotes the key. `line` is the first line of the node,
+    /// with its properties.
     let failOnCollectionKey (line: string) =
         let node = (extractProperties handles line).Value
+        failOnAliasKey node
         let startsWithIndicator (indicator: char) =
             node.Length > 0 && node.[0] = indicator && (node.Length = 1 || node.[1] = ' ' || node.[1] = '\t')
         let kind =
@@ -604,7 +623,10 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
         | AliasNode alias::rest ->
-            loopRead handles rest (YAMLElement.Alias alias::acc)
+            // An alias has no comment field, so the comment behind it stands in front of it, as it does in
+            // front of a flow collection.
+            let comment = restoreCommentReplace commentDict alias.Comment |> Option.map YAMLElement.Comment |> Option.toList
+            loopRead handles rest (YAMLElement.Alias alias.Name :: comment @ acc)
         // Example1: 
         // - My Value 1 <c f=1/>
         //   My Value 2
@@ -672,7 +694,7 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | _ ->
                     failOnCollectionKey keyText
                     createKeyContent keyText (restoreCommentReplace commentDict markCommentId), [], rest
-            let acc = commentsBefore @ acc
+            let acc = List.rev commentsBefore @ acc
 
             // The lines behind the colon read as the lines behind a key do. A colon with nothing behind
             // it, or with a comment alone, gives an empty value, and the comment stays behind the entry.
@@ -683,24 +705,27 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | [YamlComment comment] -> YAMLElement.Nil, [YAMLElement.Comment commentDict.[comment.Comment]]
                 | lines -> loopRead handles lines [], []
 
-            match afterKey with
+            // Comment lines between the key and its colon stand in front of the entry.
+            let commentsBetween, afterComments = takeLeadingComments afterKey
+            let accWithBetween = List.rev (commentTokensToYaml commentsBetween) @ acc
+            match afterComments with
             | ExplicitValue v::Intendation iList::tail ->
                 let value, commentsAfter = readExplicitValue v iList
-                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::acc)
+                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::accWithBetween)
             | ExplicitValue v::tail ->
                 let value, commentsAfter = readExplicitValue v []
-                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::acc)
+                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::accWithBetween)
             | _ ->
                 // Without a value the key maps to nothing.
                 loopRead handles afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil)::acc)
         | Key v::Intendation yamlAstList::rest -> //createObject
             let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
+            let keyContent = createImplicitKey v.Key c
             let current = YAMLElement.Mapping (keyContent, loopRead handles yamlAstList [])
             loopRead handles rest (current::acc)
         | Key v::rest0 ->
             let c = restoreCommentReplace commentDict v.Comment
-            let keyContent = createScalarContent v.Key c
+            let keyContent = createImplicitKey v.Key c
             let leadingComments, afterComments = takeLeadingComments rest0
             match afterComments with
             // The items of a sequence stand at the indentation of the key that owns it.
@@ -718,16 +743,16 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
-            let keyContent = createScalarContent v.Key None
+            let keyContent = createImplicitKey v.Key None
             let current = YAMLElement.Mapping(keyContent, YAMLElement.Value(readBlockScalarContent v.Value None block))
             loopRead handles rest (current::acc)
         | KeyValue v::Intendation block::rest ->
-            let keyContent = createScalarContent v.Key None
+            let keyContent = createImplicitKey v.Key None
             let current = YAMLElement.Mapping(keyContent, loopRead handles (PreprocessorElement.Line v.Value :: block) [])
             loopRead handles rest (current::acc)
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
-            let keyContent = createScalarContent v.Key None
+            let keyContent = createImplicitKey v.Key None
             // Properties alone behind the key leave the node to the lines that follow. When a sequence follows
             // at the indentation of the key, as in `k: !!seq` and then `- entry`, the key owns that sequence.
             let ownedSequence =
@@ -777,6 +802,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     | _ -> loopRead handles rest [], []
                 loopRead handles afterNode (List.rev (attachProperties props c node) @ acc)
             else
+                if (props.Tag.IsSome || props.Anchor.IsSome) && props.Value.StartsWith("*") then
+                    failwithf "An alias cannot have properties, got: %s" props.Value
                 match tryOneLineFlowCollection props.Value with
                 | Some (source, coreTag) ->
                     // A flow collection behind properties reads as a collection.
@@ -790,16 +817,49 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                         )
                     loopRead handles rest (current::acc)
         | [] ->
-            acc
-            |> List.rev
-            |> YAMLElement.Object
+            let items = List.rev acc
+            // One indentation level holds one kind of node: the entries of a mapping, the items of a sequence or
+            // a scalar. A plain scalar or an alias at the indentation of the keys has no `:` behind it, and one at
+            // the indentation of the dashes has no dash in front of it. The dashes of a sequence at the indentation
+            // of a key belong to that key, so they never stand beside it. Comments are no nodes and stay anywhere.
+            let isMapping = function YAMLElement.Mapping _ -> true | _ -> false
+            let isSequence = function YAMLElement.Sequence _ -> true | _ -> false
+            let isScalar = function YAMLElement.Value _ | YAMLElement.Alias _ -> true | _ -> false
+            let scalarText () =
+                match items |> List.find isScalar with
+                | YAMLElement.Value content when content.Value <> "" -> content.Value
+                | YAMLElement.Value _ -> "(empty, with properties)"
+                | YAMLElement.Alias name -> "*" + name
+                | _ -> ""
+            if items |> List.exists isMapping && items |> List.exists isScalar then
+                failwithf "A scalar cannot stand among the entries of a block mapping, because no `:` follows it. The scalar is: %s" (scalarText ())
+            elif items |> List.exists isSequence && items |> List.exists isScalar then
+                failwithf "A scalar cannot stand among the items of a block sequence, because no `-` precedes it. The scalar is: %s" (scalarText ())
+            elif items |> List.exists isMapping && items |> List.exists isSequence then
+                failwith "A block mapping and a block sequence cannot stand at one indentation, because a sequence belongs to a key and a mapping cannot follow the items of a sequence."
+            else
+                YAMLElement.Object items
         | anyElse -> failwithf "Unknown pattern: %A" anyElse
     loopRead handles yamlList []
+
+/// True when the lines of a document hold a node. Blank lines and comments are no nodes.
+let rec private hasNode (elements: PreprocessorElement list) =
+    elements
+    |> List.exists (function
+        | PreprocessorElement.Line line -> line.Trim() <> "" && (Placeholder.tryParseComment line).IsNone
+        | PreprocessorElement.Intendation children
+        | PreprocessorElement.Level children -> hasNode children
+        | PreprocessorElement.Nil -> false)
 
 let private readAst (ast: Preprocessor) =
     match ast.AST with
     | Level lvl ->
-        tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles
+        let element = tokenize lvl ast.StringMap ast.CommentMap ast.TagHandles
+        // A document without a node is null. The comments of such a document stay in front of the Nil.
+        match element with
+        | YAMLElement.Object comments when not (hasNode lvl) ->
+            if comments.IsEmpty then YAMLElement.Nil else YAMLElement.Object (comments @ [ YAMLElement.Nil ])
+        | _ -> element
     | _ -> failwith "Not a root!"
 
 let read (yaml: string) =

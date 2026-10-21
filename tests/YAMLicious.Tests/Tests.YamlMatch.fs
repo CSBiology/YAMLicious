@@ -95,11 +95,21 @@ let Main = testList "YamlMatch" [
     testCase "Match AliasNode with a colon in the name" <| fun _ ->
         for (text, name) in [ "*a", "a"; "*a:b", "a:b"; "*a:", "a:" ] do
             match Line text with
-            | AliasNode res -> Expect.equal res name $"The name of {text}"
+            | AliasNode res ->
+                Expect.equal res.Name name $"The name of {text}"
+                Expect.isNone res.Comment $"{text} has no comment"
             | _ -> Expect.isFalse true $"{text} is an alias"
         match Line "*a : v" with
         | AliasNode _ -> Expect.isFalse true "A blank ends the name, so this line is an entry"
         | _ -> ()
+
+    // yaml@2.6.1 reads `k: *a # c` after `x: &a 1` as {"x":1,"k":1}. The comment placeholder is no part of the name.
+    testCase "Match AliasNode with a comment" <| fun _ ->
+        match Line "*a:b <c f=3/>" with
+        | AliasNode res ->
+            Expect.equal res.Name "a:b" "The name stops in front of the comment"
+            Expect.equal res.Comment (Some 3) "The comment id"
+        | _ -> Expect.isFalse true "An alias followed by a comment is an alias"
 
     // yaml@2.6.1 reads `:a` as the string ":a", `:a: b` as {":a":"b"} and `- :a` as [":a"].
     testCase "Match ExplicitValue needs a blank behind the colon" <| fun _ ->
