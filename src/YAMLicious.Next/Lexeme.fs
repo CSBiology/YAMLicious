@@ -15,10 +15,11 @@ namespace YAMLicious
 /// - `BlockKey` and `FlowKey` mark the key of an implicit entry. A plain scalar stays on its line there,
 ///   and `FlowKey` also ends it at a flow indicator.
 ///
-/// The parser passes `BlockIn` for every position of the block structure and `FlowIn` for every token inside
-/// a flow collection, `FlowInNested` inside a collection of a collection. It cannot know that a node is the implicit key of an entry before the colon follows, so
-/// it checks the line and the length of the key afterwards. `BlockOut`, `FlowOut`, `BlockKey` and `FlowKey`
-/// are for callers that know the production, such as the tests of the lexer.
+/// The parser passes `BlockIn` for every position of the block structure. Inside a flow collection it
+/// passes `FlowIn` while the collection is the outermost one and `FlowInNested` while a collection that
+/// another one holds is open. It cannot know that a node is the implicit key of an entry before the colon
+/// follows, so it checks the line and the length of the key afterwards. `BlockOut`, `FlowOut`, `BlockKey`
+/// and `FlowKey` are for callers that know the production, such as the tests of the lexer.
 type internal GrammarContext =
     | BlockIn
     | BlockOut
@@ -91,8 +92,10 @@ type internal Lexeme =
     /// a document, and [211] l-yaml-stream lets one follow any document, so the lexer cannot tell whether
     /// the mark is valid. The parser applies the stream rule. Marks take no column, so the span is the one
     /// column that the run would fill at the start of the line, which gives an error a range to point at. A
-    /// mark inside a scalar, a flow collection or a line is invalid, and the lexer reports it. The tree has no
-    /// slot for a mark, so the parser drops it and the writer never writes one.
+    /// quoted scalar takes a mark as content ([107] nb-double-char, [118] nb-single-char). Every other mark is
+    /// invalid and the lexer reports it, because [27] nb-char and [34] ns-char exclude the mark from the other
+    /// scalars, from comments, names and directives, and a flow collection or the middle of a line has no
+    /// place for it. The tree has no slot for a mark, so the parser drops it and the writer never writes one.
     | ByteOrderMark
     /// A directive line without its trailing comment.
     | Directive of DirectiveKind
@@ -106,9 +109,8 @@ type internal Lexeme =
     | ExplicitKey
     /// A `:` that a blank or the end of the line follows. Inside a flow collection a flow indicator may
     /// follow it as well, and so may any character when the colon follows a quoted scalar or a flow
-    /// collection, as in `"a":b` and `"a" :b` ([149] c-ns-flow-map-adjacent-value). `adjacent` is true when
-    /// the colon stands right behind such a node.
-    | Value of adjacent: bool
+    /// collection, as in `"a":b` and `"a" :b` ([149] c-ns-flow-map-adjacent-value).
+    | Value
     | FlowSequenceStart
     | FlowSequenceEnd
     | FlowMappingStart

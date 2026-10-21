@@ -79,7 +79,9 @@ type LineBreak =
 /// in `k: !!str # c`, puts the comment on the `After` of its last property, and it has no trailing comment
 /// either. That ban holds outside flow collections. In a flow collection a comment behind the comma is the
 /// trailing comment of the node (rule R6), and a comment behind the property with the comma on a later line
-/// goes to the `After` of the last property.
+/// goes to the `After` of the last property. A key that has properties and no content puts a comment on its
+/// line in the `After` of its last property in a flow mapping as well, also when the `:` follows on a later
+/// line, as in `{ &x # c` and `: v }` (rule R7).
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
@@ -232,7 +234,8 @@ type Collection<'Item> =
 /// `TrailingComment`. A block collection has no closing token and has none either. A missing value has none
 /// (rule R1). A node that has properties and no content has none outside a flow collection (rule R1) and
 /// has the comment behind the comma inside one (rule R6). A comment behind a block collection goes to the
-/// `End` of the collection or to the `Before` of the next entry or item.
+/// `End` of the collection or to the `Before` of the next entry or item. A key keeps its comment when the
+/// `:` stands on a later line, as in `? "a" # c` and `: v` and in `{ "a" # c` and `: v }` (rule R7).
 [<NoEquality; NoComparison>]
 type YamlNode =
     { Kind: YamlNodeKind
@@ -262,11 +265,14 @@ and [<NoEquality; NoComparison>] MappingEntry =
         /// Some when an explicit `?` stands in front of the key. The separation is the one behind the `?`.
         Question: Separation option
         Key: YamlNode
-        /// Rule R7 (gap before a colon). The trivia between a key and its `:` go here, for an explicit key
-        /// and for an implicit key in a flow mapping, as in `{ a`, a comment line and `: b }`. An implicit
-        /// key in a block mapping stands on one line with its colon, so the gap is empty there. The list holds
-        /// trivia only when a `:` follows. When `Colon` is None the list is empty and the trivia go to the
-        /// `Before` of the next entry or item under rule R4.
+        /// Rule R7 (gap before a colon). The trivia lines between a key and its `:` go here, for an explicit
+        /// key and for an implicit key in a flow mapping, as in `{ a`, a comment line and `: b }`. A comment
+        /// on the line where the key ends is no trivia line of the gap. It is the `TrailingComment` of the
+        /// key (rule R8), or the `After` of the last property of a key that has properties and no content
+        /// (rule R1), as in `? "a" # c` and `: v` in a block mapping and in `{ "a" # c` and `: v }`. An
+        /// implicit key in a block mapping stands on one line with its colon, so the gap is empty there. The
+        /// list holds trivia only when a `:` follows. When `Colon` is None the list is empty and the trivia go
+        /// to the `Before` of the next entry or item under rule R4.
         BeforeColon: Trivia list
         /// The separation behind the `:`. None means that the value indicator is omitted, as it is behind
         /// an explicit key without a value and in a flow mapping entry that is a key alone. Behind the colon of

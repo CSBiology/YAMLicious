@@ -84,6 +84,24 @@ let private streamTests = testList "Lexer stream" [
         expectError "a\n \uFEFFb" "invalid-character" "2:2-2:3"
         expectError "k:\n  \uFEFFa" "invalid-character" "2:3-2:4"
 
+    // [211] l-yaml-stream lets a mark end the document, as a marker does. So the body of a block scalar ends at a line that starts with a mark, also at the root where the
+    // indentation of the parent is -1 and a line at the column 0 can belong to the scalar. The mark behind spaces is inside the line and stays an error.
+    testCase "a line that starts with a byte order mark ends the body of a block scalar" <| fun _ ->
+        expectLexemes "|\n  x\n\uFEFF# c" [ "literal:x\\n"; "bom"; "#own: c" ]
+        expectLexemes "|+\n  x\n\n\uFEFF---\ny" [ "literal+:x\\n\\n"; "bom"; "---"; "plain:y" ]
+        expectLexemes ">\n  x\n\uFEFF" [ "folded:x\\n"; "bom" ]
+        expectLexemes "|\nx\n\uFEFFy" [ "literal:x\\n"; "bom"; "plain:y" ]
+        expectLexemes "|\n\uFEFF# c" [ "literal:"; "bom"; "#own: c" ]
+        expectLexemes "k: |\n  x\n\uFEFF# c" [ "plain:k"; ":"; "literal:x\\n"; "bom"; "#own: c" ]
+        expectError "|\n  x\n \uFEFF" "block-indent" "3:2-3:3"
+
+    // [202] l-document-prefix lets a directive follow a mark, so the lexer reads a directive behind a mark wherever it stands. Whether the stream allows it there is up to the parser ([211]).
+    testCase "a percent sign line behind a byte order mark is a directive for the lexer" <| fun _ ->
+        expectLexemes "a\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "bom"; "%YAML 1.2"; "---"; "plain:b" ]
+        expectLexemes "a\n\uFEFF\n# c\n%YAML 1.2\n---\nb" [ "plain:a"; "bom"; "blank"; "#own: c"; "%YAML 1.2"; "---"; "plain:b" ]
+        // Without a mark the line continues the plain scalar.
+        expectLexemes "a\n%YAML 1.2\n---\nb" [ "plain:a %YAML 1.2"; "---"; "plain:b" ]
+
     // Inside a flow collection a mark is invalid at the start of a line too, and so is one behind a block scalar header or inside a block scalar.
     testCase "a byte order mark at the start of a line inside a flow collection is an error" <| fun _ ->
         expectError "[a,\n\uFEFFb]" "invalid-character" "2:1-2:2"
@@ -91,15 +109,12 @@ let private streamTests = testList "Lexer stream" [
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "[a,\n\uFEFFb]") [ "["; "plain:a"; ","; "error:invalid-character" ] "The error follows the comma"
 
     // yaml@2.6.1 accepts the mark in each of these places and keeps it in the text, or drops it together with the comment. [27] nb-char and [34] ns-char exclude it.
-    testCase "a byte order mark inside a scalar, a comment, a name or a directive is an error" <| fun _ ->
+    testCase "a byte order mark inside a plain scalar, a block scalar, a comment, a name or a directive is an error" <| fun _ ->
         expectError "a\uFEFFb" "invalid-character" "1:2-1:3"
         expectError "k: a\uFEFFb" "invalid-character" "1:5-1:6"
         expectError "k: a\n  b\uFEFFc" "invalid-character" "2:4-2:5"
         expectError "[a, b\uFEFF]" "invalid-character" "1:6-1:7"
         expectError "k: \uFEFFa" "invalid-character" "1:4-1:5"
-        expectError "\"a\uFEFFb\"" "invalid-character" "1:3-1:4"
-        expectError "'a\uFEFFb'" "invalid-character" "1:3-1:4"
-        expectError "k: \"a\n  b\uFEFFc\"" "invalid-character" "2:4-2:5"
         expectError "k: |\n  a\uFEFF" "invalid-character" "2:4-2:5"
         expectError "k: >\n  a\n  \uFEFFb" "invalid-character" "3:3-3:4"
         expectError "# c\uFEFF" "invalid-character" "1:4-1:5"
@@ -110,6 +125,28 @@ let private streamTests = testList "Lexer stream" [
         expectError "%FOO a\uFEFFb\n---" "invalid-character" "1:7-1:8"
         expectLexemes "a\uFEFFb" [ "plain:a"; "error:invalid-character" ]
         expectLexemes "&a\uFEFFb" [ "&a"; "error:invalid-character" ]
+
+    // [107] nb-double-char and [118] nb-single-char take every character of [2] nb-json, and 1.2.2 section 5.2 says that byte order marks are allowed inside quoted scalars.
+    // The mark is content there, wherever it stands in the scalar, and it takes the column that its position gives it unless it starts a line.
+    testCase "a byte order mark inside a quoted scalar is content" <| fun _ ->
+        expectLexemes "\"a\uFEFFb\"" [ "double:a\uFEFFb" ]
+        expectLexemes "'a\uFEFFb'" [ "single:a\uFEFFb" ]
+        expectLexemes "\"\uFEFF\"" [ "double:\uFEFF" ]
+        expectLexemes "'\uFEFF'" [ "single:\uFEFF" ]
+        expectLexemes "\"\uFEFF\uFEFF\"" [ "double:\uFEFF\uFEFF" ]
+        expectLexemes "[\"a\uFEFF\", {'\uFEFFb': 1}]" [ "["; "double:a\uFEFF"; ","; "{"; "single:\uFEFFb"; ":"; "plain:1"; "}"; "]" ]
+        expectLexemes "k: \"a\uFEFFb\"" [ "plain:k"; ":"; "double:a\uFEFFb" ]
+        expectLexemes "\"\uFEFFa\": b" [ "double:\uFEFFa"; ":"; "plain:b" ]
+        Expect.equal (lexSpans "\"a\uFEFFb\"") [ "double:a\uFEFFb 1:1-1:6" ] "The mark inside the line takes a column"
+        // A mark at the start of a continuation line is content as well. It hides a document marker behind it, because the marker has to stand at the start of the line.
+        expectLexemes "\"a\n\uFEFFb\"" [ "double:a \uFEFFb" ]
+        expectLexemes "'a\n\uFEFF---'" [ "single:a \uFEFF---" ]
+        expectLexemes "\"a\n\n\uFEFF\"" [ "double:a\\n\uFEFF" ]
+        expectLexemes "- \"a\n  \uFEFFb\"" [ "-"; "double:a \uFEFFb" ]
+        // The line of a continuation still has to stand deeper than the parent, and the mark does not count as indentation.
+        Expect.equal (errorCodeOf "k: \"a\n\uFEFFb\"") "quoted-indent" "The mark is no indentation"
+        // A mark behind the closing quote is outside the scalar.
+        expectError "\"a\"\uFEFF" "invalid-character" "1:4-1:5"
 
     // yaml@2.6.1 reads the escape for the mark in a double-quoted scalar as the mark. The escape stays valid.
     testCase "the escape for the byte order mark stays valid in a double-quoted scalar" <| fun _ ->
@@ -184,12 +221,12 @@ let private flowTests = testList "Lexer flow lexemes" [
         expectLexemes "{a:,b}" [ "{"; "plain:a"; ":"; ","; "plain:b"; "}" ]
 
     // yaml@2.6.1: {"a":"b"}, {"a":"b"} for the blank in front of the colon and [{"a":"b"}] for `[[a]:b]` is a collection key
-    testCase "a colon right behind a quoted scalar or a flow collection is an adjacent value indicator" <| fun _ ->
-        expectLexemes "{\"a\":b}" [ "{"; "double:a"; ":adjacent"; "plain:b"; "}" ]
-        expectLexemes "{'a':b}" [ "{"; "single:a"; ":adjacent"; "plain:b"; "}" ]
+    testCase "a colon right behind a quoted scalar or a flow collection is a value indicator" <| fun _ ->
+        expectLexemes "{\"a\":b}" [ "{"; "double:a"; ":"; "plain:b"; "}" ]
+        expectLexemes "{'a':b}" [ "{"; "single:a"; ":"; "plain:b"; "}" ]
         expectLexemes "[\"a\" : b]" [ "["; "double:a"; ":"; "plain:b"; "]" ]
-        expectLexemes "[[a]:b]" [ "["; "["; "plain:a"; "]"; ":adjacent"; "plain:b"; "]" ]
-        expectLexemes "{\"a\": b}" [ "{"; "double:a"; ":adjacent"; "plain:b"; "}" ]
+        expectLexemes "[[a]:b]" [ "["; "["; "plain:a"; "]"; ":"; "plain:b"; "]" ]
+        expectLexemes "{\"a\": b}" [ "{"; "double:a"; ":"; "plain:b"; "}" ]
 
     // [149] c-ns-flow-map-adjacent-value: a colon behind a quoted scalar or a flow collection takes its value without a blank, whatever stands between the node and the colon.
     // yaml@2.6.1 reads `{"a" :b}` as {"a":"b"}. The colon after any other node needs a blank or a flow indicator behind it.
@@ -202,8 +239,8 @@ let private flowTests = testList "Lexer flow lexemes" [
         expectLexemes "{\"a\", :b}" [ "{"; "double:a"; ","; "plain::b"; "}" ]
         expectLexemes "{\"a\" b :c}" [ "{"; "double:a"; "plain:b :c"; "}" ]
 
-    testCase "an adjacent colon behind a quoted scalar is a value indicator in a block key too" <| fun _ ->
-        expectLexemes "\"a\": b" [ "double:a"; ":adjacent"; "plain:b" ]
+    testCase "a colon right behind a quoted scalar is a value indicator in a block key too" <| fun _ ->
+        expectLexemes "\"a\": b" [ "double:a"; ":"; "plain:b" ]
         expectLexemes "\"a\" : b" [ "double:a"; ":"; "plain:b" ]
 
     testCase "a flow collection goes on in the lines below without line starts" <| fun _ ->

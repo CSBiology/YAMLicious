@@ -34,8 +34,8 @@ type YamlErrorCode =
     | InvalidDirective
     | EmptyAnchor
     | EmptyAlias
-    /// A byte order mark anywhere but at the start of a line outside a scalar and a flow collection. The
-    /// parser reports it too when a mark stands between a directive and the `---` behind it.
+    /// A byte order mark anywhere but inside a quoted scalar and at the start of a line outside a flow
+    /// collection. The parser reports it too when a mark stands between a directive and the `---` behind it.
     | InvalidCharacter
     // The parser.
     /// A line that is deeper than the open block collections allow, or shallower than the node it ends but
@@ -78,7 +78,8 @@ type YamlErrorCode =
     /// Two entries of a flow collection with no `,` between them, as in `[a [b]]` and `{a: b c: d}`.
     | MissingFlowComma
     /// Content behind a byte order mark that ended a document, before a `---` or a `...` started the next
-    /// part of the stream. `Related` holds the byte order mark.
+    /// part of the stream. A directive counts as content there, because [211] l-yaml-stream allows one only
+    /// behind a `...`. `Related` holds the byte order mark.
     | ContentAfterByteOrderMark
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
@@ -171,7 +172,8 @@ type internal CursorState =
 /// line and a column. Lines count from 1, and a line ends at LF, CRLF or a lone CR. Columns count from 1 in
 /// code points, so a surrogate pair is one column on .NET and JavaScript. Byte order marks at the start of a
 /// line take no column, which covers the mark at the start of the text and the ones in front of a later
-/// document ([202] l-document-prefix, repeated by [211] l-yaml-stream).
+/// document ([202] l-document-prefix, repeated by [211] l-yaml-stream). The cursor does not know the syntax,
+/// so a mark that starts a continuation line of a quoted scalar takes no column either.
 ///
 /// `MarkAt` moves one tracker forward through the text, so the calls cost time proportional to the distance
 /// that they cover. The lexer asks for the marks of a lexeme in the order of the text on every path that
@@ -227,14 +229,15 @@ type internal Cursor(text: string) =
         with get () = started
         and set (value: bool) = started <- value
 
-    /// True at the start of the stream and right behind a `...`, until content or a `---` follows. A
-    /// directive is only valid there.
+    /// True at the start of the stream, right behind a `...` and right behind a byte order mark that starts a
+    /// line, until content or a `---` follows. The lexer reads a `%` line as a directive there, and the parser
+    /// decides whether the directive is valid at that place of the stream.
     member _.InPrelude
         with get () = inPrelude
         and set (value: bool) = inPrelude <- value
 
-    /// The index right behind the last quoted scalar or flow collection that ended, or -1. A colon at this
-    /// index is the adjacent value indicator of a JSON-like node, and a hash at this index is an error.
+    /// The index right behind the last quoted scalar or flow collection that ended, or -1. A hash at this
+    /// index is an error, because a comment needs a blank or a line break in front of it.
     member _.JsonLikeEnd
         with get () = jsonLikeEnd
         and set (value: int) = jsonLikeEnd <- value

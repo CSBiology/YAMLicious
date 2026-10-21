@@ -719,7 +719,7 @@ type internal YamlParser(cursor: Cursor) =
         if peek then
             let next = this.Next(this.RootContext())
             match next.Lexeme with
-            | Lexeme.Value _ ->
+            | Lexeme.Value ->
                 isKey <- true
                 colon <- next
             | Lexeme.Comment (comment, false) -> trailing <- Some comment
@@ -851,7 +851,7 @@ type internal YamlParser(cursor: Cursor) =
         | Lexeme.Alias _ -> this.StartLeaf tok
         | Lexeme.BlockEntry -> this.StartSequence tok
         | Lexeme.ExplicitKey -> this.StartExplicitKey tok
-        | Lexeme.Value _ -> this.StartEmptyKey tok
+        | Lexeme.Value -> this.StartEmptyKey tok
         | Lexeme.FlowSequenceStart -> this.OpenOutermost tok
         | Lexeme.FlowMappingStart -> this.OpenOutermost tok
         | Lexeme.ByteOrderMark ->
@@ -1053,7 +1053,7 @@ type internal YamlParser(cursor: Cursor) =
         | Lexeme.FlowEntry ->
             failWith YamlErrorCode.EmptyFlowEntry "A `,` needs an entry in front of it." tok.Span [ top.Opener ]
         | Lexeme.ExplicitKey -> this.StartPair(top, tok)
-        | Lexeme.Value _ -> this.StartPair(top, tok)
+        | Lexeme.Value -> this.StartPair(top, tok)
         | Lexeme.StreamEnd -> this.FailUnclosed(top, tok.Span)
         | _ ->
             top.Before <- this.TakePending()
@@ -1093,7 +1093,7 @@ type internal YamlParser(cursor: Cursor) =
             this.AddItem(top, comment)
             this.CloseFlow(top, tok)
         | Lexeme.FlowMappingEnd -> this.FailMismatch(top, tok)
-        | Lexeme.Value _ -> this.ConvertToPair(top, tok, comment)
+        | Lexeme.Value -> this.ConvertToPair(top, tok, comment)
         | Lexeme.StreamEnd -> this.FailUnclosed(top, tok.Span)
         | _ -> failWith YamlErrorCode.MissingFlowComma "Two entries of a flow collection need a `,` between them." tok.Span [ top.Opener ]
 
@@ -1173,7 +1173,7 @@ type internal YamlParser(cursor: Cursor) =
                 top.LastEnd <- tok.Span.Finish
                 this.FlowGap tok.Span.Finish
                 top.Phase <- Phase.FlowQuestion
-            | Lexeme.Value _ ->
+            | Lexeme.Value ->
                 top.KeyNode <- missingNode tok.Span.Start
                 top.LastEnd <- tok.Span.Finish
                 this.FlowGap tok.Span.Finish
@@ -1237,7 +1237,7 @@ type internal YamlParser(cursor: Cursor) =
             | Lexeme.FlowMappingEnd ->
                 this.FlowEmpty(top, tok)
                 reading <- false
-            | Lexeme.Value _ ->
+            | Lexeme.Value ->
                 this.FlowEmpty(top, tok)
                 reading <- false
             | Lexeme.StreamEnd ->
@@ -1297,25 +1297,16 @@ type internal YamlParser(cursor: Cursor) =
     /// front of it. The node is an empty plain scalar that holds the properties, or a missing value.
     member private this.FlowEmpty(top: Frame, delimiter: Tok) =
         let count = flowProps.Count
-        let isColon =
-            match delimiter.Lexeme with
-            | Lexeme.Value _ -> true
-            | _ -> false
-        let isKey =
-            match top.Phase with
-            | Phase.FlowColon -> false
-            | _ -> true
-        // Rule R7: a comment on the line of the key, with the colon on a later line, goes in front of the colon.
-        let beforeColon = isColon && isKey
         if count = 0 then
             this.SetFlowIndicator(top, separation false flowIndicatorComment [])
             this.FlowUnread delimiter
             this.FlowDeliver(top, missingNode top.LastEnd)
         else
+            // A comment on the line of the last property is the `After` of that property (rule R1), also when
+            // a `:` on a later line follows. Only the trivia lines up to the colon go to BeforeColon (rule R7).
             let last = flowProps.[count - 1]
             last.NewLine <- flowNewLine
-            last.Comment <- if beforeColon then None else flowComment
-            gapComment <- if beforeColon then flowComment else None
+            last.Comment <- flowComment
             let nodeProps = this.BuildPropsOf(flowProps, 0, count)
             let layout = this.BuildLayoutOf(flowProps, 0, count, [], false)
             this.SetFlowIndicator(top, separation flowIndicatorNewLine flowIndicatorComment flowLead)
@@ -1336,14 +1327,13 @@ type internal YamlParser(cursor: Cursor) =
         let comment = gapComment
         gapComment <- None
         match tok.Lexeme with
-        | Lexeme.Value _ ->
-            // Rule R7: the gap between the key and its colon.
-            let gap = this.TakePending()
-            top.BeforeColon <-
-                match comment with
-                | Some text -> Trivia.FullLineComment text :: gap
-                | None -> gap
-            top.KeyNode <- top.Pend
+        | Lexeme.Value ->
+            // A comment on the line where the key ends is the trailing comment of the key (rule R8), as behind
+            // the key of `? "a" # c` and `: v` in a block mapping. A key that holds properties only has taken
+            // that comment into the `After` of its last property already (rule R1). The comment lines and the
+            // blank lines up to the colon are the gap of rule R7.
+            top.BeforeColon <- this.TakePending()
+            top.KeyNode <- { top.Pend with TrailingComment = comment }
             top.LastEnd <- tok.Span.Finish
             this.FlowGap tok.Span.Finish
             top.Phase <- Phase.FlowColon
@@ -1619,7 +1609,7 @@ type internal YamlParser(cursor: Cursor) =
         let next = this.Next(this.RootContext())
         match next.Lexeme with
         | Lexeme.Comment (comment, false) -> Some comment
-        | Lexeme.Scalar _ | Lexeme.Alias _ | Lexeme.Tag _ | Lexeme.Anchor _ | Lexeme.BlockEntry | Lexeme.ExplicitKey | Lexeme.Value _ ->
+        | Lexeme.Scalar _ | Lexeme.Alias _ | Lexeme.Tag _ | Lexeme.Anchor _ | Lexeme.BlockEntry | Lexeme.ExplicitKey | Lexeme.Value ->
             failWith YamlErrorCode.UnexpectedContent "Only a comment can follow a `...` on its line." next.Span []
         | _ ->
             this.Unread next
@@ -1633,6 +1623,11 @@ type internal YamlParser(cursor: Cursor) =
     member private this.DocumentToken(tok: Tok) =
         match tok.Lexeme with
         | Lexeme.Directive directive ->
+            // [211] l-yaml-stream lets marks, comment lines and explicit documents follow a document without a `...`.
+            // A directive belongs to an l-directive-document, which needs the `...`, so a directive behind a mark
+            // that ended a document is content behind the mark.
+            if docOpen && bomSeen then
+                failWith YamlErrorCode.ContentAfterByteOrderMark "A directive cannot follow a byte order mark that ended a document without a `...` in between." tok.Span [ bomSpan ]
             if docOpen then
                 failWith YamlErrorCode.UnexpectedContent "A directive cannot stand inside a document." tok.Span []
             match directive with
@@ -1749,7 +1744,7 @@ type internal YamlParser(cursor: Cursor) =
                 match tok.Lexeme with
                 | Lexeme.BlockEntry ->
                     failWith YamlErrorCode.MixedCollections "A mapping takes entries that start with a key, and a dash starts a sequence entry." tok.Span [ top.FirstSpan ]
-                | Lexeme.Value _ ->
+                | Lexeme.Value ->
                     if top.AwaitsColon then
                         top.BeforeColon <- this.TakePending()
                         top.Phase <- Phase.AfterColon

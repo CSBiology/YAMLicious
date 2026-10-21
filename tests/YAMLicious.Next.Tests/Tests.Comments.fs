@@ -420,17 +420,46 @@ let private r1FlowTests = testList "R1 and R2 in a flow collection" [
 ]
 
 let private r7FlowTests = testList "R7 in a flow mapping and rule 20" [
-    // Tests.Tokenizer "the key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1 reads these as {"a":"b"}. The trivia between a key and its colon go to
-    // BeforeColon, for an implicit key in a flow mapping too, and a comment on the line of the key is one of them when the colon stands on a later line.
-    testCase "the gap between a key and its colon goes to BeforeColon" <| fun _ ->
-        expectRoot "{ a # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])
+    // Tests.Tokenizer "the key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1 reads these as {"a":"b"}. The trivia lines between a key and its colon
+    // go to BeforeColon, for an implicit key in a flow mapping too. A comment on the line of the key is no line of that gap (see the next test).
+    testCase "the trivia lines between a key and its colon go to BeforeColon" <| fun _ ->
         expectRoot "{ a\n # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])
         expectRoot "{ a\n\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ blank ] } ])
-        expectRoot "{ ? a # c\n # d\n : b }" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c"; note " d" ] } ])
-        expectRoot "{ \"a\" # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (dq "a") (sc "b") with BeforeColon = [ note " c" ] } ])
-        expectRoot "[ ? a # c\n : b ]" (flowSeq [ YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ] ])
-        // The key of a property-only node: the comment on the line of the properties goes in front of the colon too.
-        expectRoot "{ !!str # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (YamlNode.withTag strTag nothing) (sc "b") with BeforeColon = [ note " c" ] } ])
+        expectRoot "{ ? a\n # c\n : b }" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])
+        expectRoot "{ ? a\n\n # c\n : b }" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ blank; note " c" ] } ])
+        expectRoot "[ ? a\n # c\n : b ]" (flowSeq [ YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ] ])
+
+    // Rules R7 and R8, the same in a block mapping and in a flow collection: a comment on the line where the key ends is the trailing comment of the key when the colon stands on a later line, and
+    // the After of the last property when the key holds properties only (rule R1). Only the comment lines and the blank lines behind it go to BeforeColon.
+    testCase "a comment on the line of a key whose colon stands on a later line is the trailing comment of the key" <| fun _ ->
+        expectRoot "? \"a\" # c\n: v" (YamlNode.mapping [ explicitEntry (withNote " c" (dq "a")) (sc "v") ])
+        expectRoot "{ ? \"a\" # c\n : v }" (YamlNode.flowMapping [ explicitFlowEntry (withNote " c" (dq "a")) (sc "v") ])
+        expectRoot "{ a # c\n : b }" (YamlNode.flowMapping [ YamlNode.entry (withNote " c" (sc "a")) (sc "b") ])
+        expectRoot "{ \"a\" # c\n : b }" (YamlNode.flowMapping [ YamlNode.entry (withNote " c" (dq "a")) (sc "b") ])
+        expectRoot "{ [a] # c\n : v }" (YamlNode.flowMapping [ YamlNode.entry (withNote " c" (flowSeq [ sc "a" ])) (sc "v") ])
+        expectRoot "{ ? [a] # c\n : v }" (YamlNode.flowMapping [ explicitFlowEntry (withNote " c" (flowSeq [ sc "a" ])) (sc "v") ])
+        expectRoot "[ ? a # c\n : b ]" (flowSeq [ YamlNode.flowMapping [ explicitFlowEntry (withNote " c" (sc "a")) (sc "b") ] ])
+        expectRoot "{ x: 1, a # c\n : b }" (YamlNode.flowMapping [ YamlNode.entry (sc "x") (sc "1"); YamlNode.entry (withNote " c" (sc "a")) (sc "b") ])
+        // A comment on the line of the key and comment lines behind it.
+        expectRoot
+            "{ a # c\n # d\n\n # e\n : b }"
+            (YamlNode.flowMapping [ { YamlNode.entry (withNote " c" (sc "a")) (sc "b") with BeforeColon = [ note " d"; blank; note " e" ] } ])
+        expectRoot
+            "{ ? a # c\n # d\n : b }"
+            (YamlNode.flowMapping [ { explicitFlowEntry (withNote " c" (sc "a")) (sc "b") with BeforeColon = [ note " d" ] } ])
+        // A key of properties only has no text to carry the comment, so it goes to the After of the last property.
+        let anchored = withLayout [ placement PropertyName.Anchor (newLine (Some " c") []) ] (YamlNode.withAnchor "x" nothing)
+        expectRoot "? &x # c\n: v" (YamlNode.mapping [ explicitEntry anchored (sc "v") ])
+        expectRoot "{ &x # c\n : v }" (YamlNode.flowMapping [ YamlNode.entry anchored (sc "v") ])
+        expectRoot "{ ? &x # c\n : v }" (YamlNode.flowMapping [ explicitFlowEntry anchored (sc "v") ])
+        let tagged = withLayout [ placement PropertyName.Tag (newLine (Some " c") []) ] (YamlNode.withTag strTag nothing)
+        expectRoot "{ !!str # c\n : b }" (YamlNode.flowMapping [ YamlNode.entry tagged (sc "b") ])
+        expectRoot
+            "{ &x # c\n # d\n : v }"
+            (YamlNode.flowMapping [ { YamlNode.entry anchored (sc "v") with BeforeColon = [ note " d" ] } ])
+        // A flow pair in a sequence keeps its key on one line with the colon, so an implicit key with a comment is an error as before.
+        Expect.equal (parseErrorOf "[ a # c\n : b ]") "implicit-key-multiline@1" "A comment behind an implicit key of a flow pair"
+        Expect.equal (parseErrorOf "[ &x # c\n : b ]") "implicit-key-multiline@1" "A comment behind the properties of an implicit key of a flow pair"
 
     // Rule 20: an explicit key without a colon has no gap before a colon. A comment on its line is its trailing comment, and the trivia lines behind it go to the Before of the next entry.
     testCase "rule 20: an explicit key without a colon passes its trivia to the next entry" <| fun _ ->

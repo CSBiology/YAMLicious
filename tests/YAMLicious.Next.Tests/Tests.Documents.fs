@@ -421,6 +421,44 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
         Expect.equal (parseErrorOf "a\n...\n%TAG ! tag:x,2000:\n\uFEFF---\nb") "invalid-character@4" "Behind a directive of a later document"
         Expect.equal (parseErrorOf "[a,\n\uFEFFb]") "invalid-character@2" "Inside a flow collection"
         Expect.equal (parseErrorOf "a\uFEFFb") "invalid-character@1" "Inside a line"
+
+    // [107] nb-double-char and [118] nb-single-char take every character of [2] nb-json, so a mark inside a quoted scalar is part of its value. It does not end the document there.
+    testCase "a mark inside a quoted scalar is part of the value" <| fun _ ->
+        expectRoot "\"a\uFEFFb\"" (dq "a\uFEFFb")
+        expectRoot "'a\uFEFFb'" (sq "a\uFEFFb")
+        expectRoot "k: \"\uFEFF\"" (mapOf [ "k", dq "\uFEFF" ])
+        expectRoot "[\"a\uFEFFb\", 'c\uFEFF']" (flowSeq [ dq "a\uFEFFb"; sq "c\uFEFF" ])
+        expectRoot "{\"\uFEFF\": 1}" (YamlNode.flowMapping [ YamlNode.entry (dq "\uFEFF") (sc "1") ])
+        expectRoot "\"a\n\uFEFFb\"" (dq "a \uFEFFb")
+        expectRoot "- \"a\n  \uFEFFb\"" (seqOf [ dq "a \uFEFFb" ])
+        expectStream "\"a\uFEFF\"\n--- b" [ document (plainDocument (dq "a\uFEFF")); document (explicitDocument (sc "b")) ]
+        // A mark that starts a continuation line is content, so it is no indentation.
+        Expect.equal (parseErrorOf "k: \"a\n\uFEFFb\"") "quoted-indent@2" "The mark does not indent the line"
+        // Outside the quotes the mark is invalid again.
+        Expect.equal (parseErrorOf "\"a\"\uFEFF") "invalid-character@1" "Behind the closing quote"
+
+    // [211]: a mark ends the document that a block scalar ends, as it ends a document behind any other node. At the root the body could take a line at the column 0, so the mark has to end it.
+    testCase "a mark behind the body of a block scalar ends the scalar and the document" <| fun _ ->
+        expectStream "|\n  x\n\uFEFF# c\n" [ document { plainDocument (lit "x\n") with AfterRoot = [ note " c" ] } ]
+        expectStream "|+\n  x\n\n\uFEFF---\ny" [ document (plainDocument (blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n\n")); document (explicitDocument (sc "y")) ]
+        expectStream ">\n  x\n\uFEFF" [ document (plainDocument (fold "x\n")) ]
+        expectStream "--- |\n  x\n\uFEFF--- y" [ document (explicitDocument (lit "x\n")); document (explicitDocument (sc "y")) ]
+        Expect.equal (parseErrorOf "|\n  x\n\uFEFFy") "content-after-byte-order-mark@3" "Content behind the mark"
+        Expect.equal (parseErrorOf "|\nx\n\uFEFFy") "content-after-byte-order-mark@3" "Content behind the mark at the indentation 0"
+
+    // [211] l-yaml-stream lets marks, comment lines and explicit documents follow a document that has no suffix. A directive belongs to an l-directive-document, which only a suffix, the `...`, leads to.
+    // So a directive behind a mark that ended a document is content behind the mark. Without the mark the line continues a plain scalar, and behind a `...` it is a directive.
+    testCase "a directive behind a mark that ended a document is content behind the mark" <| fun _ ->
+        Expect.equal (parseErrorOf "a\n\uFEFF%YAML 1.2\n---\nb") "content-after-byte-order-mark@2" "A directive on the line of the mark"
+        Expect.equal (parseErrorOf "a\n\uFEFF\n# c\n%YAML 1.2\n---\nb") "content-after-byte-order-mark@4" "A directive behind a comment line"
+        Expect.equal (parseErrorOf "k: v\n\uFEFF%TAG ! tag:x,2000:\n---\nb") "content-after-byte-order-mark@2" "A tag directive behind a mapping"
+        Expect.equal (parseErrorOf "--- a\n\uFEFF%YAML 1.2\n---\nb") "content-after-byte-order-mark@2" "A directive behind an explicit document"
+        let error = parseError "a\n\uFEFF%YAML 1.2\n---\nb"
+        Expect.equal (error.Related |> List.map showSpan) [ "2:1-2:2" ] "The mark is the related span"
+        expectStream "a\n%YAML 1.2\n---\nb" [ document (plainDocument (sc "a %YAML 1.2")); document (explicitDocument (sc "b")) ]
+        expectStream
+            "a\n...\n\uFEFF%YAML 1.2\n---\nb"
+            [ document (closed (plainDocument (sc "a"))); document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "b"))) ]
 ]
 
 let Main =

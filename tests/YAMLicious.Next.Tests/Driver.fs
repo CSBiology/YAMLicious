@@ -23,7 +23,7 @@ let show (lexeme: Lexeme) : string =
     | Lexeme.LineStart (indent, tabbed) -> if tabbed then sprintf "line:%d,tab" indent else sprintf "line:%d" indent
     | Lexeme.BlockEntry -> "-"
     | Lexeme.ExplicitKey -> "?"
-    | Lexeme.Value adjacent -> if adjacent then ":adjacent" else ":"
+    | Lexeme.Value -> ":"
     | Lexeme.FlowSequenceStart -> "["
     | Lexeme.FlowSequenceEnd -> "]"
     | Lexeme.FlowMappingStart -> "{"
@@ -107,7 +107,7 @@ let lexWith (simpleKeys: bool) (input: string) : Lexed =
             | Lexeme.ExplicitKey ->
                 owners.Add column
                 expectEntry <- true
-            | Lexeme.Value _ ->
+            | Lexeme.Value ->
                 if flowOwners.Count = 0 then
                     // A colon that starts its line is the explicit value indicator, which owns its node.
                     let owner = if startedLine then column else entryColumn

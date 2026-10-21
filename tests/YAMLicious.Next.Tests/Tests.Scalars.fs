@@ -126,7 +126,7 @@ let private quotedTests = testList "Quoted scalars" [
 
     // Tests.StringCleanUp "a closing quote followed by a blank, a colon or the end is a boundary". yaml@2.6.1: {"a":"x","b":"y","k":1,"j":2}
     testCase "a closing quote may be followed by blanks, a colon or the end" <| fun _ ->
-        expectLexemes "a: 'x'  \nb: \"y\"\n'k': 1\n\"j\" : 2\n" [ "plain:a"; ":"; "single:x"; "plain:b"; ":"; "double:y"; "single:k"; ":adjacent"; "plain:1"; "double:j"; ":"; "plain:2" ]
+        expectLexemes "a: 'x'  \nb: \"y\"\n'k': 1\n\"j\" : 2\n" [ "plain:a"; ":"; "single:x"; "plain:b"; ":"; "double:y"; "single:k"; ":"; "plain:1"; "double:j"; ":"; "plain:2" ]
 
     // Tests.StringCleanUp "quotes in a word are not scalars". yaml@2.6.1 reads each of them as a plain scalar.
     testCase "a quote inside a word is text" <| fun _ ->

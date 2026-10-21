@@ -32,7 +32,9 @@ module internal Lexer =
     let private isBreak (c: char) = c = '\n' || c = '\r'
 
     /// The byte order mark. [202] l-document-prefix allows it at the start of a document prefix, and
-    /// [27] nb-char and [34] ns-char exclude it everywhere else.
+    /// [27] nb-char and [34] ns-char exclude it everywhere else. A quoted scalar is the exception: [107]
+    /// nb-double-char and [118] nb-single-char take every character of [2] nb-json, and section 5.2 says
+    /// that byte order marks are allowed inside quoted scalars.
     [<Literal>]
     let private byteOrderMark = '\uFEFF'
 
@@ -166,7 +168,7 @@ module internal Lexer =
         raise (
             LexFailure
                 { Code = YamlErrorCode.InvalidCharacter
-                  Message = "A byte order mark can only stand at the start of a line outside a scalar and a flow collection."
+                  Message = "A byte order mark is valid inside a quoted scalar and at the start of a line outside a flow collection, and nowhere else."
                   Span = bomSpan cursor position
                   Related = [] }
         )
@@ -607,6 +609,7 @@ module internal Lexer =
     /// A line break folds like it does in a plain scalar: the blanks in front of the break and behind it go
     /// away, and the break becomes a space or, with empty lines behind it, one line feed for each empty
     /// line. Only the literal blanks in front of a break go away, so a blank that an escape produced stays.
+    /// A byte order mark is content of the scalar, like every other character of nb-json.
     let private scanQuoted (ctx: LexContext) (cursor: Cursor) (q: int) : string * int =
         let text = cursor.Text
         let n = text.Length
@@ -651,9 +654,6 @@ module internal Lexer =
                 if empties = 0 then sb.Append(' ') |> ignore else appendLineFeeds sb empties
                 p <- next
                 runStart <- next
-            elif c = byteOrderMark then
-                // A quoted scalar holds the mark through a hexadecimal escape only.
-                failBom cursor p
             else
                 p <- p + 1
         sb.ToString(), p
@@ -743,8 +743,9 @@ module internal Lexer =
                 if spaces = le then
                     if le - r > longestEmpty then longestEmpty <- le - r
                     r <- if le >= n then n else afterBreak text le
-                elif markerAt text r || spaces - r <= ctx.ParentIndent then
-                    // A line that is no deeper than the parent ends the scalar, so the scalar has no content.
+                elif markerAt text r || text.[r] = byteOrderMark || spaces - r <= ctx.ParentIndent then
+                    // A marker or a mark at the start of the line ends the scalar, and so does a line that is no deeper than
+                    // the parent. The scalar has no content then.
                     seeking <- false
                 else
                     firstSpaces <- spaces - r
@@ -777,7 +778,9 @@ module internal Lexer =
             while spaces < le && text.[spaces] = ' ' do
                 spaces <- spaces + 1
             let onlySpaces = spaces = le
-            if markerAt text r then
+            if markerAt text r || text.[r] = byteOrderMark then
+                // A line that starts with a byte order mark ends the body like a marker does. [211] l-yaml-stream lets
+                // the mark end the document, and the parser decides what may follow it.
                 reading <- false
             elif (not onlySpaces) && spaces - r < indent then
                 // A comment ends the scalar, and so does a line that is no deeper than the parent. Any other
@@ -896,7 +899,7 @@ module internal Lexer =
             fail cursor YamlErrorCode.ReservedIndicator "A `?` in front of a flow indicator starts no explicit key and no plain scalar." q (q + 1) []
         elif c = ':' && (blankOrEnd text (q + 1) || (flow && (isFlowIndicator text.[q + 1] || cursor.JsonLike))) then
             if not flow then checkIndicatorTab cursor q tab separation
-            single cursor q start (Lexeme.Value(q = cursor.JsonLikeEnd))
+            single cursor q start Lexeme.Value
         elif c = ',' then
             if not flow then
                 fail cursor YamlErrorCode.ReservedIndicator "A plain scalar cannot start with a `,`." q (q + 1) []
@@ -1138,7 +1141,7 @@ module internal Lexer =
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
-            | Lexeme.Value _ ->
+            | Lexeme.Value ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
@@ -1155,6 +1158,9 @@ module internal Lexer =
             | Lexeme.ByteOrderMark ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
+                // [202] l-document-prefix lets a directive follow a mark. Whether one is valid behind a mark that
+                // ends a document is a matter of the stream, [211], so the parser decides, and it needs the lexeme.
+                cursor.InPrelude <- true
             | Lexeme.BlankLine ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
