@@ -8,7 +8,7 @@ module Tests.RoundTrip
 // short ones that show a feature of the model: comments in each slot, block scalars with each header, explicit keys, properties,
 // aliases, directives, several documents and blank lines.
 //
-// The flow inputs cannot be parsed before the flow parser lands. They stand in a pending list that the merge of that parser enables.
+// The flow inputs go through the flow parser of the candidate like the block inputs, one test for each input.
 
 open Fable.Pyxpecto
 open YAMLicious
@@ -361,7 +361,7 @@ let private constructedTests = testList "Constructed trees" [
 
 let flowRoundTrips = testList "Flow inputs" [
     for input in flowInputs ->
-        ptestCase (sprintf "%A" input) <| fun _ ->
+        testCase (sprintf "%A" input) <| fun _ ->
             expectRoundTrip defaults input
             expectRoundTrip wideCrlf input
             expectRoundTrip required input

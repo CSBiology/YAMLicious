@@ -191,7 +191,11 @@ type YamlScalar =
 /// of the value of the entry, or of the key of an entry whose value is missing. That holds for a node that
 /// has properties and no content too, as in `[!!str , # c` followed by `b]`. Trivia lines between items
 /// go to the `Before` of the next item or entry. Trivia lines in front of the closer go to `End`. A comment
-/// behind the closer is the trailing comment of the collection node.
+/// behind the closer is the trailing comment of the collection node. A comment behind a comma counts as the
+/// trailing comment of the node in front of the comma only when the comma stands on the line where that node
+/// ends and the node has no comment yet. Any other comment behind a comma is a comment line in front of the
+/// next item or entry. A missing value or a missing key has no trailing comment (rule R1), so a comment behind
+/// the comma that follows it, as in `{a: , # c`, goes to the separation behind its colon or question mark.
 [<NoEquality; NoComparison>]
 type Collection<'Item> =
     { Style: CollectionStyle

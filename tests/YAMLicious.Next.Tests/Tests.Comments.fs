@@ -1,8 +1,8 @@
 module Tests.Comments
 
 // The slots of comments and blank lines in a parsed block tree. One test for each rule of the model: R1 to R5, R7 and R8
-// as Model.fs words them, and the three rulings 1a to 1c that complete them. Rule R6 is about flow collections and comes
-// with M4. Rule R3 and ruling 1c are about documents and stand in Tests.Documents. The tests of this file give the input
+// as Model.fs words them, and the three rulings 1a to 1c that complete them. Rule R6, the flow parts of R1, R2, R7 and R8 and the rules 20
+// to 22 are about flow collections and stand at the end of the file. Rule R3 and ruling 1c are about documents and stand in Tests.Documents. The tests of this file give the input
 // text, the expected tree and, through parseOk, the check of Validate.stream on the parsed tree.
 //
 // The comments of the tests that come from the old tests say which one they port. The old tree put a comment between the
@@ -326,6 +326,203 @@ let private rulingTests = testList "Rulings 1a and 1b" [
             (YamlNode.mapping [ YamlNode.entry (sc "k") (YamlNode.withTag (YamlTag.core "str") (sc "")); entryBefore [ note " d" ] (sc "j") (sc "1") ])
 ]
 
+// The rules of the flow collections. A flow collection has tokens at both ends and between its items, so a comment finds its owner by the line: the node that
+// ends on the line of the comment, the colon that stands before it, or the entry that follows it.
+
+let private strTag = YamlTag.core "str"
+
+let private r6Tests = testList "R6 comments in a flow collection" [
+    // yaml@2.6.1 reads these as ["a"] and {"a":1}. A comment behind the opener on its line is the OpeningComment of the collection.
+    testCase "a comment behind the opener is the opening comment" <| fun _ ->
+        expectRoot "[ # c\n a ]" (YamlNode.withOpeningComment (comment " c") (flowSeq [ sc "a" ]))
+        expectRoot "{ # c\n a: 1 }" (YamlNode.withOpeningComment (comment " c") (flowMap [ "a", sc "1" ]))
+        expectRoot "k: [ # c\n  a\n]" (mapOf [ "k", YamlNode.withOpeningComment (comment " c") (flowSeq [ sc "a" ]) ])
+        expectRoot "[ # c\n]" (YamlNode.withOpeningComment (comment " c") (YamlNode.flowSequence []))
+
+    // Tests.YamlRead "Comments at the start, in the middle and at the end of a flow sequence over several lines" and "Comments in a flow mapping over several lines stay entries of
+    // the mapping". yaml@2.6.1 reads all of these as ["a","b"] or {"a":1,"b":2}. A comment on the same line behind an item and its comma is the trailing comment of the
+    // node of the item, of the value of the entry, or of the key of an entry whose value is missing. A comment behind the item and in front of the comma is the same comment.
+    testCase "a comment behind an item and its comma is the trailing comment of the node" <| fun _ ->
+        expectRoot "[a, # c\n b]" (flowSeq [ withNote " c" (sc "a"); sc "b" ])
+        expectRoot "[a # c\n, b]" (flowSeq [ withNote " c" (sc "a"); sc "b" ])
+        expectRoot "[a, b # c\n]" (flowSeq [ sc "a"; withNote " c" (sc "b") ])
+        expectRoot "k: [\n  a, # c2\n  b\n]" (mapOf [ "k", flowSeq [ withNote " c2" (sc "a"); sc "b" ] ])
+        expectRoot "{a: 1, # c\n b: 2}" (flowMap [ "a", withNote " c" (sc "1"); "b", sc "2" ])
+        expectRoot "{a: 1 # c\n, b: 2}" (flowMap [ "a", withNote " c" (sc "1"); "b", sc "2" ])
+        expectRoot "{a, # c\n b}" (YamlNode.flowMapping [ keyOnly (withNote " c" (sc "a")); keyOnly (sc "b") ])
+        expectRoot "[a: b # c\n]" (flowSeq [ flowPair (sc "a") (withNote " c" (sc "b")) ])
+        expectRoot "[a: b, # c\n d]" (flowSeq [ flowPair (sc "a") (withNote " c" (sc "b")); sc "d" ])
+        expectRoot "[\"a\", # c\n \"b\" # d\n]" (flowSeq [ withNote " c" (dq "a"); withNote " d" (dq "b") ])
+
+    // yaml@2.6.1 reads `[!!str , # c` and `b]` as ["","b"]. The rule holds for a node that has properties and no content (rule 21 below).
+    testCase "a comment behind a node with properties and no content is its trailing comment" <| fun _ ->
+        expectRoot "[!!str , # c\n b]" (flowSeq [ withNote " c" (YamlNode.withTag strTag nothing); sc "b" ])
+
+    // Tests.YamlRead "Comments at the start, in the middle and at the end of a flow sequence over several lines". Trivia lines between items go to the Before of the next item or entry.
+    testCase "trivia lines between items go to the Before of the next item or entry" <| fun _ ->
+        expectRoot "[a,\n # c\n\n b]" (YamlNode.flowSequence [ YamlNode.item (sc "a"); itemBefore [ note " c"; blank ] (sc "b") ])
+        expectRoot "[a\n # c\n , b]" (YamlNode.flowSequence [ YamlNode.item (sc "a"); itemBefore [ note " c" ] (sc "b") ])
+        expectRoot "[\n # c\n a]" (YamlNode.flowSequence [ itemBefore [ note " c" ] (sc "a") ])
+        expectRoot "[\n\n a]" (YamlNode.flowSequence [ itemBefore [ blank ] (sc "a") ])
+        expectRoot
+            "{a: 1,\n # c\n b: 2}"
+            (YamlNode.flowMapping [ YamlNode.entry (sc "a") (sc "1"); flowEntryBefore [ note " c" ] (sc "b") (sc "2") ])
+        expectRoot
+            "{\n # c\n a: 1}"
+            (YamlNode.flowMapping [ flowEntryBefore [ note " c" ] (sc "a") (sc "1") ])
+        // The trivia in front of a pair belong to the item of the sequence and not to the entry of its mapping.
+        expectRoot
+            "[\n # c\n a: b\n]"
+            (YamlNode.flowSequence [ itemBefore [ note " c" ] (flowPair (sc "a") (sc "b")) ])
+
+    // yaml@2.6.1 reads the first two as ["a","b"] and the others as [] and {"a":1}. Trivia lines in front of the closer go to End.
+    testCase "trivia lines in front of the closer go to End" <| fun _ ->
+        expectRoot "[a,\n b\n # c\n]" (withEnd [ note " c" ] (flowSeq [ sc "a"; sc "b" ]))
+        expectRoot "[a,\n b,\n\n # c\n]" (withEnd [ blank; note " c" ] (flowSeq [ sc "a"; sc "b" ]))
+        expectRoot "[\n # c\n]" (withEnd [ note " c" ] (YamlNode.flowSequence []))
+        expectRoot "{a: 1\n # c\n}" (withEnd [ note " c" ] (flowMap [ "a", sc "1" ]))
+        expectRoot "k: [\n  # c1\n  a,\n  # c2\n  b # c3\n  # c4\n]" (mapOf [ "k", withEnd [ note " c4" ] (YamlNode.flowSequence [ itemBefore [ note " c1" ] (sc "a"); itemBefore [ note " c2" ] (withNote " c3" (sc "b")) ]) ])
+        // The closer may stand at a column left of the comments.
+        expectRoot "a:\n  - [\n    1,\n# c\n    ]\n" (mapOf [ "a", seqOf [ withEnd [ note " c" ] (flowSeq [ sc "1" ]) ] ])
+
+    // Tests.YamlRead "KeyValue InlineSequence + Comment" and "Comments at the start...": yaml@2.6.1 reads `Say: [Hello, World] # 420 blaze it` as {"Say":["Hello","World"]}. A comment behind
+    // the closer is the trailing comment of the collection node (rule R8).
+    testCase "a comment behind the closer is the trailing comment of the collection" <| fun _ ->
+        expectRoot "Say: [Hello, World] # 420 blaze it" (mapOf [ "Say", withNote " 420 blaze it" (flowSeq [ sc "Hello"; sc "World" ]) ])
+        expectRoot "{a: 1} # c" (withNote " c" (flowMap [ "a", sc "1" ]))
+        expectRoot "k: [\n  a\n] # c4" (mapOf [ "k", withNote " c4" (flowSeq [ sc "a" ]) ])
+        expectRoot "[[a] # c\n, b]" (flowSeq [ withNote " c" (flowSeq [ sc "a" ]); sc "b" ])
+        expectRoot "- [a] # c\n- b" (seqOf [ withNote " c" (flowSeq [ sc "a" ]); sc "b" ])
+        expectRoot "[a]: b # c" (YamlNode.mapping [ YamlNode.entry (flowSeq [ sc "a" ]) (withNote " c" (sc "b")) ])
+]
+
+let private r1FlowTests = testList "R1 and R2 in a flow collection" [
+    // yaml@2.6.1 reads these as {"a":"b"}, {"a":"b"}. The comment behind a colon or a question mark goes to the separation of the indicator when the content stands on a later line,
+    // and the trivia lines behind it are the Following of that separation (R1 and R2).
+    testCase "a comment behind a colon or a question mark in a flow collection goes to the separation" <| fun _ ->
+        expectRoot "{a: # c\n  b}" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with Colon = Some(newLine (Some " c") []) } ])
+        expectRoot "{a:\n # d\n b}" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with Colon = Some(newLine None [ note " d" ]) } ])
+        expectRoot "{? # q\n a : b}" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with Question = Some(newLine (Some " q") []) } ])
+        expectRoot "[a: # c\n b]" (flowSeq [ YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with Colon = Some(newLine (Some " c") []) } ] ])
+        // A comment behind a colon whose value is missing, or behind the comma that follows the colon on its line, stays with the colon, because a missing value has no trailing comment.
+        expectRoot "{a: # c\n}" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") nothing with Colon = Some(newLine (Some " c") []) } ])
+        expectRoot "{a: , # c\n b: 2}" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") nothing with Colon = Some(newLine (Some " c") []) }; YamlNode.entry (sc "b") (sc "2") ])
+        expectRoot "{? , # c\n b}" (YamlNode.flowMapping [ { explicitFlowEntry nothing nothing with Colon = None; Question = Some(newLine (Some " c") []) }; keyOnly (sc "b") ])
+
+    // A comment behind the properties of a node, and the trivia lines behind them, go to the separation of the last property (rules R1 and R2).
+    testCase "a comment behind a property in a flow collection goes to the separation of the property" <| fun _ ->
+        let tagged = withLayout [ placement PropertyName.Tag (newLine (Some " c") []) ] (YamlNode.withTag strTag (sc "a"))
+        expectRoot "[!!str # c\n a]" (flowSeq [ tagged ])
+        let following = withLayout [ placement PropertyName.Tag (newLine None [ note " d" ]) ] (YamlNode.withTag strTag (sc "a"))
+        expectRoot "[!!str\n # d\n a]" (flowSeq [ following ])
+        let both = withLayout [ placement PropertyName.Anchor (newLine (Some " c") []); placement PropertyName.Tag Separation.Inline ] (YamlNode.withTag strTag (YamlNode.withAnchor "x" (sc "a")))
+        expectRoot "[&x # c\n !!str a]" (flowSeq [ both ])
+]
+
+let private r7FlowTests = testList "R7 in a flow mapping and rule 20" [
+    // Tests.Tokenizer "the key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1 reads these as {"a":"b"}. The trivia between a key and its colon go to
+    // BeforeColon, for an implicit key in a flow mapping too, and a comment on the line of the key is one of them when the colon stands on a later line.
+    testCase "the gap between a key and its colon goes to BeforeColon" <| fun _ ->
+        expectRoot "{ a # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])
+        expectRoot "{ a\n # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ])
+        expectRoot "{ a\n\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (sc "a") (sc "b") with BeforeColon = [ blank ] } ])
+        expectRoot "{ ? a # c\n # d\n : b }" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c"; note " d" ] } ])
+        expectRoot "{ \"a\" # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (dq "a") (sc "b") with BeforeColon = [ note " c" ] } ])
+        expectRoot "[ ? a # c\n : b ]" (flowSeq [ YamlNode.flowMapping [ { explicitFlowEntry (sc "a") (sc "b") with BeforeColon = [ note " c" ] } ] ])
+        // The key of a property-only node: the comment on the line of the properties goes in front of the colon too.
+        expectRoot "{ !!str # c\n : b }" (YamlNode.flowMapping [ { YamlNode.entry (YamlNode.withTag strTag nothing) (sc "b") with BeforeColon = [ note " c" ] } ])
+
+    // Rule 20: an explicit key without a colon has no gap before a colon. A comment on its line is its trailing comment, and the trivia lines behind it go to the Before of the next entry.
+    testCase "rule 20: an explicit key without a colon passes its trivia to the next entry" <| fun _ ->
+        expectRoot
+            "{ ? a\n # c\n , b }"
+            (YamlNode.flowMapping [ { explicitFlowEntry (sc "a") nothing with Colon = None }; keyOnly (sc "b") |> fun entry -> { entry with Before = [ note " c" ] } ])
+        expectRoot "{ ? a # c\n , b }" (YamlNode.flowMapping [ { explicitFlowEntry (withNote " c" (sc "a")) nothing with Colon = None }; keyOnly (sc "b") ])
+        expectRoot
+            "{ ?\n # c\n , b }"
+            (YamlNode.flowMapping [ { explicitFlowEntry nothing nothing with Colon = None }; keyOnly (sc "b") |> fun entry -> { entry with Before = [ note " c" ] } ])
+        expectRoot
+            "{ a\n # c\n , b }"
+            (YamlNode.flowMapping [ keyOnly (sc "a"); keyOnly (sc "b") |> fun entry -> { entry with Before = [ note " c" ] } ])
+]
+
+let private rule21Tests = testList "Rules 21 and 22 on a node with properties and no content" [
+    // Rule 21: in a flow collection a node that has properties and no content takes the comment behind the comma as its trailing comment. yaml@2.6.1 reads these as ["","b"] and {"a":"","b":1}.
+    testCase "rule 21: the comment behind the comma is the trailing comment of a property-only node" <| fun _ ->
+        expectRoot "[!!str , # c\n b]" (flowSeq [ withNote " c" (YamlNode.withTag strTag nothing); sc "b" ])
+        expectRoot "[&a , # c\n b]" (flowSeq [ withNote " c" (YamlNode.withAnchor "a" nothing); sc "b" ])
+        expectRoot "{a: !!str , # c\n b: 1}" (flowMap [ "a", withNote " c" (YamlNode.withTag strTag nothing); "b", sc "1" ])
+        expectRoot "{!!str , # c\n b: 1}" (YamlNode.flowMapping [ keyOnly (withNote " c" (YamlNode.withTag strTag nothing)); YamlNode.entry (sc "b") (sc "1") ])
+
+    // Rule 22: a comment behind a property with the comma on a later line goes to the After of the last property. The node has no trailing comment, because its last token is the property.
+    testCase "rule 22: a comment behind a property with the comma on a later line goes to the last property" <| fun _ ->
+        let tagged = withLayout [ placement PropertyName.Tag (newLine (Some " c") []) ] (YamlNode.withTag strTag nothing)
+        expectRoot "[!!str # c\n , b]" (flowSeq [ tagged; sc "b" ])
+        expectRoot "[!!str # c\n]" (flowSeq [ tagged ])
+        expectRoot "{a: !!str # c\n , b: 1}" (flowMap [ "a", tagged; "b", sc "1" ])
+        let anchored = withLayout [ placement PropertyName.Anchor (newLine (Some " c") []) ] (YamlNode.withAnchor "a" nothing)
+        expectRoot "[&a # c\n , b]" (flowSeq [ anchored; sc "b" ])
+        // The trivia lines behind the property go to the Before of the next item (rule 1b of M3 for a property-only node).
+        expectRoot "[!!str\n # d\n , b]" (YamlNode.flowSequence [ YamlNode.item (YamlNode.withTag strTag nothing); itemBefore [ note " d" ] (sc "b") ])
+]
+
+let private r8FlowTests = testList "R8 the closer of a flow collection" [
+    // yaml@2.6.1 reads these as {"k":["a"]}, [["a"],"b"] and [{"a":"b"}]. The closer is the last token of a flow collection, so the comment on its line is the trailing comment of the collection.
+    testCase "a comment on the line of the closer belongs to the collection" <| fun _ ->
+        expectRoot "k: [\n  a\n] # c" (mapOf [ "k", withNote " c" (flowSeq [ sc "a" ]) ])
+        expectRoot "[[a], # c\n b]" (flowSeq [ withNote " c" (flowSeq [ sc "a" ]); sc "b" ])
+        expectRoot "[{a: b} # c\n]" (flowSeq [ withNote " c" (flowMap [ "a", sc "b" ]) ])
+        expectRoot "[a, b] # c" (withNote " c" (flowSeq [ sc "a"; sc "b" ]))
+        // A comment after the closer on a line of its own is not part of the collection.
+        let document = parseDocument "[a]\n# c"
+        Expect.nodeEqual document.Root (flowSeq [ sc "a" ]) "The root"
+        Expect.equal (List.length document.AfterRoot) 1 "The comment goes behind the root"
+]
+
+let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
+    // Tests.CommentCleanUp "comments in values and behind values", "Text in the shape of a comment placeholder is text and not a comment", "Hash without preceding whitespace is not a comment",
+    // "C# and a hash behind a word are text" and "a comment keeps its payload as written". The old tests checked the emitted text of the preprocessing with its placeholders. The
+    // placeholders are gone. The tests check the tree instead: where the comment stands and what the text of the scalar is. yaml@2.6.1 reads the scalars in the same way.
+    testCase "a hash behind a blank starts a comment, a hash inside a word is text, and the comment keeps its payload" <| fun _ ->
+        expectRoot
+            "My Key: # This is a comment\n  My Value1\n  <s f=0/>\n  My Value3 # :::: \"This is also a comment\""
+            (YamlNode.mapping [ { YamlNode.entry (sc "My Key") (withNote " :::: \"This is also a comment\"" (sc "My Value1 <s f=0/> My Value3")) with Colon = Some(newLine (Some " This is a comment") []) } ])
+        expectRoot "a: x <c f=0/>\nb: 1 # real\n" (mapOf [ "a", sc "x <c f=0/>"; "b", withNote " real" (sc "1") ])
+        expectRoot "a: tool.cwl#main # real" (mapOf [ "a", withNote " real" (sc "tool.cwl#main") ])
+        expectRoot
+            "lang: C# # real\nother: C#\nc: a#b#c\n"
+            (mapOf [ "lang", withNote " real" (sc "C#"); "other", sc "C#"; "c", sc "a#b#c" ])
+        expectRoot
+            "a: 1 #   spaced  \nb: 2 ### more # hashes\nc: 3 #\nd: 4 #end"
+            (mapOf [ "a", withNote "   spaced  " (sc "1"); "b", withNote "## more # hashes" (sc "2"); "c", withNote "" (sc "3"); "d", withNote "end" (sc "4") ])
+
+    // Tests.CommentCleanUp "a tab before the hash starts a comment", "a comment at the end of the input without a line break", "quotes inside a comment are comment text" and
+    // "a hash inside a quoted scalar is not a comment".
+    testCase "a tab before the hash, the end of the input, quotes and hashes inside quoted scalars" <| fun _ ->
+        expectRoot "a: 1\t# c\n" (mapOf [ "a", withNote " c" (sc "1") ])
+        expectRoot "a: 1 # end" (mapOf [ "a", withNote " end" (sc "1") ])
+        expectRoot "a: 1 # it's \"x\" 'y'\nb: 'z'\n" (mapOf [ "a", withNote " it's \"x\" 'y'" (sc "1"); "b", sq "z" ])
+        expectRoot "a: \"x # y\" # c\nb: 'p # q' # d\n" (mapOf [ "a", withNote " c" (dq "x # y"); "b", withNote " d" (sq "p # q") ])
+        expectRoot "a:\n  # one\n    # two\nb: 1\n#three\n" (withEnd [ note "three" ] (YamlNode.mapping [ YamlNode.entry (sc "a") nothing; entryBefore [ note " one"; note " two" ] (sc "b") (sc "1") ]))
+
+    // Tests.CommentCleanUp "a quote glued to a word is not a string but a separated comment still is one", "a hash glued to a closing quote is an error" and "a hash behind a quote that never
+    // closes is no comment". yaml@2.6.1 rejects the last two inputs with MISSING_CHAR.
+    testCase "a quote inside a word opens no scalar and a hash behind a quote or inside an open quote is an error" <| fun _ ->
+        expectRoot "x\"#suffix" (sc "x\"#suffix")
+        expectRoot "\"x\" # comment" (withNote " comment" (dq "x"))
+        Expect.equal (parseErrorOf "\"x\"#suffix") "glued-comment@1" "A hash glued to the closing quote"
+        Expect.equal (parseErrorOf "a: 'open # c") "unclosed-quote@1" "The hash is inside the open quote"
+        // A quoted scalar goes on in the next line only when that line is deeper than its parent, so the second line ends it with another error.
+        Expect.equal (parseErrorOf "a: 'open # c\nb: 1 # d\n") "quoted-indent@2" "The next line is not deeper than the key"
+
+    // Tests.CommentCleanUp "comments inside a multiline flow collection stay in the merged line". yaml@2.6.1: {"a":["x","y"]}. The old reader merged the lines and kept only the comment behind
+    // the closer as the comment of the line. The tree keeps every comment in its slot.
+    testCase "comments inside a flow collection over several lines each have a slot" <| fun _ ->
+        expectRoot
+            "a: [ # open\n  'x', # one\n  \"y\" # two\n] # close\n"
+            (mapOf [ "a", withNote " close" (YamlNode.withOpeningComment (comment " open") (flowSeq [ withNote " one" (sq "x"); withNote " two" (dq "y") ])) ])
+]
+
 let Main =
     testList "Comments" [
         r1Tests
@@ -336,4 +533,10 @@ let Main =
         r7Tests
         r8Tests
         rulingTests
+        r6Tests
+        r1FlowTests
+        r7FlowTests
+        rule21Tests
+        r8FlowTests
+        cleanUpTests
     ]

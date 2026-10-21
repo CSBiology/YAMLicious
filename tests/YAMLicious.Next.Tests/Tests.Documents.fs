@@ -335,6 +335,94 @@ let private suffixTests = testList "End markers without a document" [
         Expect.equal (parseErrorOf "--- \"a\"\n\"b\"") "unexpected-content@2" "A second node behind the root"
 ]
 
+let private flowRootTests = testList "Documents with a flow collection as the root" [
+    // yaml@2.6.1 reads `--- [a]` and `--- {b: 1}` as ["a"] and {"b":1}, and `[a]`, `...`, `{b: 1}` as the same two documents.
+    testCase "a flow collection is the root of a document with and without markers" <| fun _ ->
+        let first = flowSeq [ sc "a" ]
+        let second = flowMap [ "b", sc "1" ]
+        expectStream "[a]" [ document (plainDocument first) ]
+        expectStream "--- [a]\n--- {b: 1}\n" [ document (explicitDocument first); document (explicitDocument second) ]
+        expectStream "[a]\n...\n{b: 1}" [ document (closed (plainDocument first)); document (plainDocument second) ]
+        expectStream "---\n[a]\n---\n{b: 1}" [ document (explicitDocument first); document (explicitDocument second) ]
+        expectStream "--- !!seq [a]" [ document (explicitDocument (YamlNode.withTag (YamlTag.core "seq") first)) ]
+
+    // Rule R3 and ruling 1c for a root that is no block collection: the trivia in front of the root go to BeforeRoot and the ones behind it to AfterRoot, except in front of a `---`, where they go to
+    // the Prelude of the next document. A comment behind the closer is the trailing comment of the root (rule R8).
+    testCase "the trivia around a flow root follow rules R3 and 1c" <| fun _ ->
+        expectStream "# c\n[a]" [ document { plainDocument (flowSeq [ sc "a" ]) with BeforeRoot = [ note " c" ] } ]
+        expectStream "---\n# c\n[a]" [ document { explicitDocument (flowSeq [ sc "a" ]) with BeforeRoot = [ note " c" ] } ]
+        expectStream "[a] # t\n# u\n" [ document { plainDocument (withNote " t" (flowSeq [ sc "a" ])) with AfterRoot = [ note " u" ] } ]
+        expectStream "[a]\n# t\n...\n" [ document { closed (plainDocument (flowSeq [ sc "a" ])) with AfterRoot = [ note " t" ] } ]
+        expectStream
+            "[a]\n# t\n---\n[b]"
+            [ document (plainDocument (flowSeq [ sc "a" ])); document (withPrelude [ preludeNote " t" ] (explicitDocument (flowSeq [ sc "b" ]))) ]
+        expectStream
+            "[a]\n...\n# c\n---\n[b]"
+            [ document (closed (plainDocument (flowSeq [ sc "a" ]))); document (withPrelude [ preludeNote " c" ] (explicitDocument (flowSeq [ sc "b" ]))) ]
+        expectStream "{a: 1}: b\n# t\n" [ document (plainDocument (withEnd [ note " t" ] (YamlNode.mapping [ YamlNode.entry (flowMap [ "a", sc "1" ]) (sc "b") ]))) ]
+
+    // A %TAG directive binds a handle for the document that it precedes, and the anchors of a document end with it.
+    testCase "directives and anchors belong to the document of a flow root" <| fun _ ->
+        let tag = YamlTag.Named { Prefix = "tag:e,2000:"; Suffix = "t" }
+        expectStream
+            "%TAG !e! tag:e,2000:\n---\n!e!t [a]\n...\n"
+            [ document (closed (withPrelude [ tagDirective "!e!" "tag:e,2000:" ] (explicitDocument (YamlNode.withTag tag (flowSeq [ sc "a" ]))))) ]
+        Expect.equal (parseErrorOf "&a [x]\n---\n*a") "undefined-alias@3" "The anchor ends with its document"
+        Expect.equal (parseErrorOf "%TAG !e! tag:e,2000:\n---\n[a]\n---\n!e!t [b]") "undeclared-tag-handle@5" "The handle ends with its document"
+]
+
+let private byteOrderMarkTests = testList "Byte order marks between documents" [
+    // yaml@2.6.1 reads `--- a\n...\n\uFEFFb` as "a" and "b". [202] l-document-prefix allows a mark in front of every document, behind a `...` as well as at the start of the stream.
+    testCase "a mark at the start of a document prefix is ignored" <| fun _ ->
+        expectStream "\uFEFFa" [ document (plainDocument (sc "a")) ]
+        expectStream "\uFEFF\uFEFFa" [ document (plainDocument (sc "a")) ]
+        expectStream "--- a\n...\n\uFEFFb" [ document (closed (explicitDocument (sc "a"))); document (plainDocument (sc "b")) ]
+        expectStream "a\n...\n\uFEFF---\nb" [ document (closed (plainDocument (sc "a"))); document (explicitDocument (sc "b")) ]
+        expectStream
+            "a\n...\n\uFEFF%YAML 1.2\n---\nb"
+            [ document (closed (plainDocument (sc "a"))); document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "b"))) ]
+        expectStream "a\n...\n\uFEFF# c\nb" [ document (closed (plainDocument (sc "a"))); document { plainDocument (sc "b") with BeforeRoot = [ note " c" ] } ]
+        expectStream "a\n...\n\uFEFF\uFEFF\uFEFFb" [ document (closed (plainDocument (sc "a"))); document (plainDocument (sc "b")) ]
+        expectStream "\uFEFF%YAML 1.2\n---\na" [ document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "a"))) ]
+
+    // 1.2.2 [211] l-yaml-stream repeats `l-document-suffix+ l-document-prefix* l-any-document? | c-byte-order-mark | l-comment | l-explicit-document` behind a document. So a mark at the start
+    // of a line ends a bare document without a `...`. Only comment lines, blank lines, more marks, a `---` and a `...` may follow it. The mark has no place in the tree, and the
+    // trivia in front of a `---` go to the Prelude of the next document as ever (rule R3).
+    testCase "a mark ends the open document, and a start marker, an end marker or the end of the text may follow" <| fun _ ->
+        expectStream "--- a\n\uFEFF--- b" [ document (explicitDocument (sc "a")); document (explicitDocument (sc "b")) ]
+        expectStream "a\n\uFEFF---\nb" [ document (plainDocument (sc "a")); document (explicitDocument (sc "b")) ]
+        expectStream "a\n\uFEFF...\n" [ document (closed (plainDocument (sc "a"))) ]
+        expectStream "a\n\uFEFF...\nb" [ document (closed (plainDocument (sc "a"))); document (plainDocument (sc "b")) ]
+        expectStream "a\n\uFEFF# c\n--- b" [ document (plainDocument (sc "a")); document (withPrelude [ preludeNote " c" ] (explicitDocument (sc "b"))) ]
+        expectStream "a\n\uFEFF\uFEFF\n---\nb" [ document (plainDocument (sc "a")); document (withPrelude [ PreludeItem.PreludeTrivia blank ] (explicitDocument (sc "b"))) ]
+        expectStream "a: 1\n\uFEFF" [ document (plainDocument (mapOf [ "a", sc "1" ])) ]
+        expectStream "a\n\uFEFF# c" [ document { plainDocument (sc "a") with AfterRoot = [ note " c" ] } ]
+        expectStream "a: 1\n\uFEFF# c\n" [ document (plainDocument (withEnd [ note " c" ] (mapOf [ "a", sc "1" ]))) ]
+        expectStream "k: |\n  a\n\uFEFF--- b" [ document (plainDocument (mapOf [ "k", lit "a\n" ])); document (explicitDocument (sc "b")) ]
+        expectStream "[a]\n\uFEFF--- {b: 1}" [ document (plainDocument (flowSeq [ sc "a" ])); document (explicitDocument (flowMap [ "b", sc "1" ])) ]
+        expectStream "- a\n- b\n\uFEFF# c\n\uFEFF\n# d\n---\n" [ document (plainDocument (seqOf [ sc "a"; sc "b" ])); document (withPrelude [ preludeNote " c"; PreludeItem.PreludeTrivia blank; preludeNote " d" ] (explicitDocument nothing)) ]
+
+    // Content behind a mark that ended a document is an error. The error names the content and has the mark as the related span.
+    testCase "content behind a mark that ended a document is an error" <| fun _ ->
+        Expect.equal (parseErrorOf "a: 1\n\uFEFF# c\nb: 2") "content-after-byte-order-mark@3" "A comment line and a mapping"
+        Expect.equal (parseErrorOf "a\n\uFEFFb") "content-after-byte-order-mark@2" "A scalar"
+        Expect.equal (parseErrorOf "k: 1\n\uFEFFj: 2") "content-after-byte-order-mark@2" "A mapping entry"
+        Expect.equal (parseErrorOf "- a\n\uFEFF- b") "content-after-byte-order-mark@2" "A sequence item"
+        Expect.equal (parseErrorOf "--- # c\n\uFEFFa") "content-after-byte-order-mark@2" "The root behind a start marker"
+        Expect.equal (parseErrorOf "k: |\n  a\n\uFEFFb") "content-after-byte-order-mark@3" "Behind a block scalar"
+        Expect.equal (parseErrorOf "[a]\n\uFEFFb") "content-after-byte-order-mark@2" "Behind a flow root"
+        let error = parseError "a\n\uFEFFb"
+        Expect.equal (error.Related |> List.map showSpan) [ "2:1-2:2" ] "The mark is the related span"
+        Expect.equal (showSpan error.Span) "2:1-2:2" "The content is the span"
+
+    // A mark between a directive and its `---` is no prefix and no continuation, and a mark inside a line or a flow collection is no mark of the stream. The lexer reports the second kind.
+    testCase "a mark between a directive and the start marker or inside a line is an error" <| fun _ ->
+        Expect.equal (parseErrorOf "%YAML 1.2\n\uFEFF---\na") "invalid-character@2" "Behind a directive"
+        Expect.equal (parseErrorOf "a\n...\n%TAG ! tag:x,2000:\n\uFEFF---\nb") "invalid-character@4" "Behind a directive of a later document"
+        Expect.equal (parseErrorOf "[a,\n\uFEFFb]") "invalid-character@2" "Inside a flow collection"
+        Expect.equal (parseErrorOf "a\uFEFFb") "invalid-character@1" "Inside a line"
+]
+
 let Main =
     testList "Documents" [
         singleTests
@@ -343,4 +431,6 @@ let Main =
         preludeTests
         rootTriviaTests
         suffixTests
+        flowRootTests
+        byteOrderMarkTests
     ]

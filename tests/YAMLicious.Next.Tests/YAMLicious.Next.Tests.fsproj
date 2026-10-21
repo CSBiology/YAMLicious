@@ -16,6 +16,9 @@
     <Compile Include="Tests.Parser.fs" />
     <Compile Include="Tests.Comments.fs" />
     <Compile Include="Tests.Documents.fs" />
+    <Compile Include="Tests.Flow.fs" />
+    <Compile Include="Tests.Keys.fs" />
+    <Compile Include="Tests.Aliases.fs" />
     <Compile Include="Tests.Decode.fs" />
     <Compile Include="Tests.Encode.fs" />
     <Compile Include="Tests.Reader.fs" />

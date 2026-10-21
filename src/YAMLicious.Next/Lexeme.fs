@@ -10,12 +10,20 @@ namespace YAMLicious
 /// - `FlowIn` is a position inside a flow collection. A flow indicator ends a plain scalar, a dash is no
 ///   block entry, and the lines of a collection have to stand deeper than the node that owns it, with one
 ///   exception for the closer of the collection. See `LexContext`.
+/// - `FlowInNested` is a position inside a flow collection that stands in another flow collection. It is
+///   `FlowIn` without the exception for the closer.
 /// - `BlockKey` and `FlowKey` mark the key of an implicit entry. A plain scalar stays on its line there,
 ///   and `FlowKey` also ends it at a flow indicator.
+///
+/// The parser passes `BlockIn` for every position of the block structure and `FlowIn` for every token inside
+/// a flow collection, `FlowInNested` inside a collection of a collection. It cannot know that a node is the implicit key of an entry before the colon follows, so
+/// it checks the line and the length of the key afterwards. `BlockOut`, `FlowOut`, `BlockKey` and `FlowKey`
+/// are for callers that know the production, such as the tests of the lexer.
 type internal GrammarContext =
     | BlockIn
     | BlockOut
     | FlowIn
+    | FlowInNested
     | FlowOut
     | BlockKey
     | FlowKey
@@ -32,7 +40,13 @@ type internal GrammarContext =
 /// with n one above the owner. The lexer accepts one deviation on purpose: a line that starts with the
 /// closer of the collection, `]` or `}`, may stand at the column of the owner, as in `k: [` followed by
 /// `  a` and `]` at column 0. The loader of cwltool (ruamel) and yaml@2.6.1 read that layout, and real
-/// CWL files lay out `expressionLib` that way. A closer in front of the owner is still an error.
+/// CWL files lay out `expressionLib` that way. A closer in front of the owner is still an error. yaml@2.6.1
+/// reads the layout for the closer of the outermost collection only, so the context `FlowInNested` of a
+/// collection inside another one withholds the exception.
+///
+/// The indentation counts spaces. [63] s-indent(n) is n spaces, so a line needs its spaces in front of any tab,
+/// and a tab behind them is a separator ([66] s-separate-in-line). A line that starts with a tab has no
+/// indentation, and the exception for a closer lets it stand only where the owner stands at the column 0.
 ///
 /// `SimpleKey` is true when the parser knows that the node can only be an implicit key. The lexer keeps a
 /// plain scalar on its first line then, rejects a quoted scalar with a line break, and rejects a scalar of
@@ -73,6 +87,13 @@ type internal Lexeme =
     | DocumentStart
     /// A `...` at the start of a line.
     | DocumentEnd
+    /// A run of byte order marks at the start of a block line. [202] l-document-prefix allows one in front of
+    /// a document, and [211] l-yaml-stream lets one follow any document, so the lexer cannot tell whether
+    /// the mark is valid. The parser applies the stream rule. Marks take no column, so the span is the one
+    /// column that the run would fill at the start of the line, which gives an error a range to point at. A
+    /// mark inside a scalar, a flow collection or a line is invalid, and the lexer reports it. The tree has no
+    /// slot for a mark, so the parser drops it and the writer never writes one.
+    | ByteOrderMark
     /// A directive line without its trailing comment.
     | Directive of DirectiveKind
     /// The first lexeme of a content line is about to follow. `indent` is the number of spaces in front of it,
@@ -84,8 +105,9 @@ type internal Lexeme =
     /// s-separate behind it, so a `?` in front of a flow indicator is an error.
     | ExplicitKey
     /// A `:` that a blank or the end of the line follows. Inside a flow collection a flow indicator may
-    /// follow it as well, and so may any character when the colon stands right behind a quoted scalar or a
-    /// flow collection. `adjacent` is true when the colon stands right behind such a node, as in `"a":b`.
+    /// follow it as well, and so may any character when the colon follows a quoted scalar or a flow
+    /// collection, as in `"a":b` and `"a" :b` ([149] c-ns-flow-map-adjacent-value). `adjacent` is true when
+    /// the colon stands right behind such a node.
     | Value of adjacent: bool
     | FlowSequenceStart
     | FlowSequenceEnd

@@ -16,6 +16,7 @@ let show (lexeme: Lexeme) : string =
     | Lexeme.StreamEnd -> "stream-end"
     | Lexeme.DocumentStart -> "---"
     | Lexeme.DocumentEnd -> "..."
+    | Lexeme.ByteOrderMark -> "bom"
     | Lexeme.Directive (DirectiveKind.YamlVersion (major, minor)) -> sprintf "%%YAML %d.%d" major minor
     | Lexeme.Directive (DirectiveKind.TagDirective (handle, prefix)) -> sprintf "%%TAG %s %s" handle prefix
     | Lexeme.Directive (DirectiveKind.ReservedDirective (directiveName, arguments)) -> "%" + directiveName + " " + String.concat " " arguments
@@ -76,7 +77,7 @@ let lexWith (simpleKeys: bool) (input: string) : Lexed =
         let parent = if owners.Count > 0 then owners.[owners.Count - 1] else -1
         let context =
             if flowOwners.Count > 0 then
-                { Grammar = GrammarContext.FlowIn
+                { Grammar = (if flowOwners.Count > 1 then GrammarContext.FlowInNested else GrammarContext.FlowIn)
                   ParentIndent = flowOwners.[flowOwners.Count - 1]
                   SimpleKey = false }
             else
@@ -425,9 +426,9 @@ let valueJson (root: YamlNode) : string =
         let text =
             match node.Kind with
             | YamlNodeKind.Scalar scalar ->
-                if scalar.Style <> ScalarStyle.Plain || node.Properties.Tag = Some(YamlTag.core "str") then
-                    quote scalar.Value
-                elif CoreSchema.isNull node.Properties.Tag scalar then
+                // The core schema takes the style and the explicit tag into account: a quoted scalar is a string
+                // unless a core tag says otherwise, as in `!!int "2"`.
+                if CoreSchema.isNull node.Properties.Tag scalar then
                     "null"
                 else
                     match CoreSchema.tryParseBool node.Properties.Tag scalar with
@@ -435,7 +436,10 @@ let valueJson (root: YamlNode) : string =
                     | None ->
                         match CoreSchema.tryParseInt64 node.Properties.Tag scalar with
                         | Some value -> string value
-                        | None -> quote scalar.Value
+                        | None ->
+                            match CoreSchema.tryParseFloat node.Properties.Tag scalar with
+                            | Some value -> string value
+                            | None -> quote scalar.Value
             | YamlNodeKind.Alias name -> anchors.[name]
             | YamlNodeKind.Sequence collection -> "[" + String.concat "," [ for item in collection.Items -> visit item.Node ] + "]"
             | YamlNodeKind.Mapping collection ->
@@ -503,3 +507,25 @@ let placement (property: PropertyName) (after: Separation) : PropertyPlacement =
 /// Checks that the text is one document and that the document equals the expected one except for the spans.
 let expectDocument (input: string) (expected: YamlDocument) =
     Expect.streamEqual (parseOk input) { Parts = [ StreamPart.Document expected ] } (sprintf "The document of %A" input)
+
+/// A flow sequence of the nodes.
+let flowSeq (nodes: YamlNode list) : YamlNode = YamlNode.flowSequence (List.map YamlNode.item nodes)
+
+/// A flow mapping with plain keys.
+let flowMap (pairs: (string * YamlNode) list) : YamlNode =
+    YamlNode.flowMapping [ for (key, value) in pairs -> YamlNode.entry (YamlNode.plain key) value ]
+
+/// The one-entry flow mapping that a flow pair such as `a: b` gives inside a flow sequence.
+let flowPair (key: YamlNode) (value: YamlNode) : YamlNode = YamlNode.flowMapping [ YamlNode.entry key value ]
+
+/// An entry of a flow mapping with trivia in front of it.
+let flowEntryBefore (before: Trivia list) (key: YamlNode) (value: YamlNode) : MappingEntry = { YamlNode.entry key value with Before = before }
+
+/// A key alone in a flow mapping: the value indicator is omitted and the value is missing.
+let keyOnly (key: YamlNode) : MappingEntry = { YamlNode.entry key nothing with Colon = None }
+
+/// An entry with the question mark and the separations behind the indicators.
+let explicitFlowEntry (key: YamlNode) (value: YamlNode) : MappingEntry = { YamlNode.entry key value with Question = Some Separation.Inline }
+
+/// The value of the only document of the text as JSON, from `valueJson`.
+let valueOf (input: string) : string = valueJson (parseRoot input)

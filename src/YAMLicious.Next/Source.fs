@@ -34,7 +34,8 @@ type YamlErrorCode =
     | InvalidDirective
     | EmptyAnchor
     | EmptyAlias
-    /// A byte order mark anywhere but at the start of a document prefix.
+    /// A byte order mark anywhere but at the start of a line outside a scalar and a flow collection. The
+    /// parser reports it too when a mark stands between a directive and the `---` behind it.
     | InvalidCharacter
     // The parser.
     /// A line that is deeper than the open block collections allow, or shallower than the node it ends but
@@ -68,8 +69,17 @@ type YamlErrorCode =
     | UnsupportedYamlVersion
     /// A tag or an anchor that touches the token behind it, as in `!!str"x"`.
     | MissingSeparation
-    /// A flow collection. The parser reads block collections only so far.
-    | FlowNotSupportedYet
+    /// A flow collection that the text ends before it is closed. `Related` holds the opener.
+    | UnclosedFlow
+    /// A `]` that closes a flow mapping or a `}` that closes a flow sequence. `Related` holds the opener.
+    | MismatchedFlowCloser
+    /// A `,` with no entry in front of it in the collection, as in `[a,,b]`, `[,a]` and `{,}`.
+    | EmptyFlowEntry
+    /// Two entries of a flow collection with no `,` between them, as in `[a [b]]` and `{a: b c: d}`.
+    | MissingFlowComma
+    /// Content behind a byte order mark that ended a document, before a `---` or a `...` started the next
+    /// part of the stream. `Related` holds the byte order mark.
+    | ContentAfterByteOrderMark
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module YamlErrorCode =
@@ -117,7 +127,11 @@ module YamlErrorCode =
         | YamlErrorCode.DirectiveWithoutDocumentStart -> "directive-without-document-start"
         | YamlErrorCode.UnsupportedYamlVersion -> "unsupported-yaml-version"
         | YamlErrorCode.MissingSeparation -> "missing-separation"
-        | YamlErrorCode.FlowNotSupportedYet -> "flow-not-supported-yet"
+        | YamlErrorCode.UnclosedFlow -> "unclosed-flow"
+        | YamlErrorCode.MismatchedFlowCloser -> "mismatched-flow-closer"
+        | YamlErrorCode.EmptyFlowEntry -> "empty-flow-entry"
+        | YamlErrorCode.MissingFlowComma -> "missing-flow-comma"
+        | YamlErrorCode.ContentAfterByteOrderMark -> "content-after-byte-order-mark"
 
 /// A lexical or syntactic error. `Code` says what is wrong, `Message` is the text for a person with the line,
 /// and `Span` is the offending text. `Related` holds further ranges that explain the error, such as the
@@ -139,8 +153,8 @@ type internal CursorState =
       LineBegin: bool
       Started: bool
       InPrelude: bool
-      BomAllowed: bool
       JsonLikeEnd: int
+      JsonLike: bool
       SeparationHadTab: bool
       FirstOnLine: bool
       LeadingTab: bool
@@ -183,8 +197,8 @@ type internal Cursor(text: string) =
     let mutable lineBegin = true
     let mutable started = false
     let mutable inPrelude = true
-    let mutable bomAllowed = true
     let mutable jsonLikeEnd = -1
+    let mutable jsonLike = false
     let mutable separationHadTab = false
     let mutable firstOnLine = false
     let mutable leadingTab = false
@@ -219,19 +233,19 @@ type internal Cursor(text: string) =
         with get () = inPrelude
         and set (value: bool) = inPrelude <- value
 
-    /// True at the start of the stream and right behind a `...`, until a directive or content follows. A
-    /// byte order mark at the start of a line is only valid there: [202] l-document-prefix puts it in front
-    /// of the comment lines of the prefix, and the directives of [209] come behind the prefix. Comment lines
-    /// and blank lines leave it set.
-    member _.BomAllowed
-        with get () = bomAllowed
-        and set (value: bool) = bomAllowed <- value
-
     /// The index right behind the last quoted scalar or flow collection that ended, or -1. A colon at this
     /// index is the adjacent value indicator of a JSON-like node, and a hash at this index is an error.
     member _.JsonLikeEnd
         with get () = jsonLikeEnd
         and set (value: int) = jsonLikeEnd <- value
+
+    /// True from the end of a JSON-like node, a quoted scalar or a flow collection, up to the next lexeme that
+    /// is no blank line, no comment and no line start. A `:` inside a flow collection is then the adjacent
+    /// value indicator of [149] c-ns-flow-map-adjacent-value, which allows the value to follow without a
+    /// blank even when blanks, comments or line breaks stand between the node and the colon.
+    member _.JsonLike
+        with get () = jsonLike
+        and set (value: bool) = jsonLike <- value
 
     /// True when the blanks in front of the last lexeme held a tab. The blanks run from the end of the
     /// lexeme before it. The first lexeme of a line is false, because the indentation of the line is not
@@ -309,8 +323,8 @@ type internal Cursor(text: string) =
           LineBegin = lineBegin
           Started = started
           InPrelude = inPrelude
-          BomAllowed = bomAllowed
           JsonLikeEnd = jsonLikeEnd
+          JsonLike = jsonLike
           SeparationHadTab = separationHadTab
           FirstOnLine = firstOnLine
           LeadingTab = leadingTab
@@ -326,8 +340,8 @@ type internal Cursor(text: string) =
         lineBegin <- state.LineBegin
         started <- state.Started
         inPrelude <- state.InPrelude
-        bomAllowed <- state.BomAllowed
         jsonLikeEnd <- state.JsonLikeEnd
+        jsonLike <- state.JsonLike
         separationHadTab <- state.SeparationHadTab
         firstOnLine <- state.FirstOnLine
         leadingTab <- state.LeadingTab

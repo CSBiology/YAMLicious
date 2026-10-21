@@ -45,42 +45,50 @@ let private streamTests = testList "Lexer stream" [
         Expect.equal (Cursor("\uFEFFa").Origin) 1 "The cursor starts behind the mark"
         Expect.equal (Cursor("a").Origin) 0 "A text without the mark starts at 0"
 
-    // yaml@2.6.1 reads `--- a\n...\n\uFEFFb` as "a" and "b". [202] l-document-prefix allows the mark in front of every document.
-    testCase "a byte order mark at the start of a later document is skipped and takes no column" <| fun _ ->
-        expectLexemes "--- a\n...\n\uFEFFb" [ "---"; "plain:a"; "..."; "plain:b" ]
+    // yaml@2.6.1 reads `--- a\n...\n\uFEFFb` as "a" and "b". [202] l-document-prefix allows the mark in front of every document. The lexer
+    // returns a run of marks at the start of a block line as one ByteOrderMark lexeme and leaves the question of its place to the parser ([211]).
+    testCase "a byte order mark at the start of a block line is one lexeme and takes no column" <| fun _ ->
+        expectLexemes "--- a\n...\n\uFEFFb" [ "---"; "plain:a"; "..."; "bom"; "plain:b" ]
         Expect.equal
             (lexSpans "--- a\n...\n\uFEFFb")
-            [ "--- 1:1-1:4"; "plain:a 1:5-1:6"; "... 2:1-2:4"; "plain:b 3:1-3:2" ]
-            "The mark takes no column"
-        expectLexemes "a\n...\n\uFEFF---\nb" [ "plain:a"; "..."; "---"; "plain:b" ]
-        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "%YAML 1.2"; "---"; "plain:b" ]
-        expectLexemes "a\n...\n\uFEFF# c\nb" [ "plain:a"; "..."; "#own: c"; "plain:b" ]
+            [ "--- 1:1-1:4"; "plain:a 1:5-1:6"; "... 2:1-2:4"; "bom 3:1-3:2"; "plain:b 3:1-3:2" ]
+            "The mark takes no column, and its span is the one column that it would fill"
+        expectLexemes "a\n...\n\uFEFF---\nb" [ "plain:a"; "..."; "bom"; "---"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "bom"; "%YAML 1.2"; "---"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF# c\nb" [ "plain:a"; "..."; "bom"; "#own: c"; "plain:b" ]
 
     // yaml@2.6.1 reads `\uFEFF%YAML 1.2\n---\na` as "a". [202] l-document-prefix puts the mark at the start of the prefix, and the directives of [209] follow the
-    // prefix. The prefix may hold comment lines in front of the mark of the next prefix, so comment lines and blank lines leave the mark allowed.
-    testCase "a byte order mark is valid in front of the directives and behind the comment lines of a prefix" <| fun _ ->
+    // prefix. The prefix may hold comment lines in front of the mark of the next prefix.
+    testCase "a byte order mark in front of the directives and behind the comment lines of a prefix" <| fun _ ->
         expectLexemes "\uFEFF%YAML 1.2\n---\na" [ "%YAML 1.2"; "---"; "plain:a" ]
-        expectLexemes "a\n...\n# c\n\n\uFEFFb" [ "plain:a"; "..."; "#own: c"; "blank"; "plain:b" ]
-        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "%YAML 1.2"; "---"; "plain:b" ]
+        expectLexemes "a\n...\n# c\n\n\uFEFFb" [ "plain:a"; "..."; "#own: c"; "blank"; "bom"; "plain:b" ]
+        expectLexemes "a\n...\n\uFEFF%YAML 1.2\n---\nb" [ "plain:a"; "..."; "bom"; "%YAML 1.2"; "---"; "plain:b" ]
         expectLexemes "\uFEFF# c\na" [ "#own: c"; "plain:a" ]
-        // [211] l-yaml-stream repeats the prefix, and each one may open with a mark, so a run of marks is valid and takes no column.
-        expectLexemes "\uFEFF\uFEFFa" [ "plain:a" ]
-        expectLexemes "\uFEFF# c\n\uFEFF\uFEFFa" [ "#own: c"; "plain:a" ]
-        expectLexemes "a\n...\n\uFEFF\uFEFF\uFEFFb" [ "plain:a"; "..."; "plain:b" ]
-        Expect.equal (lexSpans "\uFEFF# c\n\uFEFF\uFEFFa") [ "#own: c 1:1-1:4"; "plain:a 2:1-2:2" ] "A run of marks takes no column"
+        // [211] l-yaml-stream repeats the prefix, and each one may open with a mark, so a run of marks is one lexeme. The first mark of the text
+        // is not part of the lexemes, because the cursor starts behind it.
+        expectLexemes "\uFEFF\uFEFFa" [ "bom"; "plain:a" ]
+        expectLexemes "\uFEFF# c\n\uFEFF\uFEFFa" [ "#own: c"; "bom"; "plain:a" ]
+        expectLexemes "a\n...\n\uFEFF\uFEFF\uFEFFb" [ "plain:a"; "..."; "bom"; "plain:b" ]
+        Expect.equal (lexSpans "\uFEFF# c\n\uFEFF\uFEFFa") [ "#own: c 1:1-1:4"; "bom 2:1-2:2"; "plain:a 2:1-2:2" ] "A run of marks takes no column"
 
     // yaml@2.6.1 accepts the mark behind a directive and inside a document and keeps it in the text. The mark is no nb-char ([27]) and no ns-char ([34]), so
-    // [202] is the only place for it, and a directive or any content takes the allowance away.
-    testCase "a byte order mark behind a directive or inside a document is an error" <| fun _ ->
-        expectError "%YAML 1.2\n\uFEFF---\na" "invalid-character" "2:1-2:2"
-        expectError "a\n...\n%TAG ! tag:x,2000:\n\uFEFF---\nb" "invalid-character" "4:1-4:2"
-        expectError "a\n\uFEFFb" "invalid-character" "2:1-2:2"
-        expectError "k: 1\n\uFEFFj: 2" "invalid-character" "2:1-2:2"
-        expectError "a\n...\nb\n\uFEFFc" "invalid-character" "4:1-4:2"
-        expectError "--- # c\n\uFEFFa" "invalid-character" "2:1-2:2"
-        expectError "- a\n...\n- b\n\uFEFF- c" "invalid-character" "4:1-4:2"
-        expectLexemes "a\n\uFEFFb" [ "plain:a"; "error:invalid-character" ]
-        Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\uFEFFb") [ "plain:a"; "error:invalid-character" ] "A plain scalar does not go on with a mark"
+    // it can only stand at the start of a block line, where [202] and [211] allow it. The lexer reports a mark at that place as a lexeme whatever stands
+    // in front of it, and the parser decides whether the stream rule allows it there.
+    testCase "a byte order mark at the start of a line is a lexeme wherever it stands in a block context" <| fun _ ->
+        expectLexemes "%YAML 1.2\n\uFEFF---\na" [ "%YAML 1.2"; "bom"; "---"; "plain:a" ]
+        expectLexemes "a\n\uFEFFb" [ "plain:a"; "bom"; "plain:b" ]
+        expectLexemes "k: 1\n\uFEFFj: 2" [ "plain:k"; ":"; "plain:1"; "bom"; "plain:j"; ":"; "plain:2" ]
+        expectLexemes "--- # c\n\uFEFFa" [ "---"; "#: c"; "bom"; "plain:a" ]
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\uFEFFb") [ "plain:a"; "bom"; "plain:b" ] "A plain scalar ends in front of the mark"
+        // A mark behind blanks stands inside the line.
+        expectError "a\n \uFEFFb" "invalid-character" "2:2-2:3"
+        expectError "k:\n  \uFEFFa" "invalid-character" "2:3-2:4"
+
+    // Inside a flow collection a mark is invalid at the start of a line too, and so is one behind a block scalar header or inside a block scalar.
+    testCase "a byte order mark at the start of a line inside a flow collection is an error" <| fun _ ->
+        expectError "[a,\n\uFEFFb]" "invalid-character" "2:1-2:2"
+        expectError "{a: 1,\n\uFEFFb: 2}" "invalid-character" "2:1-2:2"
+        Expect.equal (lexIn GrammarContext.FlowIn -1 false "[a,\n\uFEFFb]") [ "["; "plain:a"; ","; "error:invalid-character" ] "The error follows the comma"
 
     // yaml@2.6.1 accepts the mark in each of these places and keeps it in the text, or drops it together with the comment. [27] nb-char and [34] ns-char exclude it.
     testCase "a byte order mark inside a scalar, a comment, a name or a directive is an error" <| fun _ ->
@@ -182,6 +190,17 @@ let private flowTests = testList "Lexer flow lexemes" [
         expectLexemes "[\"a\" : b]" [ "["; "double:a"; ":"; "plain:b"; "]" ]
         expectLexemes "[[a]:b]" [ "["; "["; "plain:a"; "]"; ":adjacent"; "plain:b"; "]" ]
         expectLexemes "{\"a\": b}" [ "{"; "double:a"; ":adjacent"; "plain:b"; "}" ]
+
+    // [149] c-ns-flow-map-adjacent-value: a colon behind a quoted scalar or a flow collection takes its value without a blank, whatever stands between the node and the colon.
+    // yaml@2.6.1 reads `{"a" :b}` as {"a":"b"}. The colon after any other node needs a blank or a flow indicator behind it.
+    testCase "a colon behind blanks, comments and line breaks after a JSON-like node takes its value without a blank" <| fun _ ->
+        expectLexemes "{\"a\" :b}" [ "{"; "double:a"; ":"; "plain:b"; "}" ]
+        expectLexemes "{\"a\"\n :b}" [ "{"; "double:a"; ":"; "plain:b"; "}" ]
+        expectLexemes "{\"a\" # c\n :b}" [ "{"; "double:a"; "#: c"; ":"; "plain:b"; "}" ]
+        expectLexemes "[[a] :b]" [ "["; "["; "plain:a"; "]"; ":"; "plain:b"; "]" ]
+        expectLexemes "{a :b}" [ "{"; "plain:a :b"; "}" ]
+        expectLexemes "{\"a\", :b}" [ "{"; "double:a"; ","; "plain::b"; "}" ]
+        expectLexemes "{\"a\" b :c}" [ "{"; "double:a"; "plain:b :c"; "}" ]
 
     testCase "an adjacent colon behind a quoted scalar is a value indicator in a block key too" <| fun _ ->
         expectLexemes "\"a\": b" [ "double:a"; ":adjacent"; "plain:b" ]
@@ -537,7 +556,19 @@ let private contextTests = testList "Lexer contexts" [
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n]") [ "plain:a"; ","; "]" ] "A closer may stand at the parent"
         Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n  ]") [ "plain:a"; ","; "]" ] "A closer at the column of the parent"
         Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n ]") [ "plain:a"; ","; "error:flow-indent" ] "A closer behind the parent is too shallow"
+        // The indentation counts spaces. yaml@2.6.1 reads a closer behind a tab like a closer at the column of the parent.
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n\t]") [ "plain:a"; ","; "]" ] "A tab in front of the closer"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n \t]") [ "plain:a"; ","; "error:flow-indent" ] "A tab behind too few spaces"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n\t]") [ "plain:a"; ","; "error:flow-indent" ] "A tab and no spaces, with the parent at the column 2"
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n# c\nb") [ "plain:a"; ","; "#own: c"; "error:flow-indent" ] "A comment line stands anywhere"
+        // The context FlowInNested is FlowIn without the exception for the closer. The spaces count, and a tab behind them is a separator.
+        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer at the parent"
+        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n ]") [ "plain:a"; ","; "]" ] "A nested closer one space deeper"
+        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n\t]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer behind a tab and no space"
+        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n \t]") [ "plain:a"; ","; "]" ] "A nested closer behind a space and a tab"
+        Expect.equal (lexIn GrammarContext.FlowInNested 2 false "    a,\n  ]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer at the column 2"
+        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\nb") [ "plain:a"; ","; "error:flow-indent" ] "Another token at the parent"
+        Expect.equal (lexIn GrammarContext.FlowInNested -1 false "a,\n]") [ "plain:a"; ","; "]" ] "At the root every column is deep enough"
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a,\nb") [ "plain:a"; ","; "plain:b" ] "At the root every line is deep enough"
 
     // yaml@2.6.1 rejects `k: "b\n\t\n  c"` and `k: b\n\t\n  c` (BAD_INDENT), and reads `"b\n\t\n  c"` and `b\n\t\n  c` at the root as "b\nc".

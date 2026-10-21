@@ -42,6 +42,7 @@ module internal Lexer =
     let private isFlowGrammar (grammar: GrammarContext) =
         match grammar with
         | GrammarContext.FlowIn -> true
+        | GrammarContext.FlowInNested -> true
         | GrammarContext.FlowKey -> true
         | _ -> false
 
@@ -73,11 +74,13 @@ module internal Lexer =
             p <- p + 1
         p
 
-    /// True when `k` is the first character of a line. Where byte order marks at the start of a line are
-    /// allowed ([202] l-document-prefix) the lexer skips them, so the index behind them counts too.
+    /// True when `k` is the first character of a line. A run of byte order marks at the start of a line takes
+    /// no column and the lexer returns it as one lexeme, so the index behind the run counts as the start of
+    /// the line too. A mark inside a line is an error that the lexer reports before it could look at a marker
+    /// behind it.
     let private atLineStart (cursor: Cursor) (k: int) =
         let mutable j = k
-        while cursor.BomAllowed && j > cursor.Origin && cursor.Text.[j - 1] = byteOrderMark do
+        while j > cursor.Origin && cursor.Text.[j - 1] = byteOrderMark do
             j <- j - 1
         j <= cursor.Origin || isBreak cursor.Text.[j - 1]
 
@@ -151,15 +154,20 @@ module internal Lexer =
                   Related = related }
         )
 
-    /// Raises the error for the byte order mark at `position`. A mark at the start of a line takes no column
-    /// in the marks of the cursor, so the span is built from its start mark and is one column wide.
-    let private failBom (cursor: Cursor) (position: int) : 'a =
+    /// The span of a byte order mark at `position`. A mark at the start of a line takes no column in the
+    /// marks of the cursor, so the span is built from its start mark and is one column wide.
+    let private bomSpan (cursor: Cursor) (position: int) : SourceSpan =
         let start = cursor.MarkAt position
+        { Start = start
+          Finish = { Line = start.Line; Column = start.Column + 1 } }
+
+    /// Raises the error for the byte order mark at `position`.
+    let private failBom (cursor: Cursor) (position: int) : 'a =
         raise (
             LexFailure
                 { Code = YamlErrorCode.InvalidCharacter
-                  Message = "A byte order mark can only stand at the start of a document prefix."
-                  Span = { Start = start; Finish = { Line = start.Line; Column = start.Column + 1 } }
+                  Message = "A byte order mark can only stand at the start of a line outside a scalar and a flow collection."
+                  Span = bomSpan cursor position
                   Related = [] }
         )
 
@@ -886,7 +894,7 @@ module internal Lexer =
         elif c = '?' && flow && isFlowIndicator text.[q + 1] then
             // [142] and [150] ask for s-separate behind the `?`, and a flow indicator cannot follow a `?` in a plain scalar.
             fail cursor YamlErrorCode.ReservedIndicator "A `?` in front of a flow indicator starts no explicit key and no plain scalar." q (q + 1) []
-        elif c = ':' && (blankOrEnd text (q + 1) || (flow && (isFlowIndicator text.[q + 1] || q = cursor.JsonLikeEnd))) then
+        elif c = ':' && (blankOrEnd text (q + 1) || (flow && (isFlowIndicator text.[q + 1] || cursor.JsonLike))) then
             if not flow then checkIndicatorTab cursor q tab separation
             single cursor q start (Lexeme.Value(q = cursor.JsonLikeEnd))
         elif c = ',' then
@@ -967,18 +975,13 @@ module internal Lexer =
                       HeaderComment = None }
               Span = { Start = start; Finish = finishMark } }
 
-    /// Handles the start of a line that the lexer has not looked at yet. A blank line, a comment line and
-    /// the first content line are lexemes. A content line inside a flow collection is checked here and lexed
-    /// by the caller, so this returns None for it.
-    let private lineBegin (ctx: LexContext) (cursor: Cursor) : Located<Lexeme> option =
+    /// Handles the start of a line that the lexer has not looked at yet, behind the byte order marks that
+    /// stand in front of it. A blank line, a comment line and the first content line are lexemes. A content
+    /// line inside a flow collection is checked here and lexed by the caller, so this returns None for it.
+    let private lineContent (ctx: LexContext) (cursor: Cursor) : Located<Lexeme> option =
         let text = cursor.Text
         let n = text.Length
-        // A document prefix may open with a byte order mark ([202] l-document-prefix), and [211] l-yaml-stream
-        // repeats the prefix, so a run of marks is valid. They take no column.
-        let mutable bomEnd = cursor.Index
-        while cursor.BomAllowed && bomEnd < n && text.[bomEnd] = byteOrderMark do
-            bomEnd <- bomEnd + 1
-        let i = bomEnd
+        let i = cursor.Index
         let mutable q = i
         let mutable tabbed = false
         while q < n && isBlank text.[q] do
@@ -1017,10 +1020,13 @@ module internal Lexer =
                 fail cursor YamlErrorCode.MarkerInFlow "A document marker cannot stand inside a flow collection." i (i + 3) []
             let isCloser = c = ']' || c = '}'
             // [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines ask for ParentIndent + 1 spaces
-            // in front of every line of a flow collection, the closer included. A closer at the column of the
-            // owner is a deliberate exception: ruamel and yaml@2.6.1 accept `k: [` ... `]` and real CWL files
-            // lay out `expressionLib` that way.
-            if indent < ctx.ParentIndent || (indent = ctx.ParentIndent && not isCloser) then
+            // in front of every line of a flow collection, the closer included. The spaces come first, because
+            // [63] s-indent(n) is spaces only, and a tab behind them is a separator. The closer of the outermost
+            // collection at the column of the owner is a deliberate exception: ruamel and yaml@2.6.1 accept
+            // `k: [` ... `]` and real CWL files lay out `expressionLib` that way. yaml@2.6.1 does not accept it
+            // for a nested collection, so FlowInNested withholds it.
+            let closerAtOwner = isCloser && ctx.Grammar <> GrammarContext.FlowInNested
+            if indent < ctx.ParentIndent || (indent = ctx.ParentIndent && not closerAtOwner) then
                 fail cursor YamlErrorCode.FlowIndent "A line inside a flow collection has to be indented deeper than the node that owns the collection." i (q + 1) []
             cursor.Index <- q
             cursor.LineBegin <- false
@@ -1032,6 +1038,24 @@ module internal Lexer =
             cursor.LeadingTab <- tabbed
             cursor.SeparationHadTab <- tabbed
             Some (located cursor start q (Lexeme.LineStart(indent, tabbed)))
+
+    /// Handles the start of a line that the lexer has not looked at yet. A run of byte order marks is one
+    /// lexeme of its own: [202] l-document-prefix allows a mark in front of a document, and [211]
+    /// l-yaml-stream lets one follow any document, so only the parser knows whether this one is valid. The
+    /// marks take no column. Inside a flow collection the lexer leaves a mark alone, and it is an error there
+    /// like it is inside a line.
+    let private lineBegin (ctx: LexContext) (cursor: Cursor) : Located<Lexeme> option =
+        let text = cursor.Text
+        if (not (isFlowGrammar ctx.Grammar)) && cursor.Index < text.Length && text.[cursor.Index] = byteOrderMark then
+            let span = bomSpan cursor cursor.Index
+            let mutable bomEnd = cursor.Index + 1
+            while bomEnd < text.Length && text.[bomEnd] = byteOrderMark do
+                bomEnd <- bomEnd + 1
+            cursor.Index <- bomEnd
+            cursor.SeparationHadTab <- false
+            Some { Value = Lexeme.ByteOrderMark; Span = span }
+        else
+            lineContent ctx cursor
 
     /// Handles the text from the cursor on within a line: the blanks, a comment, a line break and the next
     /// lexeme. A line break returns None, because the next line starts then.
@@ -1094,6 +1118,15 @@ module internal Lexer =
         try
             let lexeme = lexNext ctx cursor
             match lexeme.Value with
+            | Lexeme.Comment _ -> ()
+            | Lexeme.BlankLine -> ()
+            | Lexeme.LineStart _ -> ()
+            | Lexeme.ByteOrderMark -> ()
+            | Lexeme.FlowSequenceEnd -> cursor.JsonLike <- true
+            | Lexeme.FlowMappingEnd -> cursor.JsonLike <- true
+            | Lexeme.Scalar scalar -> cursor.JsonLike <- (scalar.Style = ScalarStyle.SingleQuoted || scalar.Style = ScalarStyle.DoubleQuoted)
+            | _ -> cursor.JsonLike <- false
+            match lexeme.Value with
             | Lexeme.LineStart _ ->
                 cursor.FirstOnLine <- true
                 cursor.AfterIndicator <- false
@@ -1101,27 +1134,25 @@ module internal Lexer =
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
-                cursor.BomAllowed <- false
             | Lexeme.ExplicitKey ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
-                cursor.BomAllowed <- false
             | Lexeme.Value _ ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- true
                 cursor.InPrelude <- false
-                cursor.BomAllowed <- false
             | Lexeme.DocumentEnd ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
                 cursor.InPrelude <- true
-                cursor.BomAllowed <- true
             | Lexeme.Directive _ ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
-                cursor.BomAllowed <- false
             | Lexeme.Comment _ ->
+                cursor.FirstOnLine <- false
+                cursor.AfterIndicator <- false
+            | Lexeme.ByteOrderMark ->
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
             | Lexeme.BlankLine ->
@@ -1137,7 +1168,6 @@ module internal Lexer =
                 cursor.FirstOnLine <- false
                 cursor.AfterIndicator <- false
                 cursor.InPrelude <- false
-                cursor.BomAllowed <- false
             Ok lexeme
         with LexFailure error ->
             Error error

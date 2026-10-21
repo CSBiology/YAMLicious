@@ -13,6 +13,9 @@ let all =
           Tests.Parser.Main
           Tests.Comments.Main
           Tests.Documents.Main
+          Tests.Flow.Main
+          Tests.Keys.Main
+          Tests.Aliases.Main
           Tests.Decode.Main
           Tests.Encode.Main
           Tests.Reader.Main

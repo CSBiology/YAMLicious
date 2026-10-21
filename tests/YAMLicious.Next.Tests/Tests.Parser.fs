@@ -7,10 +7,8 @@ module Tests.Parser
 // new tree keeps the comments of a block in the slots of the model (rules R1 to R8), keeps collections and
 // aliases as keys, and holds the folded text of a plain scalar over several lines.
 //
-// Old tests that are left for later milestones:
-// - M4: every test with a flow collection in its input (YamlRead: KeyValue InlineSequence, JSONMappings,
-//   NestedFlowStyle, Multiline flow sequence and object, and the flow tests among the property tests), and
-//   the Tokenizer tests of flow tokens, with the ReaderDocuments and AdvancedFeatures tests that have flow collections.
+// The tests with a flow collection, an alias key or a collection key in their input stand in Tests.Flow, Tests.Keys, Tests.Aliases and Tests.Comments.
+// Old tests that are left for the next milestone:
 // - M5: every test that writes, encodes or decodes (Decode.object, Encode.write, Writer.write, round trips).
 
 open Fable.Pyxpecto
@@ -662,12 +660,6 @@ let private errorTests = testList "Parser errors" [
         expectError "a\n...\n%TAG ! t!" "directive-without-document-start@3"
         expectError "%YAML 2.0\n---\nx" "unsupported-yaml-version@1"
 
-    // The flow collections wait for M4. Until then the parser stops at an opener with a code of its own.
-    testCase "a flow collection stops the parser with its own code until M4" <| fun _ ->
-        expectError "a: [b]" "flow-not-supported-yet@1"
-        expectError "{a: 1}" "flow-not-supported-yet@1"
-        expectError "- [a]" "flow-not-supported-yet@1"
-
     // The message names the line, and Related names the opener where the error has one.
     testCase "the message of an error names its line" <| fun _ ->
         let error = parseError "a: 1\nb"
@@ -914,9 +906,17 @@ let rec private hasStructuredKey (node: YamlNode) : bool =
     | YamlNodeKind.Sequence collection -> collection.Items |> List.exists (fun item -> hasStructuredKey item.Node)
     | _ -> false
 
-// The cases of the N1 task, from N1-scratch/cases.jsonl. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection wait for M4: N1-A03, N1-A09, N1-A16, N1-A20, N1-A22, N1-B04, N1-D02, N1-D03, N1-D27, N1-F06, N1-F07, N1-F08, N1-F09, N1-F10, N1-G04, N1-G05.
+// The cases of the N1 task, from N1-scratch/cases.jsonl. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection are here too since M4: the rejected ones in the list below, N1-D02, N1-D03 and N1-D27 in the table of Tests.Flow and N1-F06 to N1-F10 in Tests.Keys.
 let private n1Rejected : (string * string) list = [
     "N1-A01", "k: \"q\"\n  x"
+    "N1-A03", "k: [a]\n  x"
+    "N1-A09", "s: &a x\nk: *a\n  [b]"
+    "N1-A16", "k: [a]\n  [b]"
+    "N1-A20", "- k: [a]\n    b"
+    "N1-A22", "k: [a,\n  b]\n  x"
+    "N1-B04", "k:\n  [a]\n  b"
+    "N1-G04", "k2:\n   - [ \"x\", 'y' ]\n  v"
+    "N1-G05", "key:\n   \"a #b\": [1, 2]\n  x y: 3\" wide"
     "N1-A02", "- \"q\"\n  x"
     "N1-A04", "s: &a x\nk: *a\n  x"
     "N1-A05", "s: &a x\nl:\n- *a\n  b"

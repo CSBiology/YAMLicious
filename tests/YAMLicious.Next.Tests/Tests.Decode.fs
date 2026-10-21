@@ -5,8 +5,8 @@ module Tests.Decode
 // Tests.YamlGenericRead and Tests.ReaderDocuments are ported to the new API, and the yaml@2.6.1 value stands above each of them as before.
 //
 // Old tests that changed:
-// - A flow input cannot be parsed before M4 lands, so a test with `[1, 2]` or `{}` in its input builds the node with the constructors. The pending test
-//   "the flow inputs of the old decode tests" keeps the original inputs and runs once the flow grammar is merged.
+// - A test with `[1, 2]` or `{}` in its input builds the node with the constructors, as it did before the parser read flow collections. The test
+//   "the flow inputs of the old decode tests" reads the original inputs through the parser.
 // - The model has no Nil. A missing value is an empty plain scalar, so Decode.string reads `k:` as the empty text where the old decoder rejected Nil.
 // - Decode.read is gone. The Reader owns reading, so the tests parse with parseRoot and decode the node.
 // - The ExtensionData of the old overflow tests was a Dictionary of YAMLElement. The getters return the entries in source order now.
@@ -267,7 +267,7 @@ let private optionTests = testList "Decode.option" [
 
     // yaml@2.6.1 reads `k:` followed by `- a` and `- b` as {"k":["a","b"]}, `k: [a, b]` as {"k":["a","b"]}, `k:` followed
     // by `  a: b` as {"k":{"a":"b"}}, `k: {}` as {"k":{}} and `k:` as {"k":null}. Only the null goes to None. The flow forms
-    // are built with the constructors until M4 merges.
+    // are built with the constructors, as before the parser read flow collections.
     testCase "decodes a sequence and a mapping, which are never null" <| fun _ ->
         let list = Decode.option (Decode.list Decode.string)
         Expect.equal (list (fieldNode "k:\n- a\n- b\n")) (Some [ "a"; "b" ]) "A block sequence"
@@ -339,7 +339,7 @@ let private sequenceTests = testList "Decode.list, array, seq and resizearray" [
 
 let private tupleTests = testList "Decode.tuple2 to tuple8" [
     // yaml@2.6.1 reads `[1, Hello World]` as [1,"Hello World"] and `[1, Hello World, 3, Bye Bye, 5, true, false, 8]` as the eight items.
-    // The flow input is built with the constructors until M4 merges.
+    // The flow input is built with the constructors, as before the parser read flow collections.
     testCase "read a sequence of exactly n items" <| fun _ ->
         let items = [ "1"; "Hello World"; "3"; "Bye Bye"; "5"; "true"; "false"; "8" ] |> List.map sc
         let upTo (count: int) = flowSeq (List.truncate count items)
@@ -534,7 +534,7 @@ let private inspectionPackages =
 
 let private getterTests = testList "Decode.object" [
     // yaml@2.6.1 reads `myValue1: [1,2,3,4]`, `Hello World: 42`, `ByeBye World: oh no` as the three fields. The flow sequence is built with the
-    // constructors until M4 merges, and the pending test below keeps the original input.
+    // constructors, and the test "the flow inputs of the old decode tests" keeps the original input.
     testCase "Required.Field reads the fields of a mapping" <| fun _ ->
         let node =
             YamlNode.mapping [
@@ -668,12 +668,12 @@ let private getterTests = testList "Decode.object" [
 ]
 
 // -------------------------------------------------------------------------------------------------------------------
-// Pending until the flow grammar is merged
+// Flow inputs
 
-let private pendingTests = testList "Flow inputs" [
+let private flowTests = testList "Flow inputs" [
     // The old tests "tuple 2", "tuple 8", "object required", "object optional", "Decode.option decodes a sequence and a mapping", "Optional.Field decodes a
-    // sequence and a mapping" and "Decode.option reads an empty node as None" with their original flow input. M4 merges the flow grammar, and these cases run then.
-    ptestCase "the flow inputs of the old decode tests" <| fun _ ->
+    // sequence and a mapping" and "Decode.option reads an empty node as None" with their original flow input.
+    testCase "the flow inputs of the old decode tests" <| fun _ ->
         Expect.equal (Decode.tuple2 Decode.int Decode.string (parseRoot "[1, Hello World]")) (1, "Hello World") "tuple 2"
         Expect.equal
             (Decode.tuple8 Decode.int Decode.string Decode.int Decode.string Decode.int Decode.bool Decode.bool Decode.int (parseRoot "[1, Hello World, 3, Bye Bye, 5, true, false, 8]"))
@@ -764,6 +764,6 @@ let Main =
         mapTests
         nodeTests
         getterTests
-        pendingTests
+        flowTests
         linearTests
     ]
