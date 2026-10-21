@@ -662,14 +662,33 @@ let private spaceLineTests = testList "Block scalar lines of spaces" [
         // A line of spaces up to the indentation is empty, and so is the body of such lines.
         expectScalars "k: |1\n \nj: 1" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Clip (Some 1) ""; pl "j"; pl "1" ]
 
-    // yaml@2.6.1 rejects `|\n  a\n\t\n` and `k: |\n  a\n\t\nj: 1` with BAD_INDENT. A line of blanks with a tab in it is no content line and no
-    // empty line of the scalar, so it ends the scalar, and [78] l-comment makes it a blank line of the document prefix or of the mapping ([211], [202]).
-    testCase "a line of blanks with a tab ends a block scalar without an error" <| fun _ ->
+    // yaml@2.6.1 rejects `|\n  a\n\t\n` at the root and `a: |\n  x\n \t\nb: 1` below it with BAD_INDENT, and reads `k: |\n    a\n  # c\n\t\nj: 1`. A line of blanks
+    // with a tab in it is no content line. The trail of a block scalar is empty lines of spaces and then a trail comment, and only that comment may be followed
+    // by l-comment lines ([166] to [169]), so below the root the tab line is an error. At the root it is a blank line of the next document prefix ([211], [202]),
+    // which the lexer accepts as a deliberate difference from yaml@2.6.1.
+    testCase "a line of blanks with a tab behind a block scalar is valid at the root and below it only behind a trail comment" <| fun _ ->
         expectLexemes "|\n  a\n\t\n" [ "literal:a\\n"; "blank" ]
         expectLexemes "|\n  a\n \t\n" [ "literal:a\\n"; "blank" ]
-        expectLexemes "k: |\n    a\n  \t\nj: 1" [ "plain:k"; ":"; "literal:a\\n"; "blank"; "plain:j"; ":"; "plain:1" ]
-        expectLexemes "k: >-\n    a\n\t\nj: 1" [ "plain:k"; ":"; "folded-:a"; "blank"; "plain:j"; ":"; "plain:1" ]
-        // A tab in front of text behind too few spaces is still an error.
+        expectError "k: |\n    a\n  \t\nj: 1" "block-indent" "3:3-3:4"
+        expectError "k: >-\n    a\n\t\nj: 1" "block-indent" "3:1-3:2"
+        expectError "a: |\n  x\n \t\nb: 1" "block-indent" "3:2-3:3"
+        expectError "- |\n  a\n\t\n- b" "block-indent" "3:1-3:2"
+        // An empty line of spaces in front of the tab line does not change that, and neither does the chomping.
+        expectError "k: |+\n    a\n\n \t\nj: 1" "block-indent" "4:2-4:3"
+        // The trail comment ends the scalar in front of the tab line, and the tab line is an l-comment behind it ([169]).
+        expectLexemes "k: |\n    a\n  # c\n\t\nj: 1" [ "plain:k"; ":"; "literal:a\\n"; "#own: c"; "blank"; "plain:j"; ":"; "plain:1" ]
+        // A plain scalar value is followed by s-l-comments, which allows the tab line.
+        expectLexemes "k: a\n\t\nj: 1" [ "plain:k"; ":"; "plain:a"; "blank"; "plain:j"; ":"; "plain:1" ]
+        // At the root a tab line with a comment is an l-comment of the stream ([211], [78]) and ends the scalar. yaml@2.6.1 rejects `|\n  a\n\t# c\n` and
+        // `--- |\n  a\n \t# c\n--- b` with BAD_INDENT. A tab behind as many spaces as the content has belongs to the content, as yaml@2.6.1 reads it too.
+        expectLexemes "|\n  a\n\t# c\n" [ "literal:a\\n"; "#own: c" ]
+        expectLexemes "--- |\n  a\n \t# c\n--- b" [ "---"; "literal:a\\n"; "#own: c"; "---"; "plain:b" ]
+        expectLexemes "--- |\n  a\n  \t# c\n--- b" [ "---"; "literal:a\\n\\t# c\\n"; "---"; "plain:b" ]
+        // Below the root the trail comment takes spaces only ([169]), so a tab in front of the comment is an error. yaml@2.6.1 rejects all three with BAD_INDENT.
+        expectError "k: |\n    a\n\t# c\nj: 1" "block-indent" "3:1-3:2"
+        expectError "k: |\n    a\n \t# c\nj: 1" "block-indent" "3:2-3:3"
+        expectError "k: |\n    a\n  \t# c\nj: 1" "block-indent" "3:3-3:4"
+        // A tab in front of text behind too few spaces is still an error, at the root too.
         expectError "k: |\n    a\n  \tb\nj: 1" "block-indent" "3:3-3:4"
         expectError "|\n  a\n\tb\n" "block-indent" "3:1-3:2"
 ]

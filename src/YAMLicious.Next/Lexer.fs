@@ -769,10 +769,12 @@ module internal Lexer =
             if markerAt text r then
                 reading <- false
             elif (not onlySpaces) && spaces - r < indent then
-                // A comment or a line of blanks with a tab in it ([78] l-comment) ends the scalar, and so does
-                // a line that is no deeper than the parent. Any other line is deeper than the node of the
-                // scalar without belonging to it.
-                if text.[spaces] <> '#' && spaces - r > ctx.ParentIndent && skipBlanks text spaces < le then
+                // A comment ends the scalar, and so does a line that is no deeper than the parent. Any other
+                // line is deeper than the node of the scalar without belonging to it. A tab line is a line of
+                // blanks with a tab that holds nothing else or a comment.
+                let blanksEnd = skipBlanks text spaces
+                let tabLine = text.[spaces] <> '#' && (blanksEnd >= le || text.[blanksEnd] = '#')
+                if text.[spaces] <> '#' && not tabLine && spaces - r > ctx.ParentIndent then
                     fail
                         cursor
                         "block-indent"
@@ -780,6 +782,12 @@ module internal Lexer =
                         spaces
                         (spaces + 1)
                         []
+                // The lines behind the body are empty lines of spaces and then a trail comment ([166] to [169]), and
+                // only the comment may be followed by l-comment lines with tabs. A tab line is therefore invalid
+                // below the root, with or without a comment, because the trail comment takes spaces only. At the
+                // root it is an l-comment of the next document prefix ([211], [78], [202]).
+                if tabLine && ctx.ParentIndent >= 0 then
+                    fail cursor "block-indent" "A line of blanks with a tab, with or without a comment, cannot follow a block scalar below the root." spaces (spaces + 1) []
                 reading <- false
             else
                 if onlySpaces && le - r <= indent then
