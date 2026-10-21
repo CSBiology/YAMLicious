@@ -69,16 +69,18 @@ module internal NodePath =
 /// The checks, by the place of the rule:
 ///
 /// - A node: an alias has no properties. `PropertyLayout` names each present property once and nothing
-///   else. A block collection and a block scalar have no `TrailingComment` (R8). A missing value has none
-///   either (R1). `HeaderComment` stands on block scalars only, and `OpeningComment` on flow collections
-///   only. An empty collection is a flow collection.
+///   else. A block collection and a block scalar have no `TrailingComment` (R8). A missing value and a
+///   node that has properties and no content have none either (R1). `HeaderComment` stands on block
+///   scalars only, and `OpeningComment` on flow collections only. An empty collection is a flow collection.
 /// - An item: a block item has a dash and a flow item has none.
 /// - A separation behind an indicator (`?`, `:` or `-`) or behind the last property: `Following` is empty
-///   when a block collection without a property follows (R2).
+///   when a block collection without a property follows or when the content is missing (R2).
 /// - An entry: the gap before the colon of an implicit key in a block mapping is empty (R7).
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
-///   is empty behind a block collection or a missing root (R3).
-/// - A stream: `StreamPart.Trivia` does not stand in front of a document (R3).
+///   is empty behind a block collection, behind a missing root and in front of a document that follows
+///   without a `...` between (R3).
+/// - A stream: `StreamPart.Trivia` does not stand in front of a document, and in a stream with a document
+///   it stands behind a `...` only (R3).
 ///
 /// A node has at most one tag and one anchor by its type, so no check is needed for that. The rules R4 to
 /// R6 depend on the columns and the lines of the text and are not checked.
@@ -109,10 +111,17 @@ module Validate =
     let private followingText =
         "the trivia belong to the Before of the first entry or item of the block collection behind the line break (R2)"
 
-    /// Reports the trivia behind an indicator when the content behind it is a block collection without a property.
+    let private missingText =
+        "the content behind the indicator is missing, so the trivia belong to the Before of the next entry or item, or to BeforeColon behind a question mark (R2)"
+
+    /// Reports the trivia behind an indicator when the content behind it is a block collection without a
+    /// property or is missing.
     let private checkFollowing (report: string -> string -> unit) (slot: string) (separation: Separation option) (content: YamlNode) =
-        if not (followingOf separation).IsEmpty && isBareBlockCollection content then
-            report slot followingText
+        if not (followingOf separation).IsEmpty then
+            if isBareBlockCollection content then
+                report slot followingText
+            elif YamlNode.isMissingValue content then
+                report slot missingText
 
     let private walkNode (errors: ResizeArray<string>) (prefix: string) (root: YamlNode) =
         let stack = ResizeArray<YamlNode * NodePath.PathInfo>()
@@ -132,11 +141,13 @@ module Validate =
             if layoutCount PropertyName.Anchor <> (if node.Properties.Anchor.IsSome then 1 else 0) then
                 report ".PropertyLayout" "the layout names the anchor once when the node has an anchor and never otherwise"
 
-            if isBlockCollection node && not node.PropertyLayout.IsEmpty then
+            if (isBlockCollection node || YamlNode.isPropertyOnly node) && not node.PropertyLayout.IsEmpty then
                 let placements = List.toArray node.PropertyLayout
                 let lastIndex = placements.Length - 1
                 if not (followingOf (Some placements.[lastIndex].After)).IsEmpty then
-                    report (".PropertyLayout[" + string lastIndex + "].After.Following") followingText
+                    report
+                        (".PropertyLayout[" + string lastIndex + "].After.Following")
+                        (if isBlockCollection node then followingText else missingText)
 
             match node.Kind with
             | YamlNodeKind.Alias _ ->
@@ -150,6 +161,8 @@ module Validate =
                         report ".TrailingComment" "a block scalar takes the comment behind its header as HeaderComment (R8)"
                     elif YamlNode.isMissingValue node then
                         report ".TrailingComment" "a missing value has no trailing comment, the comment belongs to the separation behind the indicator (R1)"
+                    elif YamlNode.isPropertyOnly node then
+                        report ".TrailingComment" "a node with properties and no content has no trailing comment, the comment belongs to the After of its last property (R1)"
             | YamlNodeKind.Mapping collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -190,7 +203,7 @@ module Validate =
                 for i in items.Length - 1 .. -1 .. 0 do
                     stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node")))
 
-    let private walkDocument (errors: ResizeArray<string>) (prefix: string) (document: YamlDocument) =
+    let private walkDocument (errors: ResizeArray<string>) (prefix: string) (followedByDocument: bool) (document: YamlDocument) =
         let root = document.Root
         if not document.BeforeRoot.IsEmpty && isBareBlockCollection root then
             errors.Add(prefix + "BeforeRoot: the trivia belong to the Before of the first entry or item of the root collection (R3)")
@@ -200,28 +213,63 @@ module Validate =
                 errors.Add(prefix + "AfterRoot: the trivia behind a block collection belong to its End (R3)")
             elif YamlNode.isMissingValue root then
                 errors.Add(prefix + "AfterRoot: a document whose root is missing keeps all its trivia in BeforeRoot (R3)")
+            elif followedByDocument && document.EndMarker.IsNone then
+                errors.Add(prefix + "AfterRoot: the trivia in front of the next document belong to its Prelude when no `...` stands between (R3)")
 
     /// The problems of a document, in the order of the tree. The list is empty when the document is valid.
     let document (document: YamlDocument) : string list =
         let errors = ResizeArray<string>()
-        walkDocument errors "" document
+        walkDocument errors "" false document
         List.ofSeq errors
 
     /// The problems of a stream, in the order of its parts. The list is empty when the stream is valid.
     let stream (stream: YamlStream) : string list =
         let errors = ResizeArray<string>()
         let parts = List.toArray stream.Parts
+        let hasDocument =
+            parts
+            |> Array.exists (fun part ->
+                match part with
+                | StreamPart.Document _ -> true
+                | _ -> false)
+        // The first part behind each part that is not trivia, so that a run of trivia parts looks at the part
+        // behind the run.
+        let following: StreamPart option[] = Array.create parts.Length None
+        let mutable next: StreamPart option = None
+        for i in parts.Length - 1 .. -1 .. 0 do
+            following.[i] <- next
+            match parts.[i] with
+            | StreamPart.Trivia _ -> ()
+            | other -> next <- Some other
+        let endsWithMarker (part: StreamPart) =
+            match part with
+            | StreamPart.Document document -> document.EndMarker.IsSome
+            | StreamPart.ExtraEndMarker _ -> true
+            | StreamPart.Trivia _ -> false
+        // The last part before the current one that is not trivia.
+        let mutable previous: StreamPart option = None
         for i in 0 .. parts.Length - 1 do
             let at = "Parts[" + string i + "]"
             match parts.[i] with
-            | StreamPart.Document document -> walkDocument errors (at + ".") document
+            | StreamPart.Document document ->
+                let followedByDocument =
+                    match following.[i] with
+                    | Some (StreamPart.Document _) -> true
+                    | _ -> false
+                walkDocument errors (at + ".") followedByDocument document
+                previous <- Some parts.[i]
+            | StreamPart.ExtraEndMarker _ -> previous <- Some parts.[i]
             | StreamPart.Trivia _ ->
                 let beforeDocument =
-                    i + 1 < parts.Length
-                    && (match parts.[i + 1] with
-                        | StreamPart.Document _ -> true
-                        | _ -> false)
+                    match following.[i] with
+                    | Some (StreamPart.Document _) -> true
+                    | _ -> false
+                let behindMarker =
+                    match previous with
+                    | Some part -> endsWithMarker part
+                    | None -> false
                 if beforeDocument then
                     errors.Add(at + ": trivia in front of a document belong to that document (R3)")
-            | StreamPart.ExtraEndMarker _ -> ()
+                elif hasDocument && not behindMarker then
+                    errors.Add(at + ": trivia stand in the stream only behind a `...`, and otherwise they belong to a document (R3)")
         List.ofSeq errors

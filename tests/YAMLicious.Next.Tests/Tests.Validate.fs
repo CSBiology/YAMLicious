@@ -142,8 +142,23 @@ let tests_node_checks = testList "Validate: nodes" [
         Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" missing ])) [ "root.entries[0].Value.TrailingComment" ] "missing value"
         let emptyString = { YamlNode.scalar ScalarStyle.DoubleQuoted "" with TrailingComment = note }
         expectValid (YamlNode.mapping [ field "k" emptyString ]) "An empty double-quoted scalar is a value"
-        let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c")
-        expectValid (YamlNode.mapping [ field "k" tagged ]) "A scalar with a property is not missing"
+        let quotedWithTag = YamlNode.scalar ScalarStyle.DoubleQuoted "" |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c")
+        expectValid (YamlNode.mapping [ field "k" quotedWithTag ]) "A quoted scalar with a property has content"
+
+    testCase "a node with properties and no content has no trailing comment" <| fun _ ->
+        let note = Some (comment " c")
+        let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str")
+        let anchored = YamlNode.empty |> YamlNode.withAnchor "a"
+        let both = tagged |> YamlNode.withAnchor "a"
+        for (name, node) in [ "tag", tagged; "anchor", anchored; "tag and anchor", both ] do
+            Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" { node with TrailingComment = note } ])) [ "root.entries[0].Value.TrailingComment" ] name
+        let lastProperty = if both.PropertyLayout.IsEmpty then PropertyName.Tag else (List.last both.PropertyLayout).Property
+        expectValid (YamlNode.mapping [ field "k" (YamlNode.withPropertyComment lastProperty (comment " c") both) ]) "The comment stands behind the last property"
+        expectValid (YamlNode.mapping [ field "k" (YamlNode.withPropertyComment PropertyName.Tag (comment " c") tagged) ]) "The comment stands behind the tag"
+        let withContent = YamlNode.plain "v" |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c")
+        expectValid (YamlNode.mapping [ field "k" withContent ]) "A scalar with content has a trailing comment"
+        let flow = YamlNode.flowSequence [] |> YamlNode.withTag (YamlTag.core "seq") |> YamlNode.withTrailingComment (comment " c")
+        expectValid (YamlNode.mapping [ field "k" flow ]) "A flow collection with a property has content"
 
     testCase "a message names its rule" <| fun _ ->
         let problem = (Validate.document (documentOf (YamlNode.mapping [ field "k" { YamlNode.empty with TrailingComment = Some (comment " c") } ]))).Head
@@ -192,6 +207,35 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         let scalar = YamlNode.plain "v" |> YamlNode.withTag (YamlTag.core "str")
         expectValid { scalar with PropertyLayout = [ placement PropertyName.Tag (broken [ lineComment " d" ]) ] } "trivia in front of a scalar"
 
+    testCase "the trivia behind an indicator whose content is missing go to the next entry or item" <| fun _ ->
+        let following = [ lineComment " d" ]
+        let next = { field "j" (number "1") with Before = following }
+        expectValid (YamlNode.mapping [ { field "k" YamlNode.empty with Colon = Some (commented " c" []) }; next ]) "colon, trivia in the next entry"
+        Expect.equal
+            (slotsOfDocument (YamlNode.mapping [ { field "k" YamlNode.empty with Colon = Some (commented " c" following) } ]))
+            [ "root.entries[0].Colon.Following" ]
+            "colon"
+        let nextItem = { YamlNode.item (number "b") with Before = following }
+        expectValid (YamlNode.sequence [ { YamlNode.item YamlNode.empty with Dash = Some (commented " c" []) }; nextItem ]) "dash, trivia in the next item"
+        Expect.equal
+            (slotsOfDocument (YamlNode.sequence [ { YamlNode.item YamlNode.empty with Dash = Some (commented " c" following) } ]))
+            [ "root.items[0].Dash.Following" ]
+            "dash"
+        let missingKey = { YamlNode.entry YamlNode.empty (number "v") with Question = Some (commented " c" []); BeforeColon = following }
+        expectValid (YamlNode.mapping [ missingKey ]) "question mark, trivia in BeforeColon"
+        Expect.equal
+            (slotsOfDocument (YamlNode.mapping [ { missingKey with Question = Some (commented " c" following); BeforeColon = [] } ]))
+            [ "root.entries[0].Question.Following" ]
+            "question mark"
+        let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str")
+        expectValid (YamlNode.mapping [ { field "k" tagged with Colon = Some (broken following) } ]) "A property is a token, so the colon may hold Following"
+        let behindTag = { tagged with PropertyLayout = [ placement PropertyName.Tag (commented " c" following) ] }
+        Expect.equal
+            (slotsOfDocument (YamlNode.mapping [ field "k" behindTag ]))
+            [ "root.entries[0].Value.PropertyLayout[0].After.Following" ]
+            "behind the last property of a node without content"
+        expectValid (YamlNode.mapping [ field "k" { tagged with PropertyLayout = [ placement PropertyName.Tag (commented " c" []) ] }; next ]) "trivia in the next entry"
+
     testCase "the gap before a colon belongs to an explicit key or a key in a flow mapping" <| fun _ ->
         let gap = [ lineComment " c" ]
         let implicitKey = { field "a" (number "b") with BeforeColon = gap }
@@ -226,17 +270,47 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOf (Validate.document { YamlDocument.create YamlNode.empty with AfterRoot = after })) [ "AfterRoot" ] "AfterRoot with a missing root"
         Expect.equal (Validate.document { YamlDocument.create YamlNode.empty with BeforeRoot = after }) [] "BeforeRoot with a missing root"
 
-    testCase "trivia of the stream stand behind the last document and nowhere else" <| fun _ ->
+    testCase "trivia of the stream stand behind a ... that no document follows and nowhere else" <| fun _ ->
+        let marker: DocumentMarker = { TrailingComment = None; Span = None }
         let document (text: string) = StreamPart.Document (YamlDocument.create (number text))
+        let closed (text: string) = StreamPart.Document { YamlDocument.create (number text) with EndMarker = Some marker }
+        let extra = StreamPart.ExtraEndMarker marker
         let trivia = StreamPart.Trivia (lineComment " t")
-        Expect.equal (Validate.stream { Parts = [] }) [] "empty stream"
-        Expect.equal (Validate.stream { Parts = [ trivia ] }) [] "only trivia"
-        Expect.equal (Validate.stream { Parts = [ document "a"; trivia ] }) [] "trivia behind the last document"
-        Expect.equal (Validate.stream { Parts = [ document "a"; StreamPart.ExtraEndMarker { TrailingComment = None; Span = None }; trivia ] }) [] "trivia behind an extra end marker"
-        Expect.equal (slotsOf (Validate.stream { Parts = [ trivia; document "a" ] })) [ "Parts[0]" ] "trivia in front of a document"
-        Expect.equal (slotsOf (Validate.stream { Parts = [ document "a"; trivia; document "b" ] })) [ "Parts[1]" ] "trivia between two documents"
-        let withMarker = StreamPart.Document { YamlDocument.create (number "a") with StartMarker = Some { TrailingComment = None; Span = None } }
-        Expect.equal (slotsOf (Validate.stream { Parts = [ trivia; withMarker ] })) [ "Parts[0]" ] "trivia in front of a document with a start marker"
+        let slotsOfParts (parts: StreamPart list) = slotsOf (Validate.stream { Parts = parts })
+        Expect.equal (slotsOfParts []) [] "empty stream"
+        Expect.equal (slotsOfParts [ trivia ]) [] "only trivia"
+        Expect.equal (slotsOfParts [ trivia; extra ]) [] "trivia and an extra end marker without a document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia ]) [] "trivia behind the end marker of the last document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; trivia ]) [] "a run of trivia behind the end marker"
+        Expect.equal (slotsOfParts [ closed "a"; extra; trivia ]) [] "trivia behind an extra end marker"
+        Expect.equal (slotsOfParts [ document "a"; extra; trivia ]) [] "An extra end marker closes the document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra ]) [] "trivia between an end marker and an extra end marker"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; trivia ]) [] "trivia on both sides of an extra end marker"
+        Expect.equal (slotsOfParts [ document "a"; trivia ]) [ "Parts[1]" ] "trivia behind a document without a ..."
+        Expect.equal (slotsOfParts [ trivia; document "a" ]) [ "Parts[0]" ] "trivia in front of a document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; document "b" ]) [ "Parts[1]" ] "trivia between two documents"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; trivia; document "b" ]) [ "Parts[1]"; "Parts[2]" ] "a run of trivia in front of a document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; document "b" ]) [] "trivia between an end marker and an extra end marker, then a document"
+        Expect.equal (slotsOfParts [ trivia; extra; document "a" ]) [ "Parts[0]" ] "trivia in front of an extra end marker at the start of a stream with a document"
+        let withMarker = StreamPart.Document { YamlDocument.create (number "a") with StartMarker = Some marker }
+        Expect.equal (slotsOfParts [ trivia; withMarker ]) [ "Parts[0]" ] "trivia in front of a document with a start marker"
+        let problems = Validate.stream { Parts = [ trivia; document "a" ] }
+        Expect.stringContains problems.Head "(R3)" "rule"
+
+    testCase "a document without a ... gives the trivia in front of the next document to that document" <| fun _ ->
+        let marker: DocumentMarker = { TrailingComment = None; Span = None }
+        let first = YamlDocument.create (number "a")
+        let next = { YamlDocument.create (number "b") with StartMarker = Some marker; Prelude = [ PreludeTrivia (lineComment " c") ] }
+        Expect.equal (Validate.stream { Parts = [ StreamPart.Document first; StreamPart.Document next ] }) [] "trivia in the Prelude of the next document"
+        let stolen = { first with AfterRoot = [ lineComment " c" ] }
+        Expect.equal
+            (slotsOf (Validate.stream { Parts = [ StreamPart.Document stolen; StreamPart.Document { next with Prelude = [] } ] }))
+            [ "Parts[0].AfterRoot" ]
+            "trivia behind the root of the document before"
+        let closed = { stolen with EndMarker = Some marker }
+        Expect.equal (Validate.stream { Parts = [ StreamPart.Document closed; StreamPart.Document next ] }) [] "AfterRoot in front of a ..."
+        Expect.equal (Validate.stream { Parts = [ StreamPart.Document stolen ] }) [] "AfterRoot at the end of the stream"
+        Expect.equal (Validate.document stolen) [] "AfterRoot of a single document"
 
     testCase "the slots of a document in a stream start with its part" <| fun _ ->
         let bad = { YamlNode.empty with TrailingComment = Some (comment " c") }
@@ -264,7 +338,8 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
 /// shows where the parser puts the item.
 let tests_rules = testList "Slot rules" [
     // yaml@2.6.1 reads `k: # c` followed by `  a: 1` as {"k":{"a":1}}, `- # c` followed by `  a` as ["a"], `? # c`
-    // followed by `  a` and `: b` as {"a":"b"}, `k: &a # c` followed by `  b: 1` as {"k":{"b":1}} and `k: # c` as {"k":null}.
+    // followed by `  a` and `: b` as {"a":"b"}, `k: &a # c` followed by `  b: 1` as {"k":{"b":1}}, `k: # c` as {"k":null}
+    // and `k: !!str # c` as {"k":""}.
     testCase "R1: a comment behind an indicator without content goes to the separation of the indicator" <| fun _ ->
         let block = YamlNode.mapping [ field "a" (number "1") ]
         expectValid (YamlNode.mapping [ { field "k" block with Colon = Some (commented " c" []) } ]) "colon"
@@ -276,9 +351,15 @@ let tests_rules = testList "Slot rules" [
         expectValid missing "missing value"
         let wrong = YamlNode.mapping [ field "k" { YamlNode.empty with TrailingComment = Some (comment " c") } ]
         Expect.equal (slotsOfDocument wrong) [ "root.entries[0].Value.TrailingComment" ] "The comment on the missing value is wrong"
+        // k: !!str # c
+        let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str")
+        expectValid (YamlNode.mapping [ field "k" (YamlNode.withPropertyComment PropertyName.Tag (comment " c") tagged) ]) "property without content"
+        let wrongProperty = YamlNode.mapping [ field "k" { tagged with TrailingComment = Some (comment " c") } ]
+        Expect.equal (slotsOfDocument wrongProperty) [ "root.entries[0].Value.TrailingComment" ] "The comment on the node without content is wrong"
 
     // yaml@2.6.1 reads `k: # c`, `  # d` and `  a: 1` as {"k":{"a":1}}, `k: # c`, `  # d` and `  v` as {"k":"v"},
-    // `k: !!map`, `  # d` and `  b: 1` as {"k":{"b":1}} and `k: !!str`, `  # d` and `  v` as {"k":"v"}.
+    // `k: !!map`, `  # d` and `  b: 1` as {"k":{"b":1}}, `k: !!str`, `  # d` and `  v` as {"k":"v"}, and `k: # c`, `# d`
+    // and `j: 1` as {"k":null,"j":1}.
     testCase "R2: the trivia behind the line break go to the first entry of a block collection and to Following otherwise" <| fun _ ->
         let first = { field "a" (number "1") with Before = [ lineComment " d" ] }
         let block = YamlNode.mapping [ { field "k" (YamlNode.mapping [ first ]) with Colon = Some (commented " c" []) } ]
@@ -289,6 +370,13 @@ let tests_rules = testList "Slot rules" [
         Expect.equal (slotsOfDocument wrong) [ "root.entries[0].Colon.Following" ] "The comment in Following is wrong"
         let behindTag = YamlNode.mapping [ { field "b" (number "1") with Before = [ lineComment " d" ] } ] |> YamlNode.withTag (YamlTag.core "map")
         expectValid (YamlNode.mapping [ field "k" { behindTag with PropertyLayout = [ placement PropertyName.Tag (broken []) ] } ]) "behind a property"
+        // k: # c
+        // # d
+        // j: 1
+        let missing = YamlNode.mapping [ { field "k" YamlNode.empty with Colon = Some (commented " c" []) }; { field "j" (number "1") with Before = [ lineComment " d" ] } ]
+        expectValid missing "missing value, trivia in the next entry"
+        let wrongMissing = YamlNode.mapping [ { field "k" YamlNode.empty with Colon = Some (commented " c" [ lineComment " d" ]) }; field "j" (number "1") ]
+        Expect.equal (slotsOfDocument wrongMissing) [ "root.entries[0].Colon.Following" ] "The comment in Following is wrong when the value is missing"
 
     // yaml@2.6.1 reads `# before`, `---`, `# after` and `a: 1` as {"a":1}, `---`, `# d`, `v`, `# e` and `...` as "v", `---` and `# d`
     // as null, and `a`, `...`, `# c` and `b` as the two documents "a" and "b". It reads `a: 1` and `# c` as {"a":1}.
@@ -336,6 +424,63 @@ let tests_rules = testList "Slot rules" [
         Expect.equal (slotsOf (Validate.stream wrong)) [ "Parts[1]" ] "The comment in the stream is wrong"
         // # only
         Expect.equal (Validate.stream { Parts = [ StreamPart.Trivia (lineComment " only") ] }) [] "a stream without a document"
+
+    // yaml@2.6.1 reads `a`, `# c`, `---` and `b` as the documents "a" and "b", and keeps the comment c in the document before,
+    // where it is the comment of that document. The model gives the comment to the Prelude of the document that the `---` opens.
+    // It reads `a`, `# c`, `...` and `b` as "a" and "b" with the comment c in front of the `...`, and `a`, `...`, `# c`, `---` and
+    // `b` as "a" and "b" with the comment c in front of the second document. It reads `a`, `...` and `# t` as "a".
+    testCase "R3: the trivia in front of a --- go to the Prelude of the document that it opens" <| fun _ ->
+        let marker: DocumentMarker option = Some { TrailingComment = None; Span = None }
+        let note = lineComment " c"
+        let first = YamlDocument.create (number "a")
+        let opened = { YamlDocument.create (number "b") with StartMarker = marker }
+        // a
+        // # c
+        // ---
+        // b
+        let behindRoot: YamlStream =
+            { Parts = [ StreamPart.Document first; StreamPart.Document { opened with Prelude = [ PreludeTrivia note ] } ] }
+        Expect.equal (Validate.stream behindRoot) [] "Prelude of the next document"
+        let stolen: YamlStream = { Parts = [ StreamPart.Document { first with AfterRoot = [ note ] }; StreamPart.Document opened ] }
+        Expect.equal (slotsOf (Validate.stream stolen)) [ "Parts[0].AfterRoot" ] "AfterRoot of the document before is wrong"
+        // a
+        // # c
+        // ...
+        // b
+        let beforeEnd: YamlStream =
+            { Parts = [ StreamPart.Document { first with AfterRoot = [ note ]; EndMarker = marker }; StreamPart.Document (YamlDocument.create (number "b")) ] }
+        Expect.equal (Validate.stream beforeEnd) [] "AfterRoot in front of a ..."
+        // a
+        // ...
+        // # c
+        // ---
+        // b
+        let behindEnd: YamlStream =
+            { Parts = [ StreamPart.Document { first with EndMarker = marker }; StreamPart.Document { opened with Prelude = [ PreludeTrivia note ] } ] }
+        Expect.equal (Validate.stream behindEnd) [] "Prelude behind a ..."
+        // a
+        // ...
+        // # c
+        // %YAML 1.2
+        // ---
+        // b
+        let directive: YamlDirective = { Kind = YamlVersion (1, 2); TrailingComment = None; Span = None }
+        let withDirective: YamlStream =
+            { Parts =
+                [ StreamPart.Document { first with EndMarker = marker }
+                  StreamPart.Document { opened with Prelude = [ PreludeTrivia note; Directive directive ] } ] }
+        Expect.equal (Validate.stream withDirective) [] "Prelude with a directive"
+        // a
+        // ...
+        // # t
+        let behindLast: YamlStream = { Parts = [ StreamPart.Document { first with EndMarker = marker }; StreamPart.Trivia (lineComment " t") ] }
+        Expect.equal (Validate.stream behindLast) [] "trivia behind the last ..."
+        // a
+        // # t
+        let noEnd: YamlStream = { Parts = [ StreamPart.Document { first with AfterRoot = [ lineComment " t" ] } ] }
+        Expect.equal (Validate.stream noEnd) [] "AfterRoot at the end of the stream"
+        let wrongEnd: YamlStream = { Parts = [ StreamPart.Document first; StreamPart.Trivia (lineComment " t") ] }
+        Expect.equal (slotsOf (Validate.stream wrongEnd)) [ "Parts[1]" ] "trivia behind a document without a ... belong to AfterRoot"
 
     // yaml@2.6.1 reads `a:`, `  b: 1`, `# c` and `d: 2` as {"a":{"b":1},"d":2}. The comment stands between two nodes, so it
     // belongs to the entry `d`, although it stands at the column of `a`.

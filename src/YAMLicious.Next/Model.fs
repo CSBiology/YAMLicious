@@ -61,7 +61,10 @@ type Trivia =
 /// line of the indicator and the first token of the node, which is a property, a scalar, an alias or a
 /// flow opener. A block collection without a property has no token of its own, so these trivia go to the
 /// `Before` of its first entry or item and `Following` stays empty. The same holds behind the last
-/// property of a block collection.
+/// property of a block collection. When the content is missing, `Following` stays empty as well, and the
+/// trivia lines go to the `Before` of the next entry or item under rule R4. Behind the `?` of an entry whose
+/// key is missing they go to its `BeforeColon`. The same holds behind the last property of a node that has
+/// no content.
 type LineBreak =
     { Comment: YamlComment option
       Following: Trivia list }
@@ -72,7 +75,9 @@ type LineBreak =
 /// or a property goes to the separation of that indicator when the content of the node does not start on
 /// that line. The separation is `NewLine` and its `Comment` holds the comment. A comment behind content on
 /// the same line is the trailing comment of that node (rule R8). A missing value, which is an empty plain
-/// scalar without properties, never has a trailing comment.
+/// scalar without properties, never has a trailing comment. A node that has properties and no content, as
+/// in `k: !!str # c`, puts the comment on the `After` of its last property, and it never has a trailing
+/// comment either.
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
@@ -166,12 +171,14 @@ type YamlScalar =
 ///
 /// Rule R4 (trivia in a block collection). A run of trivia between two nodes belongs to the `Before` of the
 /// next entry or item that follows it, at whatever level that entry or item stands and whatever the columns
-/// of the comments are. A run of trivia behind the last node of a document is split by column. Each comment
-/// goes to the `End` of the deepest open block collection whose entries stand at a column less than or
-/// equal to the column of the comment, and to the `End` of the root collection when no deeper collection
-/// qualifies. A blank line goes with the comment that follows it. A blank line behind the last comment goes
-/// to the same `End` as that comment, or to the `End` of the root collection when no comment follows. A block
-/// collection has no closing token, so `End` is the only place for the trivia behind it.
+/// of the comments are. A run of trivia behind the last node of a document is split by column when the
+/// document ends at the end of the stream or in front of a `...`. In front of a `---` or a directive the run
+/// goes to the `Prelude` of the next document (rule R3). Each split comment goes to the `End` of the
+/// deepest open block collection whose entries stand at a column less than or equal to the column of the
+/// comment, and to the `End` of the root collection when no deeper collection qualifies. A blank line goes
+/// with the comment that follows it. A blank line behind the last comment goes to the same `End` as that
+/// comment, or to the `End` of the root collection when no comment follows. A block collection has no
+/// closing token, so `End` is the only place for the trivia behind it.
 ///
 /// Rule R6 (flow collection). A comment behind the opener on its line is the `OpeningComment`. A comment on
 /// the same line behind an item or an entry and its comma is the trailing comment of the node of the item,
@@ -209,9 +216,9 @@ type Collection<'Item> =
 /// Rule R8 (trailing comment). A comment on the same line behind the last token of a node is the
 /// `TrailingComment` of that node. The last token is the text of a scalar or an alias, or the closer of a
 /// flow collection. A block scalar takes the comment behind its header as `HeaderComment` and never has a
-/// `TrailingComment`. A block collection has no closing token and has none either. A missing value has none
-/// (rule R1). A comment behind a block collection goes to the `End` of the collection or to the `Before` of
-/// the next entry or item.
+/// `TrailingComment`. A block collection has no closing token and has none either. A missing value and a
+/// node that has properties and no content have none (rule R1). A comment behind a block collection goes to
+/// the `End` of the collection or to the `Before` of the next entry or item.
 [<NoEquality; NoComparison>]
 type YamlNode =
     { Kind: YamlNodeKind
@@ -292,13 +299,15 @@ type DocumentMarker =
 /// content of a scalar splits no document. A document without a node has a root that is an empty plain
 /// scalar with a zero-width span.
 ///
-/// Rule R3 (trivia around the root). Trivia in front of a `---` and between directives go to `Prelude` as
-/// `PreludeTrivia`, in the order of the text. That holds also for trivia that stand behind the root of the
-/// document before. Trivia behind the `---`, or at the top of a document without `---`, and in front of the
-/// root go to `BeforeRoot`. When the root is a block collection without a property, they go to the `Before`
-/// of its first entry or item instead, and `BeforeRoot` stays empty. A document whose root is missing keeps
-/// all its trivia in `BeforeRoot`. `AfterRoot` holds trivia behind the root only when the root is not a
-/// block collection, because the trivia behind a block collection go to its `End` (rule R4).
+/// Rule R3 (trivia around the root). Trivia in front of a `---` or a directive always go to the `Prelude` of
+/// the document that the `---` or the directive opens, as `PreludeTrivia` in the order of the text. That
+/// holds also for trivia that stand behind the root of the document before when no `...` stands between.
+/// Trivia between directives go to the same `Prelude`. Trivia behind the `---`, or at the top of a document
+/// without `---`, and in front of the root go to `BeforeRoot`. When the root is a block collection without a
+/// property, they go to the `Before` of its first entry or item instead, and `BeforeRoot` stays empty. A
+/// document whose root is missing keeps all its trivia in `BeforeRoot`. `AfterRoot` holds trivia behind the
+/// root only when the document ends at the end of the stream or in front of a `...`, and only when the root
+/// is not a block collection, because the trivia behind a block collection go to its `End` (rule R4).
 [<NoEquality; NoComparison>]
 type YamlDocument =
     { Prelude: PreludeItem list
@@ -321,10 +330,15 @@ type StreamPart =
 
 /// A stream of documents. It may hold no document.
 ///
-/// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds the trivia behind the end marker
-/// of the last document, or the whole input when it has no document at all. Trivia behind a `...` and in
-/// front of a following document go to that document, to its `Prelude` when it has directives or a `---`
-/// and otherwise by the rule on `YamlDocument`.
+/// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds trivia that stand behind a `...`
+/// and in front of no document. That includes the trivia between a `...` and an `ExtraEndMarker`. A `...`
+/// is the end marker of a document part or an `ExtraEndMarker` part. When the stream has no document,
+/// `StreamPart.Trivia` holds the whole input. Trivia behind a `...` and in front of a following document go
+/// to that document, to its `Prelude` when it has directives or a `---` and otherwise by the rule on
+/// `YamlDocument`.
+///
+/// yaml@2.6.1 keeps the trivia in front of a following `---` in the document before. The model gives them
+/// to the next document. Both write the same text when the stream is written again.
 [<NoEquality; NoComparison>]
 type YamlStream =
     { Parts: StreamPart list }

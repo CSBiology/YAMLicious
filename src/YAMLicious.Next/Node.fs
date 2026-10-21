@@ -163,21 +163,26 @@ module YamlNode =
         | ScalarStyle.Block _ -> true
         | _ -> false
 
+    let private isEmptyPlain (node: YamlNode) =
+        match node.Kind with
+        | YamlNodeKind.Scalar content -> content.Value.Length = 0 && content.Style = ScalarStyle.Plain
+        | _ -> false
+
     /// True when the node is a missing value: an empty plain scalar without properties, as in `k:` or in a
     /// lone `-`. A scalar with a property is not missing, because the property is a token on the line.
     let isMissingValue (node: YamlNode) =
-        match node.Kind with
-        | YamlNodeKind.Scalar content ->
-            content.Value.Length = 0
-            && content.Style = ScalarStyle.Plain
-            && node.Properties.Tag.IsNone
-            && node.Properties.Anchor.IsNone
-        | _ -> false
+        isEmptyPlain node && node.Properties.Tag.IsNone && node.Properties.Anchor.IsNone
+
+    /// True when the node has properties and no content, as in `k: !!str`. Its last token is its last
+    /// property, so a comment on the same line stands behind that property (rule R1).
+    let isPropertyOnly (node: YamlNode) =
+        isEmptyPlain node && (node.Properties.Tag.IsSome || node.Properties.Anchor.IsSome)
 
     /// The node with the comment behind its last line, as in `k: value # c` (rule R8). A block collection and
     /// a block scalar end in a line that cannot hold a comment of the node, so they reject it. A missing value
-    /// rejects it too, because the comment belongs to the separation behind the indicator (rule R1). A comment
-    /// replaces the earlier one.
+    /// and a node that has properties and no content reject it too, because the comment belongs to the
+    /// separation behind the indicator or behind the last property (rule R1). A comment replaces the earlier
+    /// one.
     let withTrailingComment (comment: YamlComment) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Mapping content when content.Style = CollectionStyle.Block ->
@@ -188,6 +193,8 @@ module YamlNode =
             failwith "A block scalar has no place for a trailing comment. Use its header comment."
         | _ when isMissingValue node ->
             failwith "A missing value has no trailing comment. Put the comment on the separation behind the indicator."
+        | _ when isPropertyOnly node ->
+            failwith "A node with properties and no content has no trailing comment. Put the comment on the separation behind its last property."
         | _ -> { node with TrailingComment = Some comment }
 
     /// The node with the comment behind the header of a block scalar, as in `| # c`. Only a block scalar
