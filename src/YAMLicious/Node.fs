@@ -1,6 +1,6 @@
 namespace YAMLicious
 
-/// Constructors, accessors and test helpers for nodes.
+/// Constructors, accessors, comparison and printout for nodes.
 ///
 /// A constructed node has no span, no comment, no property and an empty `PropertyLayout`. The `with`
 /// functions add one piece of presentation each and reject a combination that the invariants of `YamlNode`
@@ -305,17 +305,18 @@ module YamlNode =
     /// The explicit tag and anchor of the node.
     let properties (node: YamlNode) : NodeProperties = node.Properties
 
-    /// True when both trees are equal except for their source spans. The walk keeps its own stack, so a
+    /// True when both trees are equal except for their source spans. This is the comparison for nodes,
+    /// because the records that hold nodes have no structural equality. The walk keeps its own stack, so a
     /// tree of any depth is safe. Comments, trivia, styles, properties and the layout of the properties
     /// all count.
     let equalIgnoringSpans (left: YamlNode) (right: YamlNode) : bool =
         NodeComparison.nodesEqualIgnoringSpans left right
 
-    /// A readable printout of the tree, one line for each node, entry and item, without spans. It is meant
-    /// for the messages of failing tests. A line deeper than 24 levels names its depth in brackets.
+    /// A readable printout of the tree, one line for each node, entry and item, without spans. It suits logs
+    /// and the messages of failed checks. A line deeper than 24 levels names its depth in brackets.
     let show (node: YamlNode) : string = NodeComparison.showNode node
 
-/// Constructors and test helpers for documents.
+/// Constructors, comparison and printout for documents.
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module YamlDocument =
 
@@ -329,18 +330,20 @@ module YamlDocument =
           EndMarker = None
           Span = None }
 
-    /// True when both documents are equal except for their source spans.
+    /// True when both documents are equal except for their source spans. This is the comparison for
+    /// documents, which have no structural equality. Directives, markers, comments and trivia all count.
     let equalIgnoringSpans (left: YamlDocument) (right: YamlDocument) : bool =
         NodeComparison.documentsEqualIgnoringSpans left right
 
     /// A readable printout of the document, without spans.
     let show (document: YamlDocument) : string = NodeComparison.showDocument document
 
-/// Test helpers for streams.
+/// Comparison and printout for streams.
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module YamlStream =
 
     /// True when both streams hold the same parts in the same order, equal except for their source spans.
+    /// This is the comparison for streams, which have no structural equality.
     let equalIgnoringSpans (left: YamlStream) (right: YamlStream) : bool =
         NodeComparison.streamsEqualIgnoringSpans left right
 

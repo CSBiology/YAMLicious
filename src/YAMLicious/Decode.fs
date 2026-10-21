@@ -104,6 +104,15 @@ module internal DecodeSupport =
     let expected (what: string) (node: YamlNode) : string =
         "Expected " + what + ", found " + describeNode node + "."
 
+    /// What a null node is, for a message: a missing value, or the null with its text.
+    let describeNull (node: YamlNode) : string =
+        if YamlNode.isMissingValue node then
+            "a missing value"
+        else
+            match node.Kind with
+            | YamlNodeKind.Scalar scalar -> "the null \"" + shorten scalar.Value + "\""
+            | _ -> "a null"
+
     let failAt (message: string) (span: SourceSpan option) : 'T =
         raise (YamlDecodeException { Message = message; Path = []; Span = span })
 
@@ -381,29 +390,40 @@ module Decode =
 
     open DecodeSupport
 
-    /// The getters of an object decoder.
+    /// Reads the fields that a mapping must have.
     type IRequiredGetter =
-        /// The value of the field. A mapping without the field is an error.
+        /// The value of the field, read by the decoder. A mapping without the field is an error. An error of the
+        /// decoder gets the name of the field in its path.
         abstract Field: string -> Decoder<'T> -> 'T
 
+    /// Reads the fields that a mapping may leave out.
     type IOptionalGetter =
-        /// The value of the field, or None when the field is missing or null.
+        /// The value of the field, read by the decoder, or None when the field is missing or null. The
+        /// decoder never sees a null.
         abstract Field: string -> Decoder<'T> -> 'T option
 
+    /// Collects the entries with known names without decoding them.
     type IMultipleOptionalGetter =
-        /// The entries with these field names, in source order.
+        /// The entries with these field names, in source order. A name that the mapping lacks adds nothing.
         abstract FieldList: string list -> MappingEntry list
 
+    /// Collects the entries that the known names leave over, for the extension data of an object.
     type IOverflowGetter =
         /// The entries without these field names, in source order.
         abstract FieldList: string list -> MappingEntry list
 
+    /// The getters that the builder of `Decode.object` receives.
     type IGetters =
+        /// The fields that the mapping must have.
         abstract Required: IRequiredGetter
+        /// The fields that the mapping may leave out.
         abstract Optional: IOptionalGetter
+        /// The entries with known names, undecoded.
         abstract MultipleOptional: IMultipleOptionalGetter
+        /// The entries that known names leave over, undecoded.
         abstract Overflow: IOverflowGetter
-        /// Every entry of the mapping in source order.
+        /// Every entry of the mapping in source order. It shows a field with a null value, which
+        /// `Optional.Field` reads as missing.
         abstract Entries: MappingEntry list
 
     /// The getters of a mapping. The field names go into one index, so each lookup costs the same however
@@ -515,6 +535,18 @@ module Decode =
     /// A collection is never null. Anything else goes to the decoder.
     let option (decoder: Decoder<'T>) : Decoder<'T option> =
         fun node -> if isNullNode node then None else Some (decoder node)
+
+    /// Rejects a node that is no value: a missing value, or a null of the core schema, which is a plain `null`,
+    /// `Null`, `NULL` or `~`, or the same under `!!null`. The error is at the node. Any other node goes to the
+    /// decoder, so a quoted `"null"` and `""` pass, and so does a collection. `Optional.Field` turns a null
+    /// into None before its decoder runs, so `nonNull` belongs with `Required.Field`. There a null field is an
+    /// error, and `string` alone would read the empty text from it.
+    let nonNull (decoder: Decoder<'T>) : Decoder<'T> =
+        fun node ->
+            if isNullNode node then
+                fail ("Expected a value, found " + describeNull node + ".") node
+            else
+                decoder node
 
     let list (decoder: Decoder<'T>) : Decoder<'T list> =
         fun node -> List.ofSeq (decodeItems "a sequence" decoder node)

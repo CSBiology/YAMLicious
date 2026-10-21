@@ -377,6 +377,86 @@ let private optionTests = testList "Decode.option" [
 // -------------------------------------------------------------------------------------------------------------------
 // Collections
 
+let private nonNullTests = testList "Decode.nonNull" [
+    // yaml@2.6.1 reads `k:`, `k: ~`, `k: null`, `k: Null`, `k: NULL`, `k: !!null` and `k: !!null ""` as null, and `k: "null"`, `k: 'null'`, `k: ""` and `k: !!str`
+    // as strings. The decoder rejects the nulls and the missing value at the node and hands everything else to the decoder it wraps.
+    testCase "rejects a missing value with the span of the missing value" <| fun _ ->
+        let decoder = Decode.nonNull Decode.string
+        expectError decoder (fieldNode "k:") [] (span 1 3 1 3) "Expected a value, found a missing value."
+        expectError decoder (fieldNode "k: ") [] (span 1 3 1 3) "Expected a value, found a missing value."
+        expectError decoder YamlNode.empty [] None "Expected a value, found a missing value."
+        // An item without a node is a missing value as well, and the index goes in the path.
+        expectError (Decode.list decoder) (parseRoot "- a\n-\n- c\n") [ "[1]" ] (span 2 2 2 2) "Expected a value, found a missing value."
+
+    testCase "rejects a plain null and names its text" <| fun _ ->
+        let decoder = Decode.nonNull Decode.string
+        expectError decoder (fieldNode "k: ~") [] (span 1 4 1 5) "Expected a value, found the null \"~\"."
+        expectError decoder (fieldNode "k: null") [] (span 1 4 1 8) "Expected a value, found the null \"null\"."
+        expectError decoder (fieldNode "k: Null") [] (span 1 4 1 8) "Expected a value, found the null \"Null\"."
+        expectError decoder (fieldNode "k: NULL") [] (span 1 4 1 8) "Expected a value, found the null \"NULL\"."
+        // The decoder behind it does not matter, the null is rejected first.
+        expectError (Decode.nonNull Decode.int) (fieldNode "k: null") [] (span 1 4 1 8) "Expected a value, found the null"
+        expectError (Decode.nonNull (Decode.list Decode.int)) (fieldNode "k: ~") [] (span 1 4 1 5) "Expected a value, found the null"
+
+    testCase "rejects an empty text under !!null and an anchored empty node" <| fun _ ->
+        let decoder = Decode.nonNull Decode.string
+        expectError decoder (fieldNode "k: !!null") [] (span 1 4 1 10) "Expected a value, found the null \"\"."
+        expectError decoder (fieldNode "k: !!null \"\"") [] (span 1 4 1 13) "Expected a value, found the null \"\"."
+        expectError decoder (fieldNode "k: !!null null") [] (span 1 4 1 15) "Expected a value, found the null \"null\"."
+        expectError decoder (fieldNode "k: &a") [] (span 1 4 1 6) "Expected a value, found the null \"\"."
+        // A text under !!null that is no null stays the error of the tag, not a missing value.
+        expectError decoder (fieldNode "k: !!null foo") [] (span 1 4 1 14) "The tag !!null needs null"
+
+    testCase "passes a quoted null, an empty quoted text and every other scalar to the decoder" <| fun _ ->
+        let decoder = Decode.nonNull Decode.string
+        for (text, expected) in
+            [ "k: \"null\"", "null"; "k: 'null'", "null"; "k: \"~\"", "~"; "k: \"\"", ""; "k: ''", ""; "k: |-\n  null\n", "null"
+              "k: !!str null", "null"; "k: !!str", ""; "k: !!str ~", "~"; "k: abc", "abc"; "k: 0", "0"; "k: false", "false"; "k: nul", "nul" ] do
+            Expect.equal (decoder (fieldNode text)) expected (sprintf "The text of %s" text)
+        Expect.equal (Decode.nonNull Decode.int (fieldNode "k: 5")) 5 "A value goes to the int decoder"
+        expectError (Decode.nonNull Decode.int) (fieldNode "k: abc") [] (span 1 4 1 7) "Expected an int, found the plain scalar \"abc\"."
+
+    testCase "passes a collection to the decoder, also an empty one" <| fun _ ->
+        Expect.equal (Decode.nonNull (Decode.list Decode.int) (fieldNode "k:\n  - 1\n  - 2\n")) [ 1; 2 ] "A block sequence"
+        Expect.equal (Decode.nonNull (Decode.list Decode.int) (YamlNode.sequence [])) [] "The empty flow sequence"
+        Expect.equal (Decode.nonNull (Decode.map Decode.string Decode.int) (YamlNode.mapping [])) Map.empty "The empty flow mapping"
+        Expect.equal (Decode.nonNull (Decode.map Decode.string Decode.int) (fieldNode "k:\n  a: 1\n")) (Map [ "a", 1 ]) "A block mapping"
+
+    testCase "hands an alias to the decoder, which rejects it and names it" <| fun _ ->
+        expectError (Decode.nonNull Decode.string) aliasNode [] (span 2 4 2 6) "The alias *x at line 2, column 4 cannot be read as a value."
+        Expect.equal (Decode.nonNull Decode.alias aliasNode) "x" "The alias decoder accepts it"
+
+    testCase "inside Required.Field a null field is an error with the name of the field in the path" <| fun _ ->
+        let decoder = Decode.object (fun get -> get.Required.Field "k" (Decode.nonNull Decode.string))
+        Expect.equal (decoder (parseRoot "k: x\n")) "x" "A value"
+        expectError decoder (parseRoot "k:\n") [ "k" ] (span 1 3 1 3) "Expected a value, found a missing value."
+        expectError decoder (parseRoot "k: ~\n") [ "k" ] (span 1 4 1 5) "Expected a value, found the null \"~\"."
+        expectError decoder (parseRoot "k: null\n") [ "k" ] (span 1 4 1 8) "Expected a value, found the null \"null\"."
+        expectError decoder (parseRoot "k: !!null\n") [ "k" ] (span 1 4 1 10) "Expected a value, found the null \"\"."
+        Expect.equal (decoder (parseRoot "k: \"null\"\n")) "null" "A quoted null is a string"
+        Expect.equal (decoder (parseRoot "k: \"\"\n")) "" "A quoted empty text is a string"
+        // A missing field is still the error of Required.Field.
+        expectError decoder (parseRoot "j: 1\n") [] (span 1 1 1 5) "The mapping has no field k."
+
+    testCase "inside Optional.Field the getter reads a null as None before the decoder runs" <| fun _ ->
+        let decoder = Decode.object (fun get -> get.Optional.Field "k" (Decode.nonNull Decode.string))
+        Expect.equal (decoder (parseRoot "k: x\n")) (Some "x") "A value"
+        Expect.equal (decoder (parseRoot "k:\n")) None "A missing value"
+        Expect.equal (decoder (parseRoot "k: ~\n")) None "A null"
+        Expect.equal (decoder (parseRoot "j: 1\n")) None "A missing field"
+        Expect.equal (decoder (parseRoot "k: \"null\"\n")) (Some "null") "A quoted null is a string"
+        Expect.equal (decoder (parseRoot "k: \"\"\n")) (Some "") "A quoted empty text is a string"
+        // The decoder behind it still reports its own errors, with the name of the field.
+        let ints = Decode.object (fun get -> get.Optional.Field "k" (Decode.nonNull Decode.int))
+        expectError ints (parseRoot "k: abc\n") [ "k" ] (span 1 4 1 7) "Expected an int"
+
+    testCase "inside option a null is None and nonNull never runs" <| fun _ ->
+        let decoder = Decode.option (Decode.nonNull Decode.string)
+        Expect.equal (decoder (fieldNode "k: ~")) None "A null"
+        Expect.equal (decoder (fieldNode "k:")) None "A missing value"
+        Expect.equal (decoder (fieldNode "k: x")) (Some "x") "A value"
+]
+
 let private sequenceTests = testList "Decode.list, array, seq and resizearray" [
     // yaml@2.6.1 reads `- 1`, `- 2`, `- 3` as [1,2,3].
     testCase "read a sequence of ints" <| fun _ ->
@@ -945,6 +1025,7 @@ let Main =
         charTests
         dateTests
         optionTests
+        nonNullTests
         sequenceTests
         tupleTests
         valuesTests
