@@ -18,6 +18,7 @@
     <Compile Include="Compare.fs" />
     <Compile Include="Node.fs" />
     <Compile Include="CoreSchema.fs" />
+    <Compile Include="Projection.fs" />
   </ItemGroup>
 
   <ItemGroup>
