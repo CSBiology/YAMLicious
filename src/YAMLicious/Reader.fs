@@ -245,28 +245,136 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | anyElse -> failwithf "Expected leading comment token, got: %A" anyElse
         )
 
-    /// A node of a flow collection. Callers take the comments in front of it first. Where a node is
-    /// missing, in front of a `,`, a closer or the end, it is empty.
-    let rec parseFlowNode (tokens: FlowTokens.Token list) : YAMLElement * FlowTokens.Token list =
-        match tokens with
-        | FlowTokens.Token.OpenBrace :: rest -> parseFlowObject rest
-        | FlowTokens.Token.OpenBracket :: rest -> parseFlowArray rest
-        | FlowTokens.Token.String value :: rest -> YAMLElement.Value(createScalarContent value None), rest
-        | _ -> YAMLElement.Nil, tokens
+    let mapTag = "tag:yaml.org,2002:map"
+    let seqTag = "tag:yaml.org,2002:seq"
 
-    and tryCommentElementFromFlowString (value: string) =
+    /// A mapping or a sequence has no field for properties. The core tag of the collection (`!!map` on a
+    /// mapping, `!!seq` on a sequence) only says what the collection is, so dropping it loses nothing. Any
+    /// other tag and every anchor would be lost, so they raise an error.
+    let rejectCollectionProperties (props: {| Value: string; Tag: string option; Anchor: string option |}) (coreTag: string option) =
+        let keptTag = props.Tag |> Option.filter (fun tag -> Some tag <> coreTag)
+        if keptTag.IsSome || props.Anchor.IsSome then
+            let lost = (Option.toList keptTag @ (props.Anchor |> Option.map (fun anchor -> "&" + anchor) |> Option.toList)) |> String.concat " "
+            failwithf "YAMLicious does not keep properties on collections, so %s on a mapping or a sequence would be lost." lost
+
+    let tryCommentElementFromFlowString (value: string) =
         Placeholder.tryParseComment value
         |> Option.map (fun id -> YAMLElement.Comment(commentDict.[id]))
 
-    /// The comments at the start of the tokens, and the tokens behind them.
-    and takeFlowComments (tokens: FlowTokens.Token list) : YAMLElement list * FlowTokens.Token list =
+    let isFlowCommentToken (token: FlowTokens.Token) =
+        match token with
+        | FlowTokens.Token.String value -> (Placeholder.tryParseComment value).IsSome
+        | _ -> false
+
+    /// The comment tokens at the start of the tokens, and the tokens behind them.
+    let splitFlowCommentTokens (tokens: FlowTokens.Token list) =
         let rec loop remaining acc =
             match remaining with
-            | FlowTokens.Token.String value :: rest when (tryCommentElementFromFlowString value).IsSome ->
-                loop rest ((tryCommentElementFromFlowString value).Value :: acc)
+            | token :: rest when isFlowCommentToken token -> loop rest (token :: acc)
             | _ -> List.rev acc, remaining
 
         loop tokens []
+
+    /// The tag and the anchor that the property tokens at the start of the tokens set, and the tokens behind
+    /// them. A node has at most one tag and one anchor.
+    let takeFlowProperties (tokens: FlowTokens.Token list) =
+        let rec loop remaining (tag: string option) (anchor: string option) =
+            match remaining with
+            | FlowTokens.Token.Property text :: rest when text.StartsWith("&") ->
+                // The tokenizer cut the token where an anchor name ends, so the name is the rest of it.
+                loop rest tag (singleProperty anchor (Some (text.Substring 1)) "anchor")
+            | FlowTokens.Token.Property text :: rest ->
+                let props = extractProperties handles text
+                if props.Value <> "" then failwithf "Invalid tag in a flow collection: %s" text
+                loop rest (singleProperty tag props.Tag "tag") anchor
+            | _ -> tag, anchor, remaining
+
+        loop tokens None None
+
+    /// The content of a scalar in a flow collection, with the properties in front of it.
+    let flowScalar (raw: string) (tag: string option) (anchor: string option) =
+        let value, style = restoreScalarWithStyle (raw.Trim())
+        YAMLContent.create(value, ?anchor = anchor, ?tag = tag, ?style = style)
+
+    /// An empty scalar that carries properties with no node behind them, as `k: &a` does in block context.
+    let emptyFlowScalar (tag: string option) (anchor: string option) =
+        YAMLContent.create("", ?anchor = anchor, ?tag = tag)
+
+    /// A plain key over several lines in a flow mapping or behind `?` folds like a plain scalar. Its
+    /// entry is a single line.
+    let foldFlowKey (content: YAMLContent) =
+        match content.Style with
+        | Some ScalarStyle.Plain when content.Value.Contains("\n") ->
+            let lines = (Line.normalizeNewlines content.Value).Split([| '\n' |]) |> Array.toList
+            { content with Value = BlockScalar.foldLines lines; Style = None }
+        | _ ->
+            content
+
+    let isFlowEntryEnd (token: FlowTokens.Token) =
+        match token with
+        | FlowTokens.Token.Colon -> true
+        | FlowTokens.Token.Comma -> true
+        | FlowTokens.Token.CloseBrace -> true
+        | FlowTokens.Token.CloseBracket -> true
+        | FlowTokens.Token.EOF -> true
+        | _ -> false
+
+    /// A node of a flow collection. Callers take the comments in front of it first. Properties in front of
+    /// it belong to it. A node that is missing, in front of a `,`, a closer or the end, is empty, and
+    /// properties with no node behind them make an empty scalar. A comment between the properties and the
+    /// node moves behind the node.
+    let rec parseFlowNode (tokens: FlowTokens.Token list) : YAMLElement * FlowTokens.Token list =
+        let tag, anchor, afterProperties = takeFlowProperties tokens
+        let hasProperties = tag.IsSome || anchor.IsSome
+        let commentTokens, afterComments =
+            if hasProperties then splitFlowCommentTokens afterProperties else [], afterProperties
+        match afterComments with
+        | FlowTokens.Token.OpenBrace :: rest ->
+            let node, after = parseFlowObject rest
+            rejectCollectionProperties {| Value = ""; Tag = tag; Anchor = anchor |} (Some mapTag)
+            node, commentTokens @ after
+        | FlowTokens.Token.OpenBracket :: rest ->
+            let node, after = parseFlowArray rest
+            rejectCollectionProperties {| Value = ""; Tag = tag; Anchor = anchor |} (Some seqTag)
+            node, commentTokens @ after
+        | FlowTokens.Token.String value :: rest when not (isFlowCommentToken afterComments.Head) ->
+            YAMLElement.Value(flowScalar value tag anchor), commentTokens @ rest
+        | FlowTokens.Token.Alias name :: rest ->
+            if hasProperties then failwithf "An alias cannot have properties, got: *%s" name
+            YAMLElement.Alias name, rest
+        | _ ->
+            if hasProperties then
+                YAMLElement.Value(emptyFlowScalar tag anchor), commentTokens @ afterComments
+            else
+                YAMLElement.Nil, tokens
+
+    /// The comments at the start of the tokens, and the tokens behind them.
+    and takeFlowComments (tokens: FlowTokens.Token list) : YAMLElement list * FlowTokens.Token list =
+        let commentTokens, rest = splitFlowCommentTokens tokens
+        let comments =
+            commentTokens
+            |> List.choose (function
+                | FlowTokens.Token.String value -> tryCommentElementFromFlowString value
+                | _ -> None)
+        comments, rest
+
+    /// The key of an entry: a scalar or an alias with its properties, or an empty key in front of a `:`, a `,`
+    /// or a closer. It is None where no key can start.
+    and parseFlowKey (tokens: FlowTokens.Token list) : YAMLContent option * FlowTokens.Token list =
+        let tag, anchor, afterProperties = takeFlowProperties tokens
+        let hasProperties = tag.IsSome || anchor.IsSome
+        let commentTokens, afterComments =
+            if hasProperties then splitFlowCommentTokens afterProperties else [], afterProperties
+        match afterComments with
+        | FlowTokens.Token.String value :: rest when not (isFlowCommentToken afterComments.Head) ->
+            Some (foldFlowKey (flowScalar value tag anchor)), commentTokens @ rest
+        | FlowTokens.Token.Alias name :: rest ->
+            if hasProperties then failwithf "An alias cannot have properties, got: *%s" name
+            Some (YAMLContent.create("*" + name)), rest
+        | next :: _ when isFlowEntryEnd next ->
+            Some (emptyFlowScalar tag anchor), commentTokens @ afterComments
+        | _ ->
+            None, tokens
 
     /// The value of a flow mapping entry or of a pair in a flow sequence, behind its colon. The comments
     /// between the colon and the value come back to the caller. An entry with no value maps to nothing,
@@ -277,12 +385,24 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         let valueElement =
             match value with
             | YAMLElement.Sequence _
+            | YAMLElement.Alias _
             | YAMLElement.Value _ -> YAMLElement.Object [value]
             | _ -> value
         comments, valueElement, afterValue
 
     and parseFlowObject (tokens: FlowTokens.Token list) : YAMLElement * FlowTokens.Token list =
-        // `acc` holds the entries in reverse order. A key may stand alone, as in `{a, b: c}`.
+        // The entry behind a key: its value when a colon follows, nothing otherwise. The loop below is the only
+        // recursion, so that Fable turns it into a loop for a collection with many entries.
+        let readEntry (keyContent: YAMLContent) (afterKey: FlowTokens.Token list) (acc: YAMLElement list) =
+            match afterKey with
+            | FlowTokens.Token.Colon :: afterColon ->
+                let comments, valueElement, afterValue = parseFlowEntryValue afterColon
+                List.rev comments @ (YAMLElement.Mapping(keyContent, valueElement) :: acc), afterValue
+            | _ ->
+                YAMLElement.Mapping(keyContent, YAMLElement.Nil) :: acc, afterKey
+
+        // `acc` holds the entries in reverse order. A key may stand alone, as in `{a, b: c}`, and `?` marks
+        // an explicit key.
         let rec loop remaining acc =
             match remaining with
             | FlowTokens.Token.CloseBrace :: rest ->
@@ -291,26 +411,38 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 loop rest acc
             | FlowTokens.Token.EOF :: _ ->
                 YAMLElement.Object(List.rev acc), remaining
+            | FlowTokens.Token.CloseBracket :: _ ->
+                failwithf "Unexpected `]` in a flow mapping, got: %A" remaining
             | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
                 loop rest ((tryCommentElementFromFlowString value |> Option.get) :: acc)
-            | FlowTokens.Token.String key :: rest ->
-                entry (createScalarContent key None) rest acc
-            | FlowTokens.Token.Colon :: _ ->
-                entry (YAMLContent.create "") remaining acc
+            | FlowTokens.Token.Explicit :: rest ->
+                let comments, afterComments = takeFlowComments rest
+                match parseFlowKey afterComments with
+                | Some key, afterKey ->
+                    let nextAcc, afterEntry = readEntry key afterKey (List.rev comments @ acc)
+                    loop afterEntry nextAcc
+                | None, _ -> failwithf "Expected a flow mapping key behind `?`, got: %A" afterComments
             | _ ->
-                failwithf "Expected flow mapping key or close brace, got: %A" remaining
-
-        and entry (keyContent: YAMLContent) (afterKey: FlowTokens.Token list) acc =
-            match afterKey with
-            | FlowTokens.Token.Colon :: afterColon ->
-                let comments, valueElement, afterValue = parseFlowEntryValue afterColon
-                loop afterValue (List.rev comments @ (YAMLElement.Mapping(keyContent, valueElement) :: acc))
-            | _ ->
-                loop afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil) :: acc)
+                match parseFlowKey remaining with
+                | Some key, afterKey ->
+                    let nextAcc, afterEntry = readEntry key afterKey acc
+                    loop afterEntry nextAcc
+                | None, _ -> failwithf "Expected flow mapping key or close brace, got: %A" remaining
 
         loop tokens []
 
     and parseFlowArray (tokens: FlowTokens.Token list) : YAMLElement * FlowTokens.Token list =
+        // A pair is a mapping with one entry, as in `[a: b]` and `[? a : b]`. Like readEntry in a mapping, this is
+        // no recursion.
+        let readPair (keyContent: YAMLContent) (afterKey: FlowTokens.Token list) (acc: YAMLElement list) =
+            match afterKey with
+            | FlowTokens.Token.Colon :: afterColon ->
+                let comments, valueElement, afterValue = parseFlowEntryValue afterColon
+                let pair = YAMLElement.Object [ YAMLElement.Mapping(keyContent, valueElement) ]
+                List.rev comments @ (pair :: acc), afterValue
+            | _ ->
+                YAMLElement.Object [ YAMLElement.Mapping(keyContent, YAMLElement.Nil) ] :: acc, afterKey
+
         let rec loop remaining acc =
             match remaining with
             | FlowTokens.Token.CloseBracket :: rest ->
@@ -324,23 +456,31 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             | FlowTokens.Token.String value :: rest when tryCommentElementFromFlowString value |> Option.isSome ->
                 let comment = tryCommentElementFromFlowString value |> Option.get
                 loop rest (comment :: acc)
+            | FlowTokens.Token.Explicit :: rest ->
+                // `[? a : b]` is a mapping with one entry, as an implicit pair is.
+                let comments, afterComments = takeFlowComments rest
+                match parseFlowKey afterComments with
+                | Some key, afterKey ->
+                    let nextAcc, afterPair = readPair key afterKey (List.rev comments @ acc)
+                    loop afterPair nextAcc
+                | None, _ -> failwithf "Expected a flow sequence key behind `?`, got: %A" afterComments
             | _ ->
                 let item, afterItem = parseFlowNode remaining
                 match afterItem with
-                | FlowTokens.Token.Colon :: afterColon ->
-                    // A pair such as `a: b` is a mapping with one entry, as in `[a: b]`.
+                | FlowTokens.Token.Colon :: _ ->
                     let keyContent =
                         match item with
-                        | YAMLElement.Value content -> content
+                        | YAMLElement.Value content -> foldFlowKey content
+                        | YAMLElement.Alias name -> YAMLContent.create("*" + name)
                         | YAMLElement.Nil -> YAMLContent.create ""
                         | other -> failwithf "A flow collection cannot be the key of an entry, got: %A" other
-                    let comments, valueElement, afterValue = parseFlowEntryValue afterColon
-                    let pair = YAMLElement.Object [ YAMLElement.Mapping(keyContent, valueElement) ]
-                    loop afterValue (List.rev comments @ (pair :: acc))
+                    let nextAcc, afterPair = readPair keyContent afterItem acc
+                    loop afterPair nextAcc
                 | _ ->
                     let sequenceItem =
                         match item with
                         | YAMLElement.Value _
+                        | YAMLElement.Alias _
                         | YAMLElement.Sequence _ -> YAMLElement.Object [item]
                         | _ -> item
                     loop afterItem (sequenceItem :: acc)
@@ -366,18 +506,6 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             ]
 
         (List.rev elements) @ acc
-
-    let mapTag = "tag:yaml.org,2002:map"
-    let seqTag = "tag:yaml.org,2002:seq"
-
-    /// A mapping or a sequence has no field for properties. The core tag of the collection (`!!map` on a
-    /// mapping, `!!seq` on a sequence) only says what the collection is, so dropping it loses nothing. Any
-    /// other tag and every anchor would be lost, so they raise an error.
-    let rejectCollectionProperties (props: {| Value: string; Tag: string option; Anchor: string option |}) (coreTag: string option) =
-        let keptTag = props.Tag |> Option.filter (fun tag -> Some tag <> coreTag)
-        if keptTag.IsSome || props.Anchor.IsSome then
-            let lost = (Option.toList keptTag @ (props.Anchor |> Option.map (fun anchor -> "&" + anchor) |> Option.toList)) |> String.concat " "
-            failwithf "YAMLicious does not keep properties on collections, so %s on a mapping or a sequence would be lost." lost
 
     /// The elements that a node gets when a line of properties stands in front of it. A scalar takes the
     /// tag and the anchor, and the comment of the line goes in front of it. Nothing behind the line gives an

@@ -178,6 +178,12 @@ type private Scanner(s: string) =
     let mutable afterCloser = false
     // True when a comment inside a flow collection ended a node. Only a `,` or a closer can follow it.
     let mutable commentEndedNode = false
+    // True right behind a `[`, a `{` or a `,` of a flow collection, until a node or another indicator follows.
+    // A `,` there would leave an entry empty.
+    let mutable emptySlot = false
+    // True right behind the `?` of an explicit key inside a flow collection, until the key or another
+    // indicator follows. Such a key may span several lines.
+    let mutable explicitKey = false
 
     // The columns of the block nodes that the structural lines opened and that are still open, from the
     // outermost to the innermost. A structural line is a line of code that does not continue a plain
@@ -431,12 +437,17 @@ type private Scanner(s: string) =
         if commentEndedNode then
             failwithf "Line %d: a comment ended the node in front of it, so only a `,` or a closer can follow." (physicalLine ())
 
+    /// The Reader keeps only scalar keys, so a flow collection cannot be the key of an entry.
+    let failComplexKey () =
+        failwithf "Line %d: a flow collection cannot be the key of an entry, because YAMLicious keeps only scalar keys." (physicalLine ())
+
     /// Folds a plain scalar that starts at the cursor inside a flow collection and goes on in the next
     /// lines (YAML 1.2.2 7.3.3). Each line of the scalar is one segment of a string table entry, as in
     /// absorbPlain, and one placeholder takes the scalar's place. A flow indicator, a colon that
     /// separates a key, a comment, a document marker and the end of the input end the scalar. The
-    /// lines must be indented like the other lines of the collection. Returns false for a scalar that
-    /// ends on its first line, which the scan reads character by character.
+    /// lines must be indented like the other lines of the collection. A key may span lines in a flow
+    /// mapping and behind `?`, but the key of a pair in a flow sequence may not. Returns false for a
+    /// scalar that ends on its first line, which the scan reads character by character.
     let foldFlowPlain () =
         let firstEnd = flowPlainEnd i
         if firstEnd >= n || s.[firstEnd] <> NewLineChar then
@@ -463,17 +474,22 @@ type private Scanner(s: string) =
                     else
                         checkFlowIndent ()
                         let e = flowPlainEnd nextAt
-                        if e < n && s.[e] = ':' then
-                            failwithf "Line %d: the key of a flow mapping entry must be on a single line." (physicalLine () + breaks + nextBreaks)
-                        let mutable textEnd = e
-                        while textEnd > nextAt && isBlankChar s.[textEnd - 1] do
-                            textEnd <- textEnd - 1
-                        for _ in 1 .. nextBreaks - 1 do
-                            segments.Add ""
-                        segments.Add(copyRange nextAt textEnd)
-                        breaks <- breaks + nextBreaks
-                        cursor <- e
-                        if e >= n || s.[e] <> NewLineChar then scanning <- false
+                        // A key may span lines in a flow mapping and behind `?`. The key of a pair in a flow sequence may not.
+                        if e < n && s.[e] = ':' && not explicitKey && flowOpeners.[flowOpeners.Count - 1] = '[' then
+                            failwithf "Line %d: the key of a pair in a flow sequence must be on a single line." (physicalLine () + breaks + nextBreaks)
+                        if e = nextAt && e < n && s.[e] = ':' then
+                            // The colon starts the line, so the scalar ended on the line before.
+                            scanning <- false
+                        else
+                            let mutable textEnd = e
+                            while textEnd > nextAt && isBlankChar s.[textEnd - 1] do
+                                textEnd <- textEnd - 1
+                            for _ in 1 .. nextBreaks - 1 do
+                                segments.Add ""
+                            segments.Add(copyRange nextAt textEnd)
+                            breaks <- breaks + nextBreaks
+                            cursor <- e
+                            if e >= n || s.[e] <> NewLineChar then scanning <- false
 
             if segments.Count = 1 then
                 false
@@ -501,6 +517,8 @@ type private Scanner(s: string) =
             atNodeStart <- false
             hasCode <- true
             i <- i + 1
+        emptySlot <- false
+        explicitKey <- false
 
     /// Appends a character that ends a token and a node. `startsNode` tells whether a node may start
     /// behind it.
@@ -510,6 +528,8 @@ type private Scanner(s: string) =
         plainOpen <- false
         afterCloser <- false
         commentEndedNode <- false
+        emptySlot <- flowOpeners.Count > 0 && (c = '[' || c = '{' || c = ',')
+        explicitKey <- false
         hasCode <- true
         i <- i + 1
 
@@ -530,6 +550,8 @@ type private Scanner(s: string) =
         emitText ("<s f=" + string stringId + "/>")
         atNodeStart <- false
         plainOpen <- false
+        emptySlot <- false
+        explicitKey <- false
         hasCode <- true
         tokenEnd <- next
         i <- next
@@ -555,6 +577,8 @@ type private Scanner(s: string) =
         strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.PlainScalar })
         emitText ("<s f=" + string stringId + "/>")
         atNodeStart <- false
+        emptySlot <- false
+        explicitKey <- false
         hasCode <- true
         i <- stop
 
@@ -882,6 +906,7 @@ type private Scanner(s: string) =
                         rejectGlued ()
                         if not atNodeStart then
                             failwithf "Line %d: a node in front of this flow collection needs a `,` or a `:` behind it." (physicalLine ())
+                        if explicitKey then failComplexKey ()
                         flowOpeners.Add c
                         flowLines.Add(physicalLine ())
                         flowColons.Add false
@@ -901,6 +926,9 @@ type private Scanner(s: string) =
                         failwithf "Line %d: `%s` closes no flow collection." (physicalLine ()) (string c)
                 | ',' ->
                     if flowOpeners.Count > 0 then
+                        // A `,` directly behind a `[`, a `{` or another `,` leaves an entry empty.
+                        if emptySlot then
+                            failwithf "Line %d: a `,` cannot follow a `[`, a `{` or another `,` directly, because it would leave an entry empty." (physicalLine ())
                         flowColons.[flowColons.Count - 1] <- false
                         appendSeparator c true
                     else
@@ -917,9 +945,7 @@ type private Scanner(s: string) =
                     if not separates then
                         appendPlain c
                     else
-                        // A flow collection cannot be the key of an entry, which the Reader cannot represent.
-                        if afterCloser then
-                            failwithf "Line %d: a flow collection as the key of an entry is not supported. Write the key as `? [...]` and the value on a line that starts with `:`." (physicalLine ())
+                        if afterCloser then failComplexKey ()
                         if flowOpeners.Count > 0 then
                             let top = flowColons.Count - 1
                             if flowColons.[top] then
@@ -938,16 +964,35 @@ type private Scanner(s: string) =
                 | '-' | '?' ->
                     // An indicator needs a blank behind it. Without one the character begins a plain scalar.
                     // A flow collection holds no block sequence, so a dash there needs a plain character behind it.
-                    if c = '-' && atNodeStart && flowOpeners.Count > 0 && endsFlowToken (i + 1) then
+                    // The `?` of an explicit key inside a flow collection may also stand in front of a flow indicator.
+                    let inFlow = flowOpeners.Count > 0
+                    if c = '-' && atNodeStart && inFlow && endsFlowToken (i + 1) then
                         failwithf "Line %d: inside a flow collection a `-` needs a plain character behind it." (physicalLine ())
-                    if atNodeStart && nextIsBlank (i + 1) then appendSeparator c true else appendPlain c
+                    if atNodeStart && (if inFlow && c = '?' then endsFlowToken (i + 1) else nextIsBlank (i + 1)) then
+                        // A block collection cannot start on the line of its key, as in `k: - a`. The
+                        // compact forms `- - a`, `- ? a`, `? - a` and `: - a` hold no key colon in front.
+                        // A dash with nothing behind it, as in `k: -`, is an item that yaml accepts there.
+                        if keySeparated && not inFlow then
+                            let mutable q = i + 1
+                            while q < n && isBlankChar s.[q] do
+                                q <- q + 1
+                            let contentBehind = q < n && s.[q] <> NewLineChar && s.[q] <> '#'
+                            if c = '?' || contentBehind then
+                                failwithf "Line %d: a block %s cannot start on the line of its key." (physicalLine ()) (if c = '-' then "sequence" else "mapping")
+                        appendSeparator c true
+                        if inFlow && c = '?' then explicitKey <- true
+                    else
+                        appendPlain c
                 | '!' | '&' ->
                     if atNodeStart then
                         // A property is one token. A quote inside it must not start a scalar.
                         let e = Property.endIndex s i
+                        if c = '&' && e = i + 1 && flowOpeners.Count > 0 then
+                            failwithf "Line %d: an anchor needs a name behind the `&`." (physicalLine ())
                         for k in i .. e - 1 do
                             emit s.[k]
                         hasCode <- true
+                        emptySlot <- false
                         i <- e
                     else
                         appendPlain c
@@ -969,6 +1014,8 @@ type private Scanner(s: string) =
         flowOwner <- OwnerUnknown
         afterCloser <- false
         commentEndedNode <- false
+        emptySlot <- false
+        explicitKey <- false
         atNodeStart <- true
 
         if i < n && s.[i] = '%' && inPrelude then

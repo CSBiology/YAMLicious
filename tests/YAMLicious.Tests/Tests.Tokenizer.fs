@@ -118,6 +118,22 @@ let private flowInput (lines: int) =
     sb.Append("]\n") |> ignore
     sb.ToString()
 
+/// A flow mapping of the given number of lines. Every group of four lines holds an explicit key with a tagged
+/// value, a quoted key with an anchor, and a key over two lines with an alias as its value.
+let private flowMappingInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("k: {\n") |> ignore
+    for i in 0 .. lines - 1 do
+        let text =
+            match i % 4 with
+            | 0 -> sprintf "  ? key %d : !!str value %d," i i
+            | 1 -> sprintf "  &a%d \"quoted %d\": plain %d, # comment %d" i i i i
+            | 2 -> sprintf "  multi %d" i
+            | _ -> sprintf "  line %d : *a%d," i (i - 2)
+        sb.Append(text).Append("\n") |> ignore
+    sb.Append("}\n") |> ignore
+    sb.ToString()
+
 /// The reference of the scaling test, a single pass over the characters of the input. The count goes
 /// to a cell that outlives the call, so the compiler cannot drop the loop.
 let private lineBreakCount = ref 0
@@ -901,16 +917,21 @@ let private flowScannerTests = testList "Flow collections across lines in the sc
             Persil.tokenize input |> ignore
 
     testCase "a flow collection as the key of an entry is an error that names the line" <| fun _ ->
-        // yaml@2.6.1 reads all four inputs with the collection as a text key such as "[ a ]"
+        // yaml@2.6.1 reads all inputs with the collection as a text key such as "[ a ]". The message says
+        // that YAMLicious keeps only scalar keys and gives no hint to write the key behind `?`.
         let expectKey (input: string) (line: int) =
+            let message = errorOf (fun () -> Persil.tokenize input |> ignore)
             Expect.stringContains
-                (errorOf (fun () -> Persil.tokenize input |> ignore))
-                $"Line {line}: a flow collection as the key of an entry is not supported."
+                message
+                $"Line {line}: a flow collection cannot be the key of an entry, because YAMLicious keeps only scalar keys."
                 $"The error of {input}"
+            Expect.isFalse (message.Contains "?") $"The error of {input} suggests no explicit key"
         expectKey "[a]: b" 1
         expectKey "{a: 1}: b" 1
         expectKey "k: [[a]: b]" 1
         expectKey "a: 1\n{[a]: b}" 2
+        expectKey "{? [a] : b}" 1
+        expectKey "k: [\n  ? {a: 1}\n]" 2
 
     testCase "a comment that ends a node inside a flow collection allows only a comma or a closer" <| fun _ ->
         // yaml@2.6.1 rejects [a # c, b] with MISSING_CHAR and reads the other two as ["a","b"] and ["a"]
@@ -921,15 +942,84 @@ let private flowScannerTests = testList "Flow collections across lines in the sc
         expectLines "[a, # c\n b]" "[a, <c f=0/> b]" [code] |> ignore
         expectLines "[a # c\n]" "[a <c f=0/> ]" [code] |> ignore
 
-    testCase "a key of a flow mapping cannot span lines" <| fun _ ->
-        // yaml@2.6.1 rejects both inputs with MULTILINE_IMPLICIT_KEY
+    testCase "the key of a pair in a flow sequence cannot span lines" <| fun _ ->
+        // yaml@2.6.1 rejects all three inputs with MULTILINE_IMPLICIT_KEY
         let expectKeyLine (input: string) (line: int) =
             Expect.stringContains
                 (errorOf (fun () -> Persil.tokenize input |> ignore))
-                $"Line {line}: the key of a flow mapping entry must be on a single line."
+                $"Line {line}: the key of a pair in a flow sequence must be on a single line."
                 $"The error of {input}"
         expectKeyLine "[a\n: b]" 2
-        expectKeyLine "{a\n b: c}" 2
+        expectKeyLine "[a\n b : c]" 2
+        expectKeyLine "k: [x,\n  a\n  b : c]" 3
+
+    testCase "the key of an entry in a flow mapping or behind a question mark may span lines" <| fun _ ->
+        // yaml@2.6.1: {"matches %":20}, [{"foo bar":"baz"}], {"a b":"c"}, {"a":"b"} and {"a b c":null}
+        let flowMapping = expectLines "{ matches\n% : 20 }" "{ <s f=0/>: 20 }" [code]
+        Expect.equal (stringsOf flowMapping) [0, plainEntry "matches\n%"] "a key in a flow mapping"
+        let explicitInSequence = expectLines "[\n? foo\n bar : baz\n]" "[ ? <s f=0/>: baz ]" [code]
+        Expect.equal (stringsOf explicitInSequence) [0, plainEntry "foo\nbar"] "a key behind a question mark in a flow sequence"
+        let colonOnItsOwnLine = expectLines "{a\n: b}" "{a : b}" [code]
+        Expect.equal colonOnItsOwnLine.StringMap.Count 0 "a colon at the start of the line ends the key before the line break"
+        let withoutValue = expectLines "{? a\n b\n c}" "{? <s f=0/>}" [code]
+        Expect.equal (stringsOf withoutValue) [0, plainEntry "a\nb\nc"] "a key without a value"
+        let propertied = expectLines "{? !!str a\n b : c}" "{? !!str <s f=0/>: c}" [code]
+        Expect.equal (stringsOf propertied) [0, plainEntry "a\nb"] "properties in front of the key"
+
+    testCase "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" <| fun _ ->
+        // yaml@2.6.1: {"a":"b"}, [{"a":"b"}], {"?a":"b"}, ["?a",{"b":null}], {"":null} and [{"":null}]
+        for input in [ "{? a: b}"; "[? a : b]"; "{?a: b}"; "[?a, ? b]"; "{?}"; "[a, ? ]" ] do
+            let actual = expectLines input input [code]
+            Expect.equal actual.StringMap.Count 0 $"No string in {input}"
+
+    testCase "a comma behind a bracket or behind a comma is an error and a trailing comma is not" <| fun _ ->
+        // yaml@2.6.1 rejects the first eight inputs with UNEXPECTED_TOKEN. It reads the others as ["a"], {"a":1}, {"":null},
+        // {"a":null,"b":null}, ["a",{"":null}] and ["","a"]. A property is a node, so `[!!str , a]` is valid.
+        let expectEmpty (input: string) (line: int) =
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: a `,` cannot follow a `[`, a `{{` or another `,` directly, because it would leave an entry empty."
+                $"The error of {input}"
+        expectEmpty "k: [,a]" 1
+        expectEmpty "k: [a,,b]" 1
+        expectEmpty "{,a}" 1
+        expectEmpty "{a,,b}" 1
+        expectEmpty "[ , ]" 1
+        expectEmpty "[a, # c\n , b]" 2
+        expectEmpty "k: {\n  a: 1,\n  ,\n}" 3
+        expectEmpty "[a,\n\n,]" 3
+        for input in [ "[a,]"; "{a: 1,}"; "{? ,}"; "{a: , b}"; "[a, ? ]"; "[!!str , a]" ] do
+            Persil.tokenize input |> ignore
+
+    testCase "a block collection cannot start on the line of its key" <| fun _ ->
+        // yaml@2.6.1 rejects the first six inputs (MISSING_CHAR or BLOCK_AS_IMPLICIT_KEY) and reads the compact forms
+        // [["a"]], [{"a":null}], {"[ a ]":null} and {"":["a"]}. It reads `k: -` as {"k":[null]}.
+        let sequence = "a block sequence cannot start on the line of its key."
+        let mapping = "a block mapping cannot start on the line of its key."
+        for (input, message, line) in [ ("k: - a", sequence, 1); ("- k: - a", sequence, 1); ("k: ? a", mapping, 1); ("a: 1\nk: &x - a", sequence, 2); ("? a: - b", sequence, 1); ("k: ?", mapping, 1) ] do
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: {message}"
+                $"The error of {input}"
+        for input in [ "- - a"; "- ? a"; "? - a"; ": - a"; "k: -"; "k: -x"; "k: - # c"; "- - - a" ] do
+            Persil.tokenize input |> ignore
+
+    testCase "an anchor in a flow collection needs a name" <| fun _ ->
+        // yaml@2.6.1 rejects all three inputs with BAD_ALIAS
+        for input in [ "k: [&]"; "k: [& a]"; "k: {a: &}" ] do
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                "Line 1: an anchor needs a name behind the `&`."
+                $"The error of {input}"
+
+    testCase "properties inside a flow collection are tokens of their own and stay in front of the folded scalar" <| fun _ ->
+        // yaml@2.6.1: {"k":["a b"]}, {"k":["2","x"]}, {"k":{"q":"v"}}
+        let folded = expectLines "k: [!!str a\n  b]" "k: [!!str <s f=0/>]" [code]
+        Expect.equal (stringsOf folded) [0, plainEntry "a\nb"] "the tag stays in front of the placeholder"
+        let quoted = expectLines "k: [!!int \"2\", &a \"x\"]" "k: [!!int <s f=0/>, &a <s f=1/>]" [code]
+        Expect.equal (stringsOf quoted) [0, dquote "2"; 1, dquote "x"] "quotes behind properties open scalars"
+        let keyed = expectLines "k: {&a \"q\": !t \"v\"}" "k: {&a <s f=0/>: !t <s f=1/>}" [code]
+        Expect.equal (stringsOf keyed) [0, dquote "q"; 1, dquote "v"] "properties of a key and a value"
 
     testCase "a colon in a flow collection separates a key only behind a blank, a flow indicator or a quote" <| fun _ ->
         // yaml@2.6.1: {"a:b":null}, ["a:b","12:45"], {"a":"b"}, {"a":"b"} and {"a:\"b\"":null}
@@ -1537,6 +1627,12 @@ let private performanceTests = testList "Scanner performance" [
 
     testCase "the read time grows linearly with the lines of a flow collection" <| fun _ ->
         expectLinear "The read" (Reader.read >> ignore) (Persil.tokenize >> ignore) flowInput
+
+    testCase "the time grows linearly with the entries of a flow mapping with explicit keys and properties" <| fun _ ->
+        let actual = Persil.tokenize (flowMappingInput 600)
+        Expect.equal actual.Lines.Length 2 "the flow mapping becomes one line and the input ends in a line break"
+        expectLinear "The tokenizer" (Persil.tokenize >> ignore) countLineBreaks flowMappingInput
+        expectLinear "The read" (Reader.read >> ignore) (Persil.tokenize >> ignore) flowMappingInput
 
     testCase "the time grows linearly with the lines of a plain scalar" <| fun _ ->
         expectLinear "The tokenizer" (Persil.tokenize >> ignore) countLineBreaks plainScalarInput

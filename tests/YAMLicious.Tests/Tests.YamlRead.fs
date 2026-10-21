@@ -2873,6 +2873,197 @@ expression: >
             (YAMLElement.Object [ YAMLElement.Mapping(key "[ a ]", sequenceNode [ scalarNode "b" ]) ])
             "A key and a value"
 
+    // yaml@2.6.1: {"k":["x <s f=0/> y"]} and {"k":{"a":"x <c f=0/>"}}. Text in the shape of a placeholder is text.
+    testCase "Text in front of a placeholder inside a flow collection stays" <| fun _ ->
+        Expect.equal
+            (Reader.read "k: [x <s f=0/> y]")
+            (YAMLElement.Object [ entry "k" (sequenceNode [ scalarNode "x <s f=0/> y" ]) ])
+            "A string placeholder in the middle of a plain scalar"
+        Expect.equal
+            (Reader.read "k: {a: x <c f=0/>}")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (scalarNode "x <c f=0/>") ]) ])
+            "A comment placeholder at the end of a plain scalar"
+
+    // yaml@2.6.1: {"k":[2,"x"]}, {"k":{"q":"v"}}, {"k":["a b"]}, {"k":["","a"]} and {"k":{"a":null}}. The tag is
+    // resolved through the handles, and an anchor is kept on the content like in block context.
+    testCase "Properties inside a flow collection belong to the node behind them" <| fun _ ->
+        let strTag = "tag:yaml.org,2002:str"
+        let content (value: string) (tag: string option) (anchor: string option) (style: ScalarStyle option) =
+            YAMLContent.create(value, ?tag = tag, ?anchor = anchor, ?style = style)
+        let node (value: YAMLContent) = YAMLElement.Object [ YAMLElement.Value value ]
+        let dq = Some ScalarStyle.DoubleQuoted
+        Expect.equal
+            (Reader.read "k: [!!int \"2\", &a \"x\"]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [
+                    node (content "2" (Some "tag:yaml.org,2002:int") None dq)
+                    node (content "x" None (Some "a") dq) ] ])
+            ])
+            "A tag and an anchor on quoted items"
+        Expect.equal
+            (Reader.read "k: {&a \"q\": !t \"v\"}")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [
+                    YAMLElement.Mapping(content "q" None (Some "a") dq, node (content "v" (Some "!t") None dq)) ])
+            ])
+            "The properties of a key and of a value"
+        Expect.equal
+            (Reader.read "k: [!!str a\n  b]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ node (content "a\nb" (Some strTag) None (Some ScalarStyle.Plain)) ] ])
+            ])
+            "The tag of a scalar that folds over two lines"
+        Expect.equal
+            (Reader.read "k: [!!str , a]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ node (content "" (Some strTag) None None); scalarNode "a" ] ])
+            ])
+            "Properties with no node behind them make an empty scalar that carries them"
+        Expect.equal
+            (Reader.read "k: {a: &x}")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (node (content "" None (Some "x") None)) ]) ])
+            "An anchor with no value behind it"
+        Expect.equal
+            (Reader.read "%TAG !e! tag:example.com,2000:\n---\nk: [!e!foo a]")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ node (content "a" (Some "tag:example.com,2000:foo") None None) ] ]) ])
+            "A tag handle"
+        Expect.equal
+            (Reader.read "k: [!!str # c\n  a]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ node (content "a" (Some strTag) None None); YAMLElement.Comment " c" ] ])
+            ])
+            "A comment between the properties and the node moves behind the node"
+
+    // yaml@2.6.1: {"k":["a","c"]}, {"k":["","c"]} and {"k":{"k":"v"}}. The writer writes core tags in the verbatim form.
+    testCase "A verbatim tag inside a flow collection is one tag" <| fun _ ->
+        let strTag = "tag:yaml.org,2002:str"
+        let tagged (value: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value, tag = strTag)) ]
+        Expect.equal
+            (Reader.read "k: [!<tag:yaml.org,2002:str> a, c]")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ tagged "a"; scalarNode "c" ] ]) ])
+            "A flow item"
+        Expect.equal
+            (Reader.read "k: [!<tag:yaml.org,2002:str>, c]")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ tagged ""; scalarNode "c" ] ]) ])
+            "An empty flow item"
+        Expect.equal
+            (Reader.read "k: {!<tag:yaml.org,2002:str> k: v}")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create("k", tag = strTag), scalarNode "v") ])
+            ])
+            "A flow mapping key"
+        // The writer writes the tag and the anchor of an item of a flow sequence in front of it, with the tag in the verbatim form.
+        let items =
+            [ YAMLElement.Value(YAMLContent.create("a", tag = strTag))
+              YAMLElement.Value(YAMLContent.create("", tag = strTag))
+              YAMLElement.Value(YAMLContent.create("c", anchor = "x")) ]
+        let written = Writer.Formatting.mkInlineSequence WriterOptions.Default items
+        Expect.equal
+            (Reader.read ("k: " + written))
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [
+                    tagged "a"
+                    tagged ""
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("c", anchor = "x")) ] ] ])
+            ])
+            "The text that the writer produces reads back"
+
+    // yaml@2.6.1: {"k":[["a"],{"b":"c"}]} for the matching core tags, and an accepted anchor or custom tag on a collection. The model
+    // has no field for the properties of a collection, so they raise the same error as in block context.
+    testCase "Properties on a collection inside a flow collection follow the block rule" <| fun _ ->
+        Expect.equal
+            (Reader.read "k: [!!seq [a], !!map {b: c}]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ sequenceNode [ scalarNode "a" ]; YAMLElement.Object [ entry "b" (scalarNode "c") ] ] ])
+            ])
+            "The core tag of the matching kind is dropped"
+        let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        for yaml in [ "k: [&x [a]]"; "k: [!t {a: b}]"; "k: [!!map [a]]"; "k: {a: &x {b: c}}" ] do
+            Expect.stringContains (message yaml) "does not keep properties on collections" $"The error of {yaml}"
+        Expect.stringContains (message "k: [!!str !!int a]") "A node cannot have two tags." "Two tags"
+        Expect.stringContains (message "k: [&a &b a]") "A node cannot have two anchors." "Two anchors"
+
+    // yaml@2.6.1: {"k":["x","x",{"k":"x"}]} with the anchors resolved. YAMLicious reads an alias as an Alias element, as in block context.
+    testCase "An alias inside a flow collection is an alias" <| fun _ ->
+        Expect.equal
+            (Reader.read "k: [&a x, *a, {k: *a}]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [ YAMLElement.Sequence [
+                    YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("x", anchor = "a")) ]
+                    YAMLElement.Object [ YAMLElement.Alias "a" ]
+                    YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Alias "a" ]) ] ] ])
+            ])
+            "Aliases as items and as values"
+        Expect.equal
+            (Reader.read "- *a")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Alias "a" ] ] ])
+            "The same shape as an alias in a block sequence"
+        let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        Expect.stringContains (message "k: [&a *b]") "An alias cannot have properties" "An alias with an anchor"
+
+    // yaml@2.6.1: {"k":{"a":"b"}}, {"k":[{"a":"b"}]}, {"k":{"a":null}}, {"foo":null,"":"bar"}, [{"a":"b"},{"c":null}], {"":"b"},
+    // {"":null} and [{"":null}]. A question mark followed by a blank starts an explicit key.
+    testCase "An explicit key inside a flow collection" <| fun _ ->
+        let nothing (key: string) = YAMLElement.Mapping(YAMLContent.create key, YAMLElement.Nil)
+        Expect.equal (Reader.read "k: {? a: b}") (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (scalarNode "b") ]) ]) "In a mapping with a value"
+        Expect.equal
+            (Reader.read "k: [? a: b]")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ entry "a" (scalarNode "b") ] ] ]) ])
+            "In a sequence, where it is a mapping with one entry"
+        Expect.equal (Reader.read "k: {? a}") (YAMLElement.Object [ entry "k" (YAMLElement.Object [ nothing "a" ]) ]) "In a mapping without a value"
+        Expect.equal
+            (Reader.read "{ ? foo :,\n  : bar }")
+            (YAMLElement.Object [ nothing "foo"; entry "" (scalarNode "bar") ])
+            "Spec 7.3: a key with an empty value and a value with an empty key"
+        // yaml@2.6.1: {"explicit":"entry","implicit":"entry","":null}
+        Expect.equal
+            (Reader.read "{\n? explicit: entry,\nimplicit: entry,\n?\n}")
+            (YAMLElement.Object [ entry "explicit" (scalarNode "entry"); entry "implicit" (scalarNode "entry"); nothing "" ])
+            "Spec 7.16: an explicit key with a value, an implicit key and an empty explicit key"
+        Expect.equal
+            (Reader.read "[? a : b, ? c]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ entry "a" (scalarNode "b") ]; YAMLElement.Object [ nothing "c" ] ] ])
+            "Pairs in a sequence"
+        Expect.equal (Reader.read "{? : b}") (YAMLElement.Object [ entry "" (scalarNode "b") ]) "An empty explicit key with a value"
+        Expect.equal (Reader.read "{?}") (YAMLElement.Object [ nothing "" ]) "An empty explicit key in a mapping"
+        Expect.equal (Reader.read "[ ? ]") (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ nothing "" ] ] ]) "An empty explicit key in a sequence"
+        Expect.equal
+            (Reader.read "{? !!str a : &x b}")
+            (YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("a", tag = "tag:yaml.org,2002:str"), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("b", anchor = "x")) ])
+            ])
+            "Properties on an explicit key and its value"
+        // yaml@2.6.1: {"?a":"b"} and ["?a",{"b":null}]
+        Expect.equal (Reader.read "{?a: b}") (YAMLElement.Object [ entry "?a" (scalarNode "b") ]) "No blank behind the question mark"
+        Expect.equal
+            (Reader.read "[?a, ? b]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ scalarNode "?a"; YAMLElement.Object [ nothing "b" ] ] ])
+            "A plain scalar that starts with a question mark"
+
+    // yaml@2.6.1: {"matches %":20} (spec 9.4), [{"foo bar":"baz"}] (spec 7.20), {"a b":"c"}, {"a b c":null} and {"a":"b"}. A plain key
+    // over several lines folds like a plain scalar, so Decode finds it under one name.
+    testCase "The key of an entry in a flow mapping or behind a question mark may span lines" <| fun _ ->
+        let nothing (key: string) = YAMLElement.Mapping(YAMLContent.create key, YAMLElement.Nil)
+        Expect.equal (Reader.read "{ matches\n% : 20 }") (YAMLElement.Object [ entry "matches %" (scalarNode "20") ]) "Spec 9.4"
+        Expect.equal
+            (Reader.read "[\n? foo\n bar : baz\n]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ entry "foo bar" (scalarNode "baz") ] ] ])
+            "Spec 7.20"
+        Expect.equal (Reader.read "{a\n b : c}") (YAMLElement.Object [ entry "a b" (scalarNode "c") ]) "An implicit key"
+        Expect.equal (Reader.read "{? a\n b\n c}") (YAMLElement.Object [ nothing "a b c" ]) "A key without a value"
+        Expect.equal (Reader.read "{a\n: b}") (YAMLElement.Object [ entry "a" (scalarNode "b") ]) "A colon at the start of the line"
+        Expect.equal
+            (Decode.read "k: {a\n  b : c}" |> Decode.object (fun get -> get.Required.Field "k" (Decode.object (fun inner -> inner.Required.Field "a b" Decode.string))))
+            "c"
+            "Decode finds the folded key"
+
+    // yaml@2.6.1 rejects the block collections that start on the line of their key and reads the others.
+    testCase "A block collection on the line of its key is an error that the Reader reports" <| fun _ ->
+        let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        Expect.stringContains (message "k: - a") "Line 1: a block sequence cannot start on the line of its key." "A sequence"
+        Expect.stringContains (message "a: 1\nk: ? a") "Line 2: a block mapping cannot start on the line of its key." "A mapping"
+        Expect.equal (Reader.read "- - a") (YAMLElement.Object [ YAMLElement.Sequence [ sequenceNode [ scalarNode "a" ] ] ]) "The compact sequence stays valid"
+
     // yaml@2.6.1 reads `k:` as {"k":null}, `k:` followed by `j: 1` as {"k":null,"j":1}, `k: # c` as {"k":null}, and
     // `a:` followed by an indented `k:` and `b: 1` as {"a":{"k":null},"b":1}.
     testCase "A key without a value maps to nothing" <| fun _ ->

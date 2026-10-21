@@ -422,83 +422,154 @@ module FlowTokens =
         | Colon
         | Comma
         | String of string
+        /// A tag or an anchor in front of a node, as written, such as `!!str` or `&a`.
+        | Property of string
+        /// The name of an alias, as in `*a`.
+        | Alias of string
+        /// The `?` that starts an explicit key.
+        | Explicit
         | EOF
 
+    /// Cuts the text of a flow collection into tokens. The scanner has replaced the quoted scalars and the
+    /// comments with placeholders, so a quote never starts a token. A plain scalar is one token, with the
+    /// blanks inside it and behind it. A placeholder inside it stays in the text. A comment placeholder
+    /// ends the scalar in front of it and is a token of its own.
     let tokenize (input: string) : Token list =
-        let rec parseString (chars: char list) (acc: char list) : char list * char list =
-            match chars with
-            | [] -> (List.rev acc, [])
-            | '"'::rest -> (List.rev acc, rest)
-            | '\\'::c::rest -> parseString rest (c::'\\'::acc)
-            | c::rest -> parseString rest (c::acc)
+        let n = input.Length
+        let tokens = ResizeArray<Token>()
 
-        let consumePlaceholder (cs: char list) (acc: char list) =
-            let rec loop (cs: char list) (acc: char list) =
-                match cs with
-                | '/'::'>'::rest -> (List.rev ('>'::'/'::acc), rest)
-                | c::rest -> loop rest (c::acc)
-                | [] -> (List.rev acc, [])
-            loop cs acc
+        let isFlowIndicator (c: char) =
+            c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
+
+        let isSpace (c: char) =
+            c = ' ' || c = '\n' || c = '\r' || c = '\t'
 
         // A colon separates a key from its value when a blank, a flow indicator or the end of the text
-        // follows it. Otherwise it is part of a plain scalar, as in `12:45` or `http://example.com`.
-        let isIndicator (rest: char list) =
-            match rest with
-            | [] -> true
-            | c::_ -> c = ' ' || c = '\n' || c = '\r' || c = '\t' || c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
+        // follows it. Otherwise it is part of a plain scalar, as in `12:45` or `http://example.com`. The `?`
+        // of an explicit key needs the same.
+        let isIndicator (k: int) =
+            k >= n || isSpace input.[k] || isFlowIndicator input.[k]
+
+        let startsWithAt (k: int) (prefix: string) =
+            let mutable matches = k + prefix.Length <= n
+            let mutable j = 0
+            while matches && j < prefix.Length do
+                if input.[k + j] <> prefix.[j] then matches <- false
+                j <- j + 1
+            matches
+
+        // Copies the text from `start` up to but excluding `stop`, character by character. Substring on a large
+        // text costs time proportional to its start offset in Fable Python, and a flow collection over many
+        // lines is one long text.
+        let copyRange (start: int) (stop: int) =
+            let sb = StringBuilder()
+            for k in start .. stop - 1 do
+                sb.Append(input.[k]) |> ignore
+            sb.ToString()
+
+        // The offset behind the `/>` that ends the placeholder at `k`, or the end of the text.
+        let placeholderEnd (k: int) =
+            let mutable e = k
+            while e < n && not (input.[e] = '/' && e + 1 < n && input.[e + 1] = '>') do
+                e <- e + 1
+            if e < n then e + 2 else n
 
         // A colon right behind a quoted scalar or a flow collection separates a key without a blank, as
         // in `{"a":1}`.
-        let followsJsonLikeNode (acc: Token list) =
-            match acc with
-            | Token.String value::_ -> value.StartsWith("<s f=") && value.EndsWith("/>")
-            | Token.CloseBrace::_
-            | Token.CloseBracket::_ -> true
-            | _ -> false
+        let followsJsonLikeNode () =
+            if tokens.Count = 0 then
+                false
+            else
+                match tokens.[tokens.Count - 1] with
+                | Token.String value -> value.StartsWith("<s f=") && value.EndsWith("/>")
+                | Token.CloseBrace
+                | Token.CloseBracket -> true
+                | _ -> false
 
-        let rec tokenizeChars (chars: char list) (acc: Token list) : Token list =
-            match chars with
-            | [] -> List.rev (Token.EOF::acc)
-            | ' '::rest | '\n'::rest | '\r'::rest | '\t'::rest -> tokenizeChars rest acc
-            | '{'::rest -> tokenizeChars rest (Token.OpenBrace::acc)
-            | '}'::rest -> tokenizeChars rest (Token.CloseBrace::acc)
-            | '['::rest -> tokenizeChars rest (Token.OpenBracket::acc)
-            | ']'::rest -> tokenizeChars rest (Token.CloseBracket::acc)
-            | ':'::rest when isIndicator rest || followsJsonLikeNode acc -> tokenizeChars rest (Token.Colon::acc)
-            | ','::rest -> tokenizeChars rest (Token.Comma::acc)
-            | '"'::rest ->
-                let (str, remaining) = parseString rest []
-                let strValue = System.String(Array.ofList str)
-                tokenizeChars remaining (Token.String strValue::acc)
-            | chars ->
-                let rec parseUnquoted (cs: char list) (acc: char list) =
-                    match cs with
-                    | [] -> (List.rev acc, [])
-                    | '<'::'s'::' '::'f'::'='::rest ->
-                        let (placeholder, remaining) = consumePlaceholder rest ['=';'f';' ';'s';'<']
-                        // A colon or a comment behind the placeholder is a token of its own.
-                        match List.skipWhile (fun c -> c = ' ') remaining with
-                        | ':'::_
-                        | '<'::'c'::' '::'f'::'='::_ -> (placeholder, remaining)
-                        | _ ->
-                            let (restStr, final) = parseUnquoted remaining []
-                            (placeholder @ restStr, final)
-                    | '<'::'c'::' '::'f'::'='::rest ->
-                        // A comment placeholder is a token of its own. It also ends the plain scalar in front of it.
-                        if acc.IsEmpty then consumePlaceholder rest ['=';'f';' ';'c';'<'] else (List.rev acc, cs)
-                    | ':'::rest when isIndicator rest ->
-                        (List.rev acc, cs)
-                    | c::rest when c = '{' || c = '}' || c = '[' || c = ']' || c = ',' || c = '\n' || c = '\r' || c = '\t' ->
-                        (List.rev acc, cs)
-                    | ' '::rest when acc.IsEmpty ->
-                        parseUnquoted rest acc
-                    | c::rest -> parseUnquoted rest (c::acc)
+        let mutable p = 0
+        while p < n do
+            let c = input.[p]
+            if isSpace c then
+                p <- p + 1
+            elif c = '{' then
+                tokens.Add Token.OpenBrace
+                p <- p + 1
+            elif c = '}' then
+                tokens.Add Token.CloseBrace
+                p <- p + 1
+            elif c = '[' then
+                tokens.Add Token.OpenBracket
+                p <- p + 1
+            elif c = ']' then
+                tokens.Add Token.CloseBracket
+                p <- p + 1
+            elif c = ',' then
+                tokens.Add Token.Comma
+                p <- p + 1
+            elif c = ':' && (isIndicator (p + 1) || followsJsonLikeNode ()) then
+                tokens.Add Token.Colon
+                p <- p + 1
+            elif c = '?' && isIndicator (p + 1) then
+                tokens.Add Token.Explicit
+                p <- p + 1
+            elif c = '"' then
+                // The scanner leaves no quoted scalar in the text, so this only reads text that a caller built by hand.
+                let sb = StringBuilder()
+                let mutable j = p + 1
+                let mutable closed = false
+                while not closed && j < n do
+                    if input.[j] = '"' then
+                        closed <- true
+                        j <- j + 1
+                    elif input.[j] = '\\' && j + 1 < n then
+                        sb.Append(input.[j]).Append(input.[j + 1]) |> ignore
+                        j <- j + 2
+                    else
+                        sb.Append(input.[j]) |> ignore
+                        j <- j + 1
+                tokens.Add(Token.String(sb.ToString()))
+                p <- j
+            elif c = '!' || c = '&' then
+                let e = Property.endIndex input p
+                tokens.Add(Token.Property(copyRange p e))
+                p <- e
+            elif c = '*' && p + 1 < n && not (isSpace input.[p + 1]) && not (isFlowIndicator input.[p + 1]) then
+                let mutable e = p + 1
+                while e < n && not (isSpace input.[e]) && not (isFlowIndicator input.[e]) && not (input.[e] = ':' && isIndicator (e + 1)) do
+                    e <- e + 1
+                tokens.Add(Token.Alias(copyRange (p + 1) e))
+                p <- e
+            elif startsWithAt p "<c f=" then
+                let e = placeholderEnd p
+                tokens.Add(Token.String(copyRange p e))
+                p <- e
+            else
+                let start = p
+                let mutable e = p
+                let mutable stop = false
+                while not stop && e < n do
+                    let ch = input.[e]
+                    if ch = '{' || ch = '}' || ch = '[' || ch = ']' || ch = ',' || ch = '\n' || ch = '\r' || ch = '\t' then
+                        stop <- true
+                    elif ch = ':' && isIndicator (e + 1) then
+                        stop <- true
+                    elif ch = '<' && startsWithAt e "<c f=" then
+                        stop <- true
+                    elif ch = '<' && startsWithAt e "<s f=" then
+                        let behind = placeholderEnd e
+                        if e = start then
+                            // A placeholder at the start of the token stands alone when a colon, a comment or the end follows it.
+                            let mutable q = behind
+                            while q < n && input.[q] = ' ' do
+                                q <- q + 1
+                            if q >= n || input.[q] = ':' || isFlowIndicator input.[q] || isSpace input.[q] || startsWithAt q "<c f=" then
+                                stop <- true
+                        e <- behind
+                    else
+                        e <- e + 1
+                if e = start then e <- start + 1
+                tokens.Add(Token.String(copyRange start e))
+                p <- e
 
-                let (str, remaining) = parseUnquoted chars []
-                if str.IsEmpty then
-                    tokenizeChars remaining acc
-                else
-                    let strValue = System.String(Array.ofList str)
-                    tokenizeChars remaining (Token.String strValue::acc)
-
-        tokenizeChars (List.ofSeq input) []
+        tokens.Add Token.EOF
+        List.ofSeq tokens

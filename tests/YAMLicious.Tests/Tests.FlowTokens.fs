@@ -243,6 +243,49 @@ let Main = testList "FlowTokens" [
                 (tokenize "{[a]:b}")
                 [ Token.OpenBrace; Token.OpenBracket; Token.String "a"; Token.CloseBracket; Token.Colon; Token.String "b"; Token.CloseBrace; Token.EOF ]
                 "A flow collection as a key"
+
+        testCase "properties, aliases and the question mark of an explicit key are tokens" <| fun _ ->
+            Expect.equal
+                (tokenize "[!!str a, &x b, *x, ? c: d]")
+                [ Token.OpenBracket; Token.Property "!!str"; Token.String "a"; Token.Comma
+                  Token.Property "&x"; Token.String "b"; Token.Comma
+                  Token.Alias "x"; Token.Comma
+                  Token.Explicit; Token.String "c"; Token.Colon; Token.String "d"; Token.CloseBracket; Token.EOF ]
+                "Properties, an alias and an explicit key"
+            Expect.equal
+                (tokenize "{&a <s f=0/>: !t <s f=1/>}")
+                [ Token.OpenBrace; Token.Property "&a"; Token.String "<s f=0/>"; Token.Colon
+                  Token.Property "!t"; Token.String "<s f=1/>"; Token.CloseBrace; Token.EOF ]
+                "Properties in front of a key and a value"
+            Expect.equal
+                (tokenize "[?a, ?, ? ]")
+                [ Token.OpenBracket; Token.String "?a"; Token.Comma; Token.Explicit; Token.Comma; Token.Explicit; Token.CloseBracket; Token.EOF ]
+                "A question mark is an indicator only in front of a blank, a flow indicator or the end"
+            Expect.equal
+                (tokenize "[a ! b, a & b]")
+                [ Token.OpenBracket; Token.String "a ! b"; Token.Comma; Token.String "a & b"; Token.CloseBracket; Token.EOF ]
+                "A tag mark or an anchor mark inside a plain scalar is text"
+
+        testCase "a verbatim tag is one property token" <| fun _ ->
+            Expect.equal
+                (tokenize "[!<tag:yaml.org,2002:str> a, !<tag:yaml.org,2002:str>, c]")
+                [ Token.OpenBracket; Token.Property "!<tag:yaml.org,2002:str>"; Token.String "a"; Token.Comma
+                  Token.Property "!<tag:yaml.org,2002:str>"; Token.Comma; Token.String "c"; Token.CloseBracket; Token.EOF ]
+                "The colon and the comma inside the tag do not split it"
+            Expect.equal
+                (tokenize "{!<tag:yaml.org,2002:str> k: v}")
+                [ Token.OpenBrace; Token.Property "!<tag:yaml.org,2002:str>"; Token.String "k"; Token.Colon; Token.String "v"; Token.CloseBrace; Token.EOF ]
+                "A tag in front of a key"
+
+        testCase "text in front of a placeholder and the blanks around it stay in the token" <| fun _ ->
+            Expect.equal
+                (tokenize "[x <s f=0/> y, <s f=1/> tail]")
+                [ Token.OpenBracket; Token.String "x <s f=0/> y"; Token.Comma; Token.String "<s f=1/> tail"; Token.CloseBracket; Token.EOF ]
+                "A placeholder inside a plain scalar is text"
+            Expect.equal
+                (tokenize "{a: x <c f=0/>}")
+                [ Token.OpenBrace; Token.String "a"; Token.Colon; Token.String "x "; Token.String "<c f=0/>"; Token.CloseBrace; Token.EOF ]
+                "A comment placeholder ends the scalar in front of it"
     ]
 
     testList "edge cases" [
