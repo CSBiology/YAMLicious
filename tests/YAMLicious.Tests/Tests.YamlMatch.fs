@@ -75,18 +75,18 @@ let Main = testList "YamlMatch" [
             Expect.equal res.Comment 11 ""
         | _ -> Expect.isFalse true ""
 
-    testCase "Match InlineSequence" <| fun _ ->
+    testCase "Match FlowStyleArray" <| fun _ ->
         let yamlElement = Line "[abc, def, hij]"
         match yamlElement with
-        | InlineSequence res ->
+        | FlowStyleArray res ->
             Expect.equal res.Value "abc, def, hij" ""
             Expect.isNone res.Comment ""
         | _ -> Expect.isFalse true ""
 
-    testCase "Match InlineSequence + Comment" <| fun _ ->
+    testCase "Match FlowStyleArray + Comment" <| fun _ ->
         let yamlElement = Line "[abc, def, hij] <c f=11/>"
         match yamlElement with
-        | InlineSequence res ->
+        | FlowStyleArray res ->
             Expect.equal res.Value "abc, def, hij" ""
             Expect.equal res.Comment (Some 11) ""
         | _ -> Expect.isFalse true ""

@@ -184,6 +184,20 @@ module Formatting =
         else
             renderUnstyledInline context v
 
+    /// The text of a scalar behind its properties. An empty scalar without a style or with the plain style
+    /// that carries properties is written as the properties alone, as in `k: &a` and `- !!null`. Quotes would
+    /// turn the null of `k: &a` into the string "" and the plain style into a double-quoted one. An empty
+    /// scalar with a quoted style keeps its quotes.
+    let private mkNodeText (content: YAMLContent) (text: string) =
+        let isEmptyPlain =
+            content.Value = ""
+            && (content.Tag.IsSome || content.Anchor.IsSome)
+            && (match content.Style with
+                | None
+                | Some ScalarStyle.Plain -> true
+                | _ -> false)
+        if isEmptyPlain then (mkNodePrefix content).TrimEnd() else mkNodePrefix content + text
+
     let mkKeyContent (options: WriterOptions) (content: YAMLContent) =
         mkNodePrefix content + scalarToInlineText StyleVerifier.PlainContext.Block options content
 
@@ -207,7 +221,7 @@ module Formatting =
 
     let mkInlineContent (options: WriterOptions) (content: YAMLContent) =
         let inlineScalar = scalarToInlineText StyleVerifier.PlainContext.Block options content
-        let combined = mkNodePrefix content + inlineScalar
+        let combined = mkNodeText content inlineScalar
         appendComment content combined
 
     let mkInlineSequence (options: WriterOptions) (seq: YAMLElement list) =
@@ -215,7 +229,7 @@ module Formatting =
             seq
             |> List.map (fun x ->
                 match x with
-                | YAMLElement.Value v -> mkNodePrefix v + scalarToInlineText StyleVerifier.PlainContext.Flow options v
+                | YAMLElement.Value v -> mkNodeText v (scalarToInlineText StyleVerifier.PlainContext.Flow options v)
                 | _ -> failwith "Invalid sequence element"
             )
             |> String.concat ", "

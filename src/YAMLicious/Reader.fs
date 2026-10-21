@@ -130,7 +130,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             value, style
         | None ->
             let value = restoreStringReplace stringDict raw
-            // Keep plain scalars style-neutral for backward compatibility.
+            // A single-line plain scalar gets no style, so the writer picks plain or quoted by the text, as it
+            // does for the output of Encode.string. The style Plain makes the writer emit the text unchecked.
             value, None
 
     let resolveTagShorthand (handles: Map<string, string>) (shorthand: string) : string =
@@ -407,8 +408,8 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
     /// The source that the flow parser reads and the core tag for a flow collection that fits on one line.
     let tryOneLineFlowCollection (value: string) =
         match PreprocessorElement.Line value with
-        | InlineSequence flow -> Some ("[" + flow.Value + "]", seqTag)
-        | InlineJSON flow -> Some ("{" + flow.Value + "}", mapTag)
+        | FlowStyleArray flow -> Some ("[" + flow.Value + "]", seqTag)
+        | FlowStyleObject flow -> Some ("{" + flow.Value + "}", mapTag)
         | _ -> None
 
     /// The properties and the comment id of a value that holds properties and nothing else, as `!!seq` does
@@ -461,12 +462,12 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current, rest = readBlockSequence (fun item -> loopRead handles item []) restlist
             loopRead handles rest (current::acc)
         // [test1, test2, test] <c f=1/>
-        | InlineSequence v::rest -> // create sequence
+        | FlowStyleArray v::rest -> // create sequence
             let c = restoreCommentReplace commentDict v.Comment
             let current = parseFlowSource ("[" + v.Value + "]")
             loopRead handles rest (prependRootFlow c current acc)
         // {a: 1, b: 2} <c f=1/>
-        | InlineJSON v::rest -> // create object
+        | FlowStyleObject v::rest -> // create object
             let c = restoreCommentReplace commentDict v.Comment
             let current = parseFlowSource ("{" + v.Value + "}")
             loopRead handles rest (prependRootFlow c current acc)

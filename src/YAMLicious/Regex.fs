@@ -79,18 +79,12 @@ let FlowStyleArrayPattern =
     $"^\[(?<inlineSequence>.*)\]\s*?({CommentPattern})?$"
     #endif
 
-// Backward compatibility alias
-let InlineSequencePattern = FlowStyleArrayPattern
-
 let FlowStyleObjectPattern =
     #if FABLE_COMPILER_PYTHON
     $"^\{{(?P<inlineSequence>.*)\}}\s*?({CommentPattern})?$"
     #else
     $"^\{{(?<inlineSequence>.*)\}}\s*?({CommentPattern})?$"
     #endif
-
-// Backward compatibility alias
-let InlineJSONPattern = FlowStyleObjectPattern
 
 [<Literal>]
 let StringReplacementPattern =

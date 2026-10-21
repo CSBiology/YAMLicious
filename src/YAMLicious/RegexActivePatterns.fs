@@ -100,9 +100,6 @@ let (|FlowStyleArray|_|) (input: PreprocessorElement) =
             None
     | _ -> None
 
-// Backward compatibility alias
-let (|InlineSequence|_|) = (|FlowStyleArray|_|)
-
 let (|FlowStyleObject|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
@@ -118,9 +115,6 @@ let (|FlowStyleObject|_|) (input: PreprocessorElement) =
         else
             None
     | _ -> None
-
-// Backward compatibility alias
-let (|InlineJSON|_|) = (|FlowStyleObject|_|)
 
 let (|WithAnchor|_|) (input: string) =
     let m = Regex.Match(input, AnchorPattern)

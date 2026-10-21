@@ -273,4 +273,47 @@ let Main = testList "YamlWrite" [
     testCase "Trailing comment after a nested sequence round-trips" <| fun _ ->
         let s = "r:\n  a:\n    - 1\n    # end"
         Expect.equal (Reader.read (Writer.write (Reader.read s) None)) (Reader.read s) "The trailing comment should survive write and read."
+
+    // yaml@2.6.1 reads `k: &a` as {"k":null}, `k: !!str` as {"k":""}, `- &a` as [null], `- !!null` as [null], the
+    // root `&a` as null and `k: &a # c` as {"k":null}. The writer spells a core tag in its verbatim form.
+    testCase "An empty plain scalar with properties is written as its properties alone" <| fun _ ->
+        let cases =
+            [ "k: &a", "k: &a"
+              "k: !!str", "k: !<tag:yaml.org,2002:str>"
+              "- &a", "- &a"
+              "- !!null", "- !<tag:yaml.org,2002:null>"
+              "&a", "&a"
+              "k: &a # c", "k: &a # c" ]
+        for (source, expected) in cases do
+            let parsed = Reader.read source
+            let written = write parsed None
+            Expect.trimEqual written expected $"The properties of {source} stand alone"
+            Expect.equal (Reader.read written) parsed $"The text of {source} reads back as the same element"
+
+    // yaml@2.6.1 reads `k: !!str ""` as {"k":""}, `k: &a ''` as {"k":""} and `- &a ""` as [""].
+    testCase "An empty quoted scalar with properties keeps its quotes" <| fun _ ->
+        let cases =
+            [ "k: !!str \"\"", "k: !<tag:yaml.org,2002:str> \"\""
+              "k: &a ''", "k: &a ''"
+              "- &a \"\"", "- &a \"\"" ]
+        for (source, expected) in cases do
+            let parsed = Reader.read source
+            let written = write parsed None
+            Expect.trimEqual written expected $"The quotes of {source} stay"
+            Expect.equal (Reader.read written) parsed $"The text of {source} reads back as the same element"
+
+    // yaml@2.6.1 reads `k: [&a, b]` as {"k":[null,"b"]} and `k: [b, &a]` as {"k":["b",null]}.
+    testCase "An empty plain item of a flow sequence is written as its properties alone" <| fun _ ->
+        let anchored = YAMLElement.Value(YAMLContent.create("", anchor="a"))
+        let b = YAMLElement.Value(YAMLContent.create "b")
+        let inMapping (items: YAMLElement list) =
+            YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "k", YAMLElement.Sequence items) ]
+        let readBack (items: YAMLElement list) =
+            YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create "k", YAMLElement.Object [ YAMLElement.Sequence (items |> List.map (fun item -> YAMLElement.Object [ item ])) ]) ]
+        let first = write (inMapping [ anchored; b ]) None
+        Expect.trimEqual first "k: [&a, b]" "The anchor stands in front of the comma"
+        Expect.equal (Reader.read first) (readBack [ anchored; b ]) "The first item reads back as an empty scalar with the anchor"
+        let last = write (inMapping [ b; anchored ]) None
+        Expect.trimEqual last "k: [b, &a]" "The anchor stands in front of the bracket"
+        Expect.equal (Reader.read last) (readBack [ b; anchored ]) "The last item reads back as an empty scalar with the anchor"
 ]
