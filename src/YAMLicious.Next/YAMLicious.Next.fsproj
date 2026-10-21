@@ -13,11 +13,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Interop\PyInterop.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="Tag.fs" />
     <Compile Include="Compare.fs" />
     <Compile Include="Node.fs" />
     <Compile Include="CoreSchema.fs" />
+    <Compile Include="Source.fs" />
+    <Compile Include="Lexeme.fs" />
+    <Compile Include="Lexer.fs" />
     <Compile Include="Validate.fs" />
     <Compile Include="Projection.fs" />
   </ItemGroup>

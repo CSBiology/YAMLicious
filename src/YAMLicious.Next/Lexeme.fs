@@ -1,0 +1,100 @@
+namespace YAMLicious
+
+/// The grammar context in which the parser asks for the next lexeme. The contexts follow the YAML 1.2.2
+/// specification, with the nuances that the lexer needs.
+///
+/// - `BlockIn` and `BlockOut` stand for a position in the block structure. A block indicator is an
+///   indicator there, a block scalar header opens a scalar, and a plain scalar may go on in the lines below.
+/// - `FlowOut` is a flow node inside the block structure. The lexer treats it like the block contexts and
+///   leaves it to the parser to reject a block indicator in it.
+/// - `FlowIn` is a position inside a flow collection. A flow indicator ends a plain scalar, a dash is no
+///   block entry, and the lines of a collection have to stand deeper than the node that owns it.
+/// - `BlockKey` and `FlowKey` mark the key of an implicit entry. A plain scalar stays on its line there,
+///   and `FlowKey` also ends it at a flow indicator.
+type GrammarContext =
+    | BlockIn
+    | BlockOut
+    | FlowIn
+    | FlowOut
+    | BlockKey
+    | FlowKey
+
+/// What the parser tells the lexer about the position of the next lexeme.
+///
+/// `ParentIndent` is the indentation of the block node that owns the position: the column, counted from 0,
+/// of the key of a value, of the dash of a sequence item, of the `?` or `:` of an explicit entry, or of the
+/// node that owns a flow collection. A top-level node has -1. A continuation line of a plain or quoted
+/// scalar has to stand deeper than it, and the content of a block scalar is counted from it.
+///
+/// `SimpleKey` is true when the parser knows that the node can only be an implicit key. The lexer keeps a
+/// plain scalar on its first line then, rejects a quoted scalar with a line break, and rejects a scalar of
+/// more than 1024 characters. A parser that cannot know yet passes false and checks the span after it has
+/// seen the value indicator.
+type LexContext =
+    { Grammar: GrammarContext
+      ParentIndent: int
+      SimpleKey: bool }
+
+/// A tag as the text spells it. The parser resolves a handle with the `%TAG` bindings of the document.
+[<RequireQualifiedAccess>]
+type TagToken =
+    /// `!<uri>`. The text is the part between the angle brackets.
+    | Verbatim of uri: string
+    /// A handle and a suffix. The handle is `!`, `!!` or a named handle such as `!e!`, and the suffix is the
+    /// text behind it, as in `str` for `!!str`. The suffix of the non-specific tag `!` is empty. The
+    /// suffix keeps its `%` escapes.
+    | Shorthand of handle: string * suffix: string
+
+/// A lexical terminal. The span of the lexeme comes with it in `Located`.
+///
+/// Spans. The span of a lexeme covers its text. The span of a `LineStart` covers the blanks in front of the
+/// first lexeme of the line. The span of a `BlankLine` covers its blanks. A line break belongs to no lexeme.
+///
+/// The lexer returns the trivia in the order of the text. A `Comment` or a `BlankLine` between two lexemes
+/// is one lexeme of its own, and the parser decides which slot of the tree takes it.
+///
+/// First on a line. A lexeme is the first one on its line when a `LineStart` comes right before it. Inside
+/// a flow context no `LineStart` is returned, and the parser compares the lines of the spans instead.
+[<RequireQualifiedAccess>]
+type Lexeme =
+    /// The start of the text. Its span is empty and stands behind the byte order mark.
+    | StreamStart
+    /// The end of the text. The lexer returns it again for every later call.
+    | StreamEnd
+    /// A `---` at the start of a line.
+    | DocumentStart
+    /// A `...` at the start of a line.
+    | DocumentEnd
+    /// A directive line without its trailing comment.
+    | Directive of DirectiveKind
+    /// The first lexeme of a content line is about to follow. `indent` is the number of spaces in front of it,
+    /// which is the indentation of YAML. `tabbed` is true when a tab stands among the blanks in front of it.
+    | LineStart of indent: int * tabbed: bool
+    /// A `-` that a blank or the end of the line follows.
+    | BlockEntry
+    /// A `?` that a blank or the end of the line follows. Inside a flow collection a flow indicator may
+    /// follow it as well.
+    | ExplicitKey
+    /// A `:` that a blank or the end of the line follows. Inside a flow collection a flow indicator may
+    /// follow it as well, and so may any character when the colon stands right behind a quoted scalar or a
+    /// flow collection. `adjacent` is true when the colon stands right behind such a node, as in `"a":b`.
+    | Value of adjacent: bool
+    | FlowSequenceStart
+    | FlowSequenceEnd
+    | FlowMappingStart
+    | FlowMappingEnd
+    | FlowEntry
+    /// `&anchor`. The text is the anchor name without the `&`.
+    | Anchor of anchorName: string
+    /// `*alias`. The text is the alias name without the `*`.
+    | Alias of aliasName: string
+    | Tag of TagToken
+    /// A scalar with its cooked value and style. A plain scalar may span lines. Its value is folded, and its
+    /// span runs from its first to its last character. A block scalar carries the comment behind its
+    /// header. Its span ends with its last content line, and the lexer has consumed the empty lines
+    /// behind it.
+    | Scalar of YamlScalar
+    /// A comment. `ownLine` is true when the comment is the first lexeme of its line.
+    | Comment of comment: YamlComment * ownLine: bool
+    /// A line that holds nothing but blanks.
+    | BlankLine

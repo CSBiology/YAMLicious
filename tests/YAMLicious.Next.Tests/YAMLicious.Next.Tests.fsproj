@@ -5,11 +5,14 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Util.fs" />
+    <Compile Include="Driver.fs" />
     <Compile Include="Tests.Model.fs" />
     <Compile Include="Tests.CoreSchema.fs" />
     <Compile Include="Tests.Compare.fs" />
     <Compile Include="Tests.Validate.fs" />
     <Compile Include="Tests.Projection.fs" />
+    <Compile Include="Tests.Lexer.fs" />
+    <Compile Include="Tests.Scalars.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
