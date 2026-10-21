@@ -541,6 +541,10 @@ let private scalarTests = testList "Scalar spellings" [
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "a\n"; next ]) "k: |\n  a\nj: 1\n"
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a\n\n"; next ]) "k: |+\n  a\n\nj: 1\n"
         expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "\n"; next ]) "k: |+\n\nj: 1\n"
+        // Tests.ScalarStyles "Writer keeps the chomping of an explicit block style that the value contradicts". The old writer kept the chomping that the node stored, so a stripped value that ended in two line
+        // feeds lost them. The candidate adjusts the chomping so that the text reads back as the value.
+        expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "a\n\n"; next ]) "k: |+\n  a\n\nj: 1\n"
+        expectNode (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "a"; next ]) "k: |-\n  a\nj: 1\n"
 
     // [165] b-chomped-last takes the end of the input in place of a line feed. A block scalar with the chomping Clip or Keep and no final line
     // feed in its value can only be the last node of the text, where the text ends without a line break. The output depends on the tree alone,
@@ -1162,16 +1166,41 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
     // the written texts back as "a\n \nb\n", "a\n\n  \nb" and " \na\n". A line of spaces keeps its spaces behind the indentation.
     testCase "a line of spaces in a block scalar keeps its spaces" <| fun _ ->
         expectNode (mapOf [ "k", lit "a\n \nb\n" ]) "k: |\n  a\n   \n  b\n"
+        // The old writer put the indentation on the empty line. The new writer leaves the empty line empty, which [70] l-empty allows (s-indent(<n) and a line feed), and the line of two spaces
+        // keeps its spaces behind the indentation.
         let two = mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "a\n\n  \nb" ]
-        let written = writeNode two
-        Expect.isTrue (written.StartsWith "k: |-\n  a\n") "The header and the first line"
-        Expect.isTrue (written.Contains "\n    \n") "The line of two spaces keeps them behind the indentation"
-        Expect.nodeEqual (parseRoot written) two "The text reads back as the same value"
+        expectNode two "k: |-\n  a\n\n    \n  b\n"
+        Expect.nodeEqual (parseRoot "k: |-\n  a\n\n    \n  b\n") two "The text reads back as the same value"
         expectNode (mapOf [ "k", lit " \na\n" ]) "k: |2\n   \n  a\n"
         Expect.nodeEqual
             (parseRoot "k: |2\n   \n  a\n")
             (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) " \na\n" ])
             "The indicator is part of the tree"
+
+    // Tests.ScalarStyles "Writer chomps a style-less multiline value by its trailing line breaks" and "Writer chomps a folded fallback by the trailing line breaks too". yaml@2.6.1 reads each written text
+    // back as the value, with or without the key or the item that follows it. The values are "a", "a\n", "a\n\n", "a\n\n\n" and "\n". The old writer chose the block form for a value without a style.
+    // The tree stores the style now, so the test builds a literal and a folded scalar with the chomping Clip, and the writer sets the chomping from the trailing line feeds. A kept blank line stays in
+    // the text and is empty.
+    testCase "the chomping of a literal and a folded scalar follows its trailing line feeds in a mapping value and in a sequence item" <| fun _ ->
+        let cases = [ "a", "-", "  a\n"; "a\n", "", "  a\n"; "a\n\n", "+", "  a\n\n"; "a\n\n\n", "+", "  a\n\n\n"; "\n", "+", "\n" ]
+        for (style, indicator) in [ (BlockScalarStyle.Literal, "|"); (BlockScalarStyle.Folded, ">") ] do
+            for (value, chomp, body) in cases do
+                let node = blockScalar style ChompingMode.Clip None value
+                let header = indicator + chomp
+                // The value "a" has no final line feed. As the last node of the text it keeps the chomping Clip and the text ends without a line break ([165]).
+                if value = "a" then
+                    expectNode (mapOf [ "k", node ]) ("k: " + indicator + "\n  a")
+                    expectNode (seqOf [ node ]) ("- " + indicator + "\n  a")
+                else
+                    expectNode (mapOf [ "k", node ]) ("k: " + header + "\n" + body)
+                    expectNode (seqOf [ node ]) ("- " + header + "\n" + body)
+                expectNode (mapOf [ "k", node; "j", sc "x" ]) ("k: " + header + "\n" + body + "j: x\n")
+                expectNode (seqOf [ node; sc "b" ]) ("- " + header + "\n" + body + "- b\n")
+
+    // Tests.ScalarStyles "Root block scalar preserves tag/anchor/comment on write". yaml@2.6.1 reads the text as "hi\n". The tag, the anchor and the header comment of a root block scalar stand
+    // in front of its header, and the text comes back unchanged.
+    testCase "a root block scalar keeps its tag, its anchor and its header comment" <| fun _ ->
+        expectStable "!<tag:foo> &a1 | # c\n  hi\n"
 
     // Tests.Escapes "A double-quoted scalar with a line break round-trips through the writer". yaml@2.6.1 reads the text as {"one \n\n  two \t":"v"}. The writer escapes the line breaks
     // and the tab, so the output never relies on folding.
@@ -1193,7 +1222,7 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
     // Tests.YamlGenericRead "Preprocessing read/write keeps stable structural indentation". yaml@2.6.1 reads the texts as {"a":"<c f=0/>"}, {"value":[]}, ["a",null,{}], {"k":[null,"x"]}
     // and {"k":null} for the keys without a value. The old tests built the elements by hand or compared a text with a part of it, so the tests here compare the whole text.
     testCase "the texts of the old round trip tests come back as the same text" <| fun _ ->
-        for text in [ "a: <c f=0/>\n"; "a: <s f=1/>\n"; "value: []\n"; "- a\n-\n- {}\n"; "k:\n  -\n  - x\n"; "k:\n"; "k:\nj: 1\n"; "a:\n  k:\nb: 1\n"; "k: # c\n"; "- k:\n- b\n" ] do
+        for text in [ "a: <c f=0/>\n"; "a: <s f=1/>\n"; "value: []\n"; "- a\n-\n- {}\n"; "k:\n  -\n  - x\n"; "k:\n"; "k:\nj: 1\n"; "a:\n  k:\nb: 1\n"; "k: # c\n"; "- k:\n- b\n"; "x: &a 1\nk: *a # c\n"; "- &a 1\n- *a # c\n" ] do
             expectStable text
         expectWritten "a:\n      b:\n        c: d" "a:\n  b:\n    c: d\n"
         // Tests.ReaderDocuments "A document without a node round trips through the writer". The old Nil is a missing root. A text without a node writes nothing, and the comments stay.

@@ -63,6 +63,7 @@ let private stringTests = testList "Encode.string" [
         Expect.isTrue (CoreSchema.resolvesToNonString "9223372036854775808") "9223372036854775808 resolves"
         Expect.nodeEqual (Encode.string "9223372036854775808") (dq "9223372036854775808") "The string is quoted"
         Expect.sameFloat (Decode.float (sc "9223372036854775808")) 9223372036854775808.0 "The plain text is a float"
+        Expect.sameFloat (Decode.object (fun get -> get.Required.Field "k" Decode.float) (parseRoot "k: 9223372036854775808\n")) 9223372036854775808.0 "The old input is a float behind a key"
 
     // yaml@2.6.1 reads `k: "1"` and `k: "~"` as the strings 1 and ~. It reads the plain 1 and ~ as a number and null.
     testCase "Encode.char quotes a char that the core schema reads as an int or null" <| fun _ ->

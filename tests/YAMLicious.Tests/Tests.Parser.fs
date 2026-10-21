@@ -1552,6 +1552,74 @@ let private oldParserRows : (string * string * string) list = [
     "Tokenizer a second colon behind a quoted part of the line is an error", "- \"a\": \"b\": c", "ERROR"
     "YamlRead Lower-indented comment between nested workflow steps stays in open block", "steps:\n  first:\n    run: tool.cwl\n    in: []\n    out: []\n# separator\n  second:\n    run: tool.cwl\n    in: []\n    out: []", "{\"steps\":{\"first\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]},\"second\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]}}}"
     "YamlRead Comment under a nested key with sequence value", "r:\n  a:\n    # c\n    - 1", "{\"r\":{\"a\":[1]}}"
+    "Tokenizer a block collection cannot start on the line of its key", "- - - a", "[[[\"a\"]]]"
+    "Tokenizer the key of an entry in a flow mapping or behind a question mark may span lines", "{? !!str a\n b : c}", "{\"a b\":\"c\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k:\tv", "{\"k\":\"v\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "---\tv", "\"v\""
+    "Tokenizer a tab as separation or inside a scalar is no error", "k:\n  \tv", "{\"k\":\"v\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k: a\tb", "{\"k\":\"a\\tb\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k: 'a\tb'", "{\"k\":\"a\\tb\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k: \"a\tb\"", "{\"k\":\"a\\tb\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k: |\n  a\tb\n  \tc\n", "{\"k\":\"a\\tb\\n\\tc\\n\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "-\tv", "[\"v\"]"
+    "Tokenizer a tab as separation or inside a scalar is no error", "-\n  \tv", "[\"v\"]"
+    "Tokenizer a tab as separation or inside a scalar is no error", "k: a\n  \tb", "{\"k\":\"a b\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "- \t[a]", "[[\"a\"]]"
+    "Tokenizer a tab as separation or inside a scalar is no error", "?\tk", "{\"k\":null}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "a: b\n\t# c\nc: d", "{\"a\":\"b\",\"c\":\"d\"}"
+    "Tokenizer a tab as separation or inside a scalar is no error", "a\n\tb", "\"a b\""
+    "Tokenizer a tab as separation or inside a scalar is no error", "\t[a, b]", "[\"a\",\"b\"]"
+    "Tokenizer a tab as separation or inside a scalar is no error", "  \tb", "\"b\""
+    "Tokenizer a tab as separation or inside a scalar is no error", "---\t[a]", "[\"a\"]"
+    "Tokenizer a tab as separation or inside a scalar is no error", "---\t!!map\nk: v", "{\"k\":\"v\"}"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- {&y *a : v}", "ERROR"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "a: 1\n{[a]: b}", "ERROR"
+    "YamlRead Sequence item accepts structural blank line before nested mapping", "items:\n  -\n\n    a: 1\n", "{\"items\":[{\"a\":1}]}"
+    "YamlRead JSONMappingsMultiline accepts blank line after opener", "obj:\n  k: {\n\n    a: 1\n  }\n", "{\"obj\":{\"k\":{\"a\":1}}}"
+    "YamlRead NestedFlowStyleComplex", "requirements:\n  DockerRequirement:\n    dockerImageId: \"workstation1\"\n    dockerFile:\n      $include: \"SampleBoxContent/Dockerfile\"\n  SubworkflowFeatureRequirement: {}\n  NetworkAccess:\n    networkAccess: true\n", "{\"requirements\":{\"DockerRequirement\":{\"dockerImageId\":\"workstation1\",\"dockerFile\":{\"$include\":\"SampleBoxContent/Dockerfile\"}},\"SubworkflowFeatureRequirement\":{},\"NetworkAccess\":{\"networkAccess\":true}}}"
+    "YamlRead NestedFlowStyleCompact", "requirements:\n  DockerRequirement:\n    dockerImageId: \"workstation1\"\n    dockerFile:\n      $include: \"SampleBoxContent/Dockerfile\"\n  SubworkflowFeatureRequirement: {}\n  NetworkAccess:\n    networkAccess: true\n", "{\"requirements\":{\"DockerRequirement\":{\"dockerImageId\":\"workstation1\",\"dockerFile\":{\"$include\":\"SampleBoxContent/Dockerfile\"}},\"SubworkflowFeatureRequirement\":{},\"NetworkAccess\":{\"networkAccess\":true}}}"
+    "YamlRead NestedFlowStyleInlineArrays", "requirements:\n  InitialWorkDirRequirement:\n    listing:\n      - entryname: \"own\"\n        entry: \"$(inputs.docDirectory)\"\n        writable: true\n      - entry: \"$(inputs.resultDirectory)\"\n        writable: true\n  EnvVarRequirement:\n    envDef:\n      - envName: \"COLOR_DISABLE\"\n        envValue: \"true\"\n      - envName: \"TEST\"\n        envValue: \"false\"\n  SubworkflowFeatureRequirement: {}\n", "{\"requirements\":{\"InitialWorkDirRequirement\":{\"listing\":[{\"entryname\":\"own\",\"entry\":\"$(inputs.docDirectory)\",\"writable\":true},{\"entry\":\"$(inputs.resultDirectory)\",\"writable\":true}]},\"EnvVarRequirement\":{\"envDef\":[{\"envName\":\"COLOR_DISABLE\",\"envValue\":\"true\"},{\"envName\":\"TEST\",\"envValue\":\"false\"}]},\"SubworkflowFeatureRequirement\":{}}}"
+    "YamlRead Bare dash sequence element", "-\n- value", "[null,\"value\"]"
+    "YamlRead Multiple bare dash sequence elements", "-\n-\n- end", "[null,null,\"end\"]"
+    "YamlRead Key followed by blank lines and unindented sequence", "root:\n\n\n- a\n- b", "{\"root\":[\"a\",\"b\"]}"
+    "YamlRead Key followed by blank lines, comments, and unindented sequence", "root:\n\n# keep\n\n- a\n- b", "{\"root\":[\"a\",\"b\"]}"
+    "YamlRead Blank lines between sequence items do not split the sequence", "root:\n- a\n\n- b", "{\"root\":[\"a\",\"b\"]}"
+    "YamlRead Properties on a collection inside a flow collection follow the block rule", "k: [&x [a]]", "{\"k\":[[\"a\"]]}"
+    "YamlRead Properties on a collection inside a flow collection follow the block rule", "k: [!t {a: b}]", "{\"k\":[{\"a\":\"b\"}]}"
+    "YamlRead Properties on a collection inside a flow collection follow the block rule", "k: [!!map [a]]", "{\"k\":[[\"a\"]]}"
+    "YamlRead Properties on a collection inside a flow collection follow the block rule", "k: {a: &x {b: c}}", "{\"k\":{\"a\":{\"b\":\"c\"}}}"
+    "YamlRead Text behind an alias and an alias as the key of a flow entry are errors", "s: &a x\nk: *a b", "ERROR"
+    "YamlRead Text behind an alias and an alias as the key of a flow entry are errors", "s: &a x\nk: *a,b", "ERROR"
+    "YamlRead Text behind an alias and an alias as the key of a flow entry are errors", "s: &a x\nl:\n- *a b", "ERROR"
+    "YamlRead Text behind an alias and an alias as the key of a flow entry are errors", "s: &a x\nk: [*a b]", "ERROR"
+    "YamlRead Text behind an alias and an alias as the key of a flow entry are errors", "s: &a x\nk: {j: *a b}", "ERROR"
+    "YamlRead An empty sequence item reads as Nil and the empty flow mapping stays an empty object", "- # c\n- x", "[null,\"x\"]"
+    "YamlRead A plain key may hold braces and brackets", "a[0]: 1\nb{x}: 2\nc[d]: [1, 2]\ne{f}: {g: 1}", "{\"a[0]\":1,\"b{x}\":2,\"c[d]\":[1,2],\"e{f}\":{\"g\":1}}"
+    "YamlRead An alias name may hold colons", "x: &a:b 1\nk: [*a:b]", "{\"x\":1,\"k\":[1]}"
+    "YamlRead An alias name may hold colons", "x: &a: 1\nk: [*a:, x]", "{\"x\":1,\"k\":[1,\"x\"]}"
+    "YamlRead An explicit key with an empty value maps to Nil", "? a\n: {}", "{\"a\":{}}"
+    "AdvancedFeatures 7.6 A blank line between properties and the node behind them is part of the node", "k: !!str\n\n  a", "{\"k\":\"a\"}"
+    "AdvancedFeatures 7.6 A blank line between properties and the node behind them is part of the node", "k: !!str\n  a", "{\"k\":\"a\"}"
+    "AdvancedFeatures 7.6 A blank line between properties and the node behind them is part of the node", "k: !!map\n\n  a: 1", "{\"k\":{\"a\":1}}"
+    "AdvancedFeatures 7.6 A blank line between properties and the node behind them is part of the node", "k:\n  a: 1", "{\"k\":{\"a\":1}}"
+    "AdvancedFeatures 7.8 A key with a core tag alone owns the sequence at the indentation of the key", "a:\n  k: !!seq\n  - x\n  - y\n  m: 1", "{\"a\":{\"k\":[\"x\",\"y\"],\"m\":1}}"
+    "AdvancedFeatures 7.8 A key with a core tag alone owns the sequence at the indentation of the key", "a:\n  k:\n  - x\n  - y\n  m: 1", "{\"a\":{\"k\":[\"x\",\"y\"],\"m\":1}}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: !!seq [a, b]", "{\"k\":[\"a\",\"b\"]}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: [a, b]", "{\"k\":[\"a\",\"b\"]}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: !!map {a: 1}", "{\"k\":{\"a\":1}}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: {a: 1}", "{\"k\":{\"a\":1}}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "- !!seq [a, b]", "[[\"a\",\"b\"]]"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "- [a, b]", "[[\"a\",\"b\"]]"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "--- !!map\nk: v", "{\"k\":\"v\"}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: v", "{\"k\":\"v\"}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k: !<tag:yaml.org,2002:seq>\n  - a", "{\"k\":[\"a\"]}"
+    "AdvancedFeatures 7.10 A core tag on the collection it names is dropped", "k:\n  - a", "{\"k\":[\"a\"]}"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- {k: *a}", "[\"x\",\"y\",{\"k\":\"x\"}]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- [*a]", "[\"x\",\"y\",[\"x\"]]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- {? k : *a}", "[\"x\",\"y\",{\"k\":\"x\"}]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- [k, *a]", "[\"x\",\"y\",[\"k\",\"x\"]]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- {k: *a, j: *b}", "[\"x\",\"y\",{\"k\":\"x\",\"j\":\"y\"}]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- &b y\n- [*a, *b]", "[\"x\",\"y\",[\"x\",\"y\"]]"
 ]
 
 let private oldInputTests = testList "Inputs of the old tests" [
@@ -1592,7 +1660,11 @@ let private oldInputTests = testList "Inputs of the old tests" [
               "a: 1\rb: 2\r", "b", 2
               "%YAML 1.2\n---\na: 1\n", "a", 3
               "%YAML 1.2 # c\n---\na: 1\n", "a", 3
-              "--- # c\na: 1\n", "a", 2 ]
+              "--- # c\na: 1\n", "a", 2
+              "k: [\n  a,\n\n  b\n]\nj: 1\nm: 'x\n  y'\nn: 2", "j", 6
+              "k: [\n  a,\n\n  b\n]\nj: 1\nm: 'x\n  y'\nn: 2", "m", 7
+              "k: [\n  a,\n\n  b\n]\nj: 1\nm: 'x\n  y'\nn: 2", "n", 9
+              "k: [a,\n  b] # tail\nj: 1", "j", 3 ]
         for (input, key, line) in rows do
             Expect.equal (lineOfKey input key) line (sprintf "The line of %s in %A" key input)
 
@@ -1622,6 +1694,76 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.equal texts.Head " c0" "The first comment stays first"
         Expect.equal (List.last texts) (sprintf " c%d" (comments - 1)) "The last comment stays last"
         Expect.equal (valueOf (commentRunInput comments)) "{\"root\":{\"a\":\"x\\n\",\"b\":1},\"c\":2}" "The values"
+
+    // Tests.Tokenizer "text behind the closer stays on the merged line". The old scanner kept the comment behind the closer of a flow collection on the merged line. The comment is the trailing
+    // comment of the collection (rule R8), and the key behind it stands on its own line (see the test of the lines above).
+    testCase "a comment behind the closer of a flow collection over several lines is the trailing comment of the collection" <| fun _ ->
+        let root = parseRoot "k: [a,\n  b] # tail\nj: 1"
+        Expect.equal (valueOf "k: [a,\n  b] # tail\nj: 1") "{\"k\":[\"a\",\"b\"],\"j\":1}" "The values"
+        let collection = (YamlNode.entries root).Head.Value
+        Expect.equal (collection.TrailingComment |> Option.map (fun c -> c.Text)) (Some " tail") "The comment"
+
+    // The old tests asserted the message of the scanner and the line of its error for these inputs (Tests.StringCleanUp "a quote at a node start that never closes is an error that names its line",
+    // Tests.Tokenizer "a comment ends the plain scalar and a deeper line behind it is an error", "a continuation line that holds a mapping indicator is an error", "text behind a flow collection is an error",
+    // "an alias in the place of a key inside a flow collection is an error that names the line", Tests.YamlRead "Text behind an alias and an alias as the key of a flow entry are errors" and
+    // "A named tag handle needs a TAG directive in its document", Tests.Escapes "Double-quoted multiline escaped line break"). yaml@2.6.1 rejects every input below, and so does the candidate.
+    // The codes agree with the productions. A line of a quoted scalar needs more indentation than its parent (s-flow-line-prefix), so a continuation at the column of the key is quoted-indent, and it
+    // is reported on the line of the continuation where the old scanner named the line of the quote. A comment ends a plain scalar, so a deeper line behind it belongs to no node (bad-indentation).
+    // A plain scalar over several lines cannot be an implicit key (ns-s-implicit-yaml-key). A flow collection and an alias end their node, so text behind them is unexpected content or a missing
+    // comma. A named handle needs the directive of its own document. A block mapping and a block sequence cannot share a level.
+    testCase "the inputs that the old scanner rejected are errors with the code and the line of the parser" <| fun _ ->
+        let rows =
+            [ "a: 'unclosed\nb: 1\n", "quoted-indent@2"
+              "a: \"never closed\nb: 'ok' # c", "quoted-indent@2"
+              "a: 1\nb: 'p\nc: 2\n", "quoted-indent@3"
+              "key: \"a\\\nb\"", "quoted-indent@2"
+              "k: a # c\n  \"b\"", "bad-indentation@2"
+              "k: a #c\n  b", "bad-indentation@2"
+              "k: a\n# c\n  b", "bad-indentation@3"
+              "k: a\n  # c\n  b", "bad-indentation@3"
+              "k: a\n  b #c\n  d", "bad-indentation@3"
+              "a #c\nb", "unexpected-content@2"
+              "k: a\n  b: c", "implicit-key-multiline@1"
+              "k: a\n  \"b: c\"", "implicit-key-multiline@1"
+              "k: a\n  b:", "implicit-key-multiline@1"
+              "k: a\n  b: # c", "implicit-key-multiline@1"
+              "k: a\n  b\n\n  c: d", "implicit-key-multiline@1"
+              "k: [a] b", "unexpected-content@1"
+              "k: [a], b", "reserved-indicator@1"
+              "[a] [b]", "unexpected-content@1"
+              "k: [\n  a\n] x", "unexpected-content@3"
+              "k: [[a] b]", "missing-flow-comma@1"
+              "s: &a x\nk: *a b", "unexpected-content@2"
+              "s: &a x\nk: *a,b", "reserved-indicator@2"
+              "s: &a x\nl:\n- *a b", "unexpected-content@3"
+              "s: &a x\nk: [*a b]", "missing-flow-comma@2"
+              "s: &a x\nk: {j: *a b}", "missing-flow-comma@2"
+              "- &a x\n- {&y *a : v}", "alias-with-properties@2"
+              "%TAG !e! tag:example.com,2000:\n---\na: !e!b c\n---\nb: !e!b c", "undeclared-tag-handle@5"
+              "a: 1\n{[a]: b}", "missing-colon@2"
+              "{a: |", "block-scalar-position@1"
+              "a: !!str \"x\"\nb: &anchor 'y'\nc: !tag\t\"z\"\n- !<tag:yaml.org,2002:str> 'v'\n", "mixed-collections@4"
+              "a: &anchor'y'\nb: &x\"y z\nc: !t'y p\n- &x\"y\" z\n", "mixed-collections@4"
+              "- 'a'\n- \"b\"\n? 'c'\n: \"d\"\ne: ['f', \"g\"]\nh: {'i': \"j\"}\n", "mixed-collections@3"
+              "*a # c", "undefined-alias@1" ]
+        for (input, expected) in rows do
+            Expect.equal (parseErrorOf input) expected (sprintf "The error of %A" input)
+
+    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator" and Tests.FlowTokens "properties, aliases and the question mark of an explicit
+    // key are tokens". yaml@2.6.1 reads `{?}` as {"":null} and `[?a, ?, ? ]` as ["?a",{"":null},{"":null}]. [142] and [150] ask for a blank behind the question mark, and a comma is none,
+    // so the candidate rejects the question mark in front of a comma or a closer (Tests.Flow 'a question mark in front of a flow indicator is an error').
+    testCase "a question mark in front of a flow indicator is an error where yaml@2.6.1 reads it" <| fun _ ->
+        Expect.equal (parseErrorOf "{?}") "reserved-indicator@1" "A lone question mark in a flow mapping"
+        Expect.equal (parseErrorOf "[?a, ?, ? ]") "reserved-indicator@1" "A question mark in front of a comma"
+
+    // Tests.YamlRead "Comment inside multiline flow sequence stays a comment node". yaml@2.6.1: {"data":["a","b"]}. The comment behind an item and its comma is the trailing comment of the item
+    // (rule R6), where the old tree held it as an element between the items.
+    testCase "a comment behind an item of a flow sequence over several lines is the trailing comment of the item" <| fun _ ->
+        let input = "data:\n  [\n    a, # one\n    b\n  ]"
+        Expect.equal (valueOf input) "{\"data\":[\"a\",\"b\"]}" "The values"
+        let items = YamlNode.items (YamlNode.entries (parseRoot input)).Head.Value
+        Expect.equal (items.Head.Node.TrailingComment |> Option.map (fun c -> c.Text)) (Some " one") "The comment of the first item"
+        Expect.isTrue items.[1].Node.TrailingComment.IsNone "The second item has no comment"
 ]
 
 let Main =

@@ -504,6 +504,8 @@ let private oldDocumentRows : (string * string * string) list = [
     "Tokenizer a block scalar behind the start marker", "--- |\n  x \"q\"\n  y 'r'\n", "\"x \\\"q\\\"\\ny 'r'\\n\""
     "ReaderDocuments Block scalars behind start markers", "--- !!str |\n  x\n--- &a |\n  y\n", "[\"x\\n\",\"y\\n\"]"
     "YamlRead Multi-document: Document with end marker", "---\nkey: value\n...", "{\"key\":\"value\"}"
+    "YamlRead A named tag handle needs a TAG directive in its document", "%TAG !e! tag:example.com,2000:\n---\nk: [!e!b c]", "{\"k\":[\"c\"]}"
+    "YamlRead A named tag handle needs a TAG directive in its document", "%TAG !e! tag:example.com,2000:\n---\na: !e!b c\n---\nb: !e!b c", "ERROR"
 ]
 
 let private oldInputTests = testList "Inputs of the old tests" [
@@ -516,6 +518,8 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.equal (yamlValueOf "a: 1\n...\n...\n") "{\"a\":1}" "An end marker behind an end marker ends no document"
         Expect.equal (yamlValueOf "%YAML 1.2\n") "ERROR" "A directive alone makes no document"
         Expect.equal (yamlValueOf "a: 1\n...\n%YAML 1.2\n") "ERROR" "A directive behind an end marker needs a start marker"
+        // Tests.Tokenizer "a duplicate YAML directive throws". yaml@2.6.1 reads the second %YAML directive with a warning, and YAML 1.2.2 (6.8.1) makes it an error.
+        Expect.equal (parseErrorOf "%YAML 1.2\n%YAML 1.1\n---\na: 1\n") "duplicate-yaml-directive@2" "A second %YAML directive"
 ]
 
 let Main =

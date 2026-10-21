@@ -203,6 +203,46 @@ let private explicitKeyTests = testList "Explicit keys with block content" [
         Expect.nodeNotEqual compact spread "The separation behind the question mark differs"
 ]
 
+/// True when a mapping inside the node has a key that is no scalar, a collection or an alias.
+let rec private hasNonScalarKey (node: YamlNode) : bool =
+    let isNode (entry: MappingEntry) =
+        match entry.Key.Kind with
+        | YamlNodeKind.Scalar _ -> false
+        | _ -> true
+    match node.Kind with
+    | YamlNodeKind.Mapping collection -> collection.Items |> List.exists (fun entry -> isNode entry || hasNonScalarKey entry.Key || hasNonScalarKey entry.Value)
+    | YamlNodeKind.Sequence collection -> collection.Items |> List.exists (fun item -> hasNonScalarKey item.Node)
+    | _ -> false
+
+/// The inputs of the old tests that the old reader rejected because it kept scalar keys only. yaml@2.6.1 reads each of them with a string for the collection or the value of the alias as the
+/// key. The first column names the old test.
+let private oldKeyRows : (string * string) list = [
+    "Tokenizer a colon inside a word, a quoted scalar or a comment, and a compact mapping are no error", "? a: b"
+    "Tokenizer a colon inside a word, a quoted scalar or a comment, and a compact mapping are no error", "? 'a': b"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- [? *a : v]"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- {k: 1,\n  *a : v}"
+    "Tokenizer an alias in the place of a key inside a flow collection is an error that names the line", "- &a x\n- { # c\n  *a : v}"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "[a]: b"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "{a: 1}: b"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "k: [[a]: b]"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "{? [a] : b}"
+    "Tokenizer a flow collection as the key of an entry is an error that names the line", "k: [\n  ? {a: 1}\n]"
+    "Tokenizer a block collection cannot start on the line of its key", "? - a"
+    "YamlRead An alias as the key of a flow entry is an error", "x: &a:b 1\nk: {*a:b : v}"
+]
+
+let private oldInputTests = testList "Inputs of the old tests" [
+    testCase "the collection and alias keys of the old rejection lists are accepted" <| fun _ ->
+        for (reference, input) in oldKeyRows do
+            Expect.isTrue (hasNonScalarKey (parseRoot input)) (sprintf "%s: %A has a key that is no scalar" reference input)
+
+    // Tests.AdvancedFeatures "An explicit value reads a flow sequence with a quoted item". The old test compared the tree with the styles of the scalars. yaml@2.6.1: {"k":"q","a":["x","y"]}.
+    testCase "an explicit value that is a flow sequence keeps the quoted style of its items" <| fun _ ->
+        expectRoot
+            "k: \"q\"\n? a\n: [x, \"y\"]"
+            (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (sc "a") (flowSeq [ sc "x"; dq "y" ]) ])
+]
+
 let Main =
     testList "Keys" [
         flowKeyTests
@@ -210,4 +250,5 @@ let Main =
         aliasKeyTests
         propertyKeyTests
         explicitKeyTests
+        oldInputTests
     ]
