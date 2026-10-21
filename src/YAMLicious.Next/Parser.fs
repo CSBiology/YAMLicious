@@ -84,6 +84,21 @@ type internal Frame(isMap: bool, col: int, start: SourceMark) =
     member val KeyNode = YamlNode.empty with get, set
     member val BeforeColon: Trivia list = [] with get, set
     member val Colon: Separation option = None with get, set
+    /// The span of the first entry or item, or of the entry in progress when the collection has none yet.
+    member this.FirstSpan: SourceSpan =
+        let first =
+            if isMap then
+                if this.Entries.Count > 0 then this.Entries.[0].Span else None
+            elif this.Items.Count > 0 then
+                this.Items.[0].Span
+            else
+                None
+        match first with
+        | Some span -> span
+        | None -> { Start = this.EntryStart; Finish = this.LastEnd }
+    /// The span of the first key of a mapping, or of the key in progress when the mapping has no entry yet.
+    member this.FirstKeySpan: SourceSpan option =
+        if this.Entries.Count > 0 then this.Entries.[0].Key.Span else this.KeyNode.Span
 
 module internal ParserSupport =
 
@@ -150,14 +165,17 @@ type internal BlockParser(cursor: Cursor) =
     let docPrelude = ResizeArray<PreludeItem>()
     let docBefore = ResizeArray<Trivia>()
     let docAfter = ResizeArray<Trivia>()
-    let tagHandles = Dictionary<string, string>()
+    // The prefix of each declared handle and the span of its directive.
+    let tagHandles = Dictionary<string, string * SourceSpan>()
     let anchors = HashSet<string>()
     let mutable docOpen = false
     let mutable docMarker: DocumentMarker option = None
     let mutable docStart = zeroMark
     let mutable docRoot = YamlNode.empty
-    let mutable yamlDeclared = false
+    let mutable yamlDirective: SourceSpan option = None
     let mutable hasDirective = false
+    // The start of the first directive of the document that is about to start.
+    let mutable directiveStart = zeroMark
     let mutable finished = false
 
     // The node request in progress.
@@ -253,9 +271,7 @@ type internal BlockParser(cursor: Cursor) =
     member private _.ResolveTag(tok: Tok, token: TagToken) : YamlTag =
         match token with
         | TagToken.Verbatim uri ->
-            if uri.Length = 0 then
-                failWith YamlErrorCode.EmptyVerbatimTag "A verbatim tag needs a name between the angle brackets." tok.Span []
-            elif uri = "!" then
+            if uri = "!" then
                 failWith YamlErrorCode.InvalidTag "The verbatim tag !<!> is invalid, because a local tag needs a name behind the `!`." tok.Span []
             else
                 YamlTag.Named { Prefix = ""; Suffix = uri }
@@ -268,7 +284,7 @@ type internal BlockParser(cursor: Cursor) =
                     | Some text -> text
                     | None -> failWith YamlErrorCode.InvalidTag "The %-escapes of a tag have to spell UTF-8 text." tok.Span []
                 match tagHandles.TryGetValue handle with
-                | true, prefix -> YamlTag.Named { Prefix = prefix; Suffix = decoded }
+                | true, (prefix, _) -> YamlTag.Named { Prefix = prefix; Suffix = decoded }
                 | _ ->
                     if handle = "!!" then
                         YamlTag.Named { Prefix = YamlTag.coreNamespace; Suffix = decoded }
@@ -496,7 +512,7 @@ type internal BlockParser(cursor: Cursor) =
         if isContinue () then
             let top = stack.[stack.Count - 1]
             if top.IsMap then
-                failWith YamlErrorCode.MissingColon "An implicit key needs a `:` behind it on its line." tok.Span []
+                failWith YamlErrorCode.MissingColon "An implicit key needs a `:` behind it on its line." tok.Span (Option.toList top.FirstKeySpan)
             else
                 failWith YamlErrorCode.MixedCollections "A sequence takes entries that start with a dash only." tok.Span []
         let count = props.Count
@@ -556,10 +572,9 @@ type internal BlockParser(cursor: Cursor) =
         let mutable frame: Frame = null
         if isContinue () then
             frame <- stack.[stack.Count - 1]
-            if column <> frame.Col then
-                failWith YamlErrorCode.BadIndentation "The key does not stand at the indentation of the mapping." leaf.Span []
-            if own > 0 then
-                failWith YamlErrorCode.MisplacedProperties "Properties on lines of their own cannot stand in front of an entry of an open mapping." leaf.Span [ props.[0].Span ]
+            // The key starts the line that AfterLineStart matched to this frame, so it stands at the column of the mapping.
+            // A key with properties has the trivia in front of its line in `lead`, and they belong to the entry.
+            pending.InsertRange(0, lead)
         else
             if not sawNewLine && not compact then
                 let code = if isRoot () then YamlErrorCode.BlockCollectionOnMarkerLine else YamlErrorCode.BlockCollectionOnKeyLine
@@ -576,8 +591,8 @@ type internal BlockParser(cursor: Cursor) =
             else
                 if not (isRoot ()) then
                     this.SetIndicator(separation indicatorNewLine indicatorComment [])
-                // The key has its own properties, so the mapping has no token of its own and the trivia in front
-                // of them belong to the first entry.
+                // The mapping has no token of its own, so the trivia in front of the key belong to the first entry.
+                // A key with properties has moved them to `lead`, and a key without properties has left them in `pending`.
                 pending.InsertRange(0, lead)
             let start = if own > 0 then props.[0].Span.Start else keyStart
             frame <- Frame(true, column, start)
@@ -642,6 +657,12 @@ type internal BlockParser(cursor: Cursor) =
         let mutable frame: Frame = null
         if isContinue () then
             frame <- stack.[stack.Count - 1]
+            // Continue calls this method itself for a dash at the column of an open sequence. A dash that arrives
+            // through NodeStep stands behind properties on the line of a mapping entry. [187] and [188] let every
+            // entry of a block mapping start with a key or a `?`, and [183], [184] and [186] put the dash of a
+            // sequence entry right behind the indentation, so the dash mixes the collections.
+            if frame.IsMap then
+                failWith YamlErrorCode.MixedCollections "A mapping takes entries that start with a key, and a dash starts a sequence entry." dash.Span [ frame.FirstSpan ]
         else
             if not sawNewLine && not compact then
                 let code = if isRoot () then YamlErrorCode.BlockCollectionOnMarkerLine else YamlErrorCode.BlockCollectionOnKeyLine
@@ -676,6 +697,10 @@ type internal BlockParser(cursor: Cursor) =
         let mutable frame: Frame = null
         if isContinue () then
             frame <- stack.[stack.Count - 1]
+            // A `?` starts an entry of a block mapping right behind the indentation ([187] to [190]), so properties
+            // in front of it on the line of the entry belong to no node. The properties of the key stand behind the `?`.
+            if count > 0 then
+                failWith YamlErrorCode.MisplacedProperties "Properties cannot stand in front of a `?` on the line of an entry." question.Span [ props.[0].Span ]
         else
             if not sawNewLine && not compact then
                 let code = if isRoot () then YamlErrorCode.BlockCollectionOnMarkerLine else YamlErrorCode.BlockCollectionOnKeyLine
@@ -815,7 +840,7 @@ type internal BlockParser(cursor: Cursor) =
     /// root that has ended.
     member private this.DocumentContent(tok: Tok) =
         if docOpen then
-            failWith YamlErrorCode.UnexpectedContent "Text cannot follow the root node of a document." tok.Span []
+            failWith YamlErrorCode.UnexpectedContent "Text cannot follow the root node of a document." tok.Span (Option.toList docRoot.Span)
         if hasDirective then
             failWith YamlErrorCode.DirectiveWithoutDocumentStart "A directive needs a `---` behind it." tok.Span []
         this.BeginDocument(None, tok.Span.Start)
@@ -831,13 +856,6 @@ type internal BlockParser(cursor: Cursor) =
         docAfter.Clear()
 
     member private _.FinishDocument(endMarker: DocumentMarker option) =
-        let first =
-            match docMarker with
-            | Some marker ->
-                match marker.Span with
-                | Some span -> span.Start
-                | None -> docStart
-            | None -> docStart
         let finish =
             match endMarker with
             | Some marker ->
@@ -853,14 +871,14 @@ type internal BlockParser(cursor: Cursor) =
                   Root = docRoot
                   AfterRoot = List.ofSeq docAfter
                   EndMarker = endMarker
-                  Span = Some (spanBetween first finish) }
+                  Span = Some (spanBetween docStart finish) }
         )
         docPrelude.Clear()
         docBefore.Clear()
         docAfter.Clear()
         tagHandles.Clear()
         anchors.Clear()
-        yamlDeclared <- false
+        yamlDirective <- None
         hasDirective <- false
         docOpen <- false
 
@@ -887,15 +905,16 @@ type internal BlockParser(cursor: Cursor) =
                 failWith YamlErrorCode.UnexpectedContent "A directive cannot stand inside a document." tok.Span []
             match directive with
             | DirectiveKind.YamlVersion (major, _) ->
-                if yamlDeclared then
-                    failWith YamlErrorCode.DuplicateYamlDirective "A document has at most one %YAML directive." tok.Span []
+                if yamlDirective.IsSome then
+                    failWith YamlErrorCode.DuplicateYamlDirective "A document has at most one %YAML directive." tok.Span (Option.toList yamlDirective)
                 if major <> 1 then
                     failWith YamlErrorCode.UnsupportedYamlVersion "Only YAML 1.x documents are supported." tok.Span []
-                yamlDeclared <- true
+                yamlDirective <- Some tok.Span
             | DirectiveKind.TagDirective (handle, prefix) ->
-                if tagHandles.ContainsKey handle then
-                    failWith YamlErrorCode.DuplicateTagDirective (sprintf "The tag handle %s is declared twice." handle) tok.Span []
-                tagHandles.[handle] <- prefix
+                match tagHandles.TryGetValue handle with
+                | true, (_, first) ->
+                    failWith YamlErrorCode.DuplicateTagDirective (sprintf "The tag handle %s is declared twice." handle) tok.Span [ first ]
+                | _ -> tagHandles.[handle] <- (prefix, tok.Span)
             | DirectiveKind.ReservedDirective _ -> ()
             this.FlushPendingToPrelude()
             let trailing = this.EolComment()
@@ -905,16 +924,19 @@ type internal BlockParser(cursor: Cursor) =
                       TrailingComment = trailing
                       Span = Some tok.Span }
             )
+            if not hasDirective then directiveStart <- tok.Span.Start
             hasDirective <- true
         | Lexeme.DocumentStart ->
             if docOpen then this.FinishDocument None
             this.FlushPendingToPrelude()
             let trailing = this.EolComment()
+            // [209] l-directive-document makes the directives part of the document, and the comments in front of the
+            // first one stay outside. Without a directive the document starts at its marker.
             this.BeginDocument(
                 Some
                     { TrailingComment = trailing
                       Span = Some tok.Span },
-                tok.Span.Start
+                (if hasDirective then directiveStart else tok.Span.Start)
             )
             this.StartRequest(RequestKind.Root, -1, false, false, tok.Span.Finish, false)
         | Lexeme.DocumentEnd ->
@@ -954,13 +976,20 @@ type internal BlockParser(cursor: Cursor) =
         | Lexeme.StreamEnd -> this.Terminate tok
         | Lexeme.Directive _ -> this.Terminate tok
         | _ ->
+            // The collection that the line closes last, which has the smallest indentation above the line.
+            let mutable closed: Frame = null
             while stack.Count > 0 && stack.[stack.Count - 1].Col > indent do
+                closed <- stack.[stack.Count - 1]
                 this.CloseTop()
             if stack.Count = 0 then
                 this.DocumentContent tok
             else
-                if stack.[stack.Count - 1].Col < indent then
-                    failWith YamlErrorCode.BadIndentation "This line is indented deeper than the node in front of it allows." tok.Span []
+                let top = stack.[stack.Count - 1]
+                if top.Col < indent then
+                    if isNull closed then
+                        failWith YamlErrorCode.BadIndentation "This line is indented deeper than the node in front of it allows." tok.Span [ spanBetween top.EntryStart top.LastEnd ]
+                    else
+                        failWith YamlErrorCode.BadIndentation "This line is indented less than the collection it ends and matches the indentation of no open collection." tok.Span [ spanBetween closed.Start closed.LastEnd ]
                 this.Continue tok
 
     /// The first token of a line that stands at the column of the open collection on top.
@@ -972,7 +1001,7 @@ type internal BlockParser(cursor: Cursor) =
             if top.IsMap then
                 match tok.Lexeme with
                 | Lexeme.BlockEntry ->
-                    failWith YamlErrorCode.MixedCollections "A mapping takes entries that start with a key, and a dash starts a sequence entry." tok.Span []
+                    failWith YamlErrorCode.MixedCollections "A mapping takes entries that start with a key, and a dash starts a sequence entry." tok.Span [ top.FirstSpan ]
                 | Lexeme.FlowSequenceStart -> failWith YamlErrorCode.FlowNotSupportedYet "Flow collections are not supported yet." tok.Span []
                 | Lexeme.FlowMappingStart -> failWith YamlErrorCode.FlowNotSupportedYet "Flow collections are not supported yet." tok.Span []
                 | Lexeme.Value _ ->
@@ -997,7 +1026,7 @@ type internal BlockParser(cursor: Cursor) =
                         this.CloseTop()
                         again <- true
                     else
-                        failWith YamlErrorCode.MixedCollections "A sequence takes entries that start with a dash only." tok.Span []
+                        failWith YamlErrorCode.MixedCollections "A sequence takes entries that start with a dash only." tok.Span [ top.FirstSpan ]
 
     member private this.LineStep() =
         let tok = this.Next(this.LineContext())

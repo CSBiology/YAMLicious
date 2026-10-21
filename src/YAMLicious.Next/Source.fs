@@ -5,9 +5,10 @@ type Located<'T> =
     { Value: 'T
       Span: SourceSpan }
 
-/// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer and the
-/// others from the parser. `YamlErrorCode.name` gives each case a stable text, which the failure projection
-/// and the tests use.
+/// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer, and the
+/// parser raises four of them too: `InvalidTag`, `TabIndentation`, `ImplicitKeyLength` and
+/// `ImplicitKeyMultiline`. The other cases come from the parser only. `YamlErrorCode.name` gives each case a
+/// stable text, which the failure projection and the tests use.
 [<RequireQualifiedAccess>]
 type YamlErrorCode =
     // The lexer.
@@ -48,14 +49,14 @@ type YamlErrorCode =
     | BlockCollectionOnKeyLine
     /// A block collection on the line of a `---`, as in `--- k: v`.
     | BlockCollectionOnMarkerLine
-    /// Properties on lines of their own in front of an entry of a collection that has started already.
+    /// Properties in front of an entry of a collection that has started already, on lines of their own or in
+    /// front of a `?`.
     | MisplacedProperties
     | DuplicateTag
     | DuplicateAnchor
     | AliasWithProperties
     | UndefinedAlias
     | UndeclaredTagHandle
-    | EmptyVerbatimTag
     | DuplicateYamlDirective
     | DuplicateTagDirective
     | DirectiveWithoutDocumentStart
@@ -106,7 +107,6 @@ module YamlErrorCode =
         | YamlErrorCode.AliasWithProperties -> "alias-with-properties"
         | YamlErrorCode.UndefinedAlias -> "undefined-alias"
         | YamlErrorCode.UndeclaredTagHandle -> "undeclared-tag-handle"
-        | YamlErrorCode.EmptyVerbatimTag -> "empty-verbatim-tag"
         | YamlErrorCode.DuplicateYamlDirective -> "duplicate-yaml-directive"
         | YamlErrorCode.DuplicateTagDirective -> "duplicate-tag-directive"
         | YamlErrorCode.DirectiveWithoutDocumentStart -> "directive-without-document-start"

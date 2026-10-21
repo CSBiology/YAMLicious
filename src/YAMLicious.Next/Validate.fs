@@ -82,7 +82,7 @@ module internal NodePath =
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
 /// - A stream: `StreamPart.Trivia` does not stand in front of a document, and in a stream with a document
-///   it stands behind a `...` or in front of an `ExtraEndMarker` only (R3).
+///   it stands behind a `...` or at the start of the stream in front of an `ExtraEndMarker` only (R3).
 ///
 /// A node has at most one tag and one anchor by its type, so no check is needed for that. The rules R4 to
 /// R6 depend on the columns and the lines of the text and are not checked.
@@ -275,13 +275,15 @@ module Validate =
                     match previous with
                     | Some part -> endsWithMarker part
                     | None -> false
-                // A `...` that ends no document makes an ExtraEndMarker, and the trivia in front of it belong to no document either.
+                // A `...` that ends no document makes an ExtraEndMarker, and the trivia in front of it belong to no document
+                // either, but only at the start of the stream. Behind a document without a `...` the marker would end that
+                // document, and behind another marker `behindMarker` has accepted the trivia already.
                 let beforeExtraEndMarker =
                     match following.[i] with
-                    | Some (StreamPart.ExtraEndMarker _) -> true
+                    | Some (StreamPart.ExtraEndMarker _) -> previous.IsNone
                     | _ -> false
                 if beforeDocument then
                     errors.Add(at + ": trivia in front of a document belong to that document (R3)")
                 elif hasDocument && not behindMarker && not beforeExtraEndMarker then
-                    errors.Add(at + ": trivia stand in the stream only behind a `...` or in front of an extra end marker, and otherwise they belong to a document (R3)")
+                    errors.Add(at + ": trivia stand in the stream only behind a `...` or at the start of the stream in front of an extra end marker, and otherwise they belong to a document (R3)")
         List.ofSeq errors

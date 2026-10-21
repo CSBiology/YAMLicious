@@ -575,6 +575,22 @@ let private errorTests = testList "Parser errors" [
         expectError "k: v\n!!str\nj: w" "misplaced-properties@3"
         expectError "k: v\n&x" "misplaced-properties@2"
 
+    // yaml@2.6.1 rejects every one of these inputs, with BAD_PROP_ORDER in front of a `?` and with errors about an implicit key or an unexpected token in front of a dash. A dash starts
+    // its sequence entry right behind the indentation ([183], [184]) and a `?` starts its mapping entry right behind it ([187] to [190]), so properties on the line of an entry of an
+    // open mapping cannot stand in front of either of them.
+    testCase "properties in front of a dash or a question mark on the line of an entry are an error" <| fun _ ->
+        for (input, expected) in
+            [ "a: 1\n&x - b", "mixed-collections@2"
+              "k:\n- a\n&x - b", "mixed-collections@3"
+              "- a: 1\n  !!str - b\n  c: 2", "mixed-collections@2"
+              "a: 1\n&x - b\nc: *x", "mixed-collections@2"
+              "- a\n&x - b", "mixed-collections@2"
+              "a: 1\n&x ? b", "misplaced-properties@2"
+              "a: 1\n&x ? b\n: *x", "misplaced-properties@2"
+              "a: 1\n!!str ? b", "misplaced-properties@2"
+              "- a: 1\n  !!str &y ? b", "misplaced-properties@2" ] do
+            expectError input expected
+
     // Tests.Tokenizer "an undefined alias": the alias has to name an anchor that stands earlier in its document (YAML 1.2.2, 7.1). yaml@2.6.1 accepts these
     // inputs and fails later, when it resolves the alias.
     testCase "an alias needs an anchor earlier in its document" <| fun _ ->
@@ -661,6 +677,113 @@ let private errorTests = testList "Parser errors" [
         Expect.equal (alias.Related |> List.map showSpan) [ "1:10-1:12" ] "The alias is the related span of the properties"
         let failure = Projection.failureOf error
         Expect.equal failure "{\"ok\":false,\"errors\":[{\"code\":\"missing-colon\",\"line\":2}]}" "The failure projection"
+
+    // yaml@2.6.1 reads the two inputs with duplicate directives as {"foo":"bar"} and "x" and `? a` followed by `- x` as {"a":null}. It rejects the other inputs. Related names the
+    // text that explains the error: the first of two directives, the first entry or item of the collection, the node that ended, the root, the first key and the first property.
+    // A line that is shallower than the collection it ends and deeper than the one around it matches the indentation of no open collection.
+    testCase "an error names a related span where one explains it" <| fun _ ->
+        for (input, code, span, related) in
+            [ "%YAML 1.2\n%YAML 1.1\n---\nfoo: bar", "duplicate-yaml-directive", "2:1-2:10", [ "1:1-1:10" ]
+              "%TAG !e! tag:a,2000:\n%TAG !e! tag:b,2000:\n---\nx", "duplicate-tag-directive", "2:1-2:21", [ "1:1-1:21" ]
+              "k: \"q\"\n  x", "bad-indentation", "2:3-2:4", [ "1:1-1:7" ]
+              "a:\n    b: 1\n  c: 2", "bad-indentation", "3:3-3:4", [ "2:5-2:9" ]
+              "a: 1\n- x", "mixed-collections", "2:1-2:2", [ "1:1-1:5" ]
+              "- a\nb: 1", "mixed-collections", "2:1-2:2", [ "1:1-1:4" ]
+              "? a\n- x", "mixed-collections", "2:1-2:2", [ "1:1-1:4" ]
+              "a: 1\n&x - b", "mixed-collections", "2:4-2:5", [ "1:1-1:5" ]
+              "\"a\"\nb", "unexpected-content", "2:1-2:2", [ "1:1-1:4" ]
+              "a: 1\nb", "missing-colon", "2:1-2:2", [ "1:1-1:2" ]
+              "a: 1\n&x ? b", "misplaced-properties", "2:4-2:5", [ "2:1-2:3" ] ] do
+            let error = parseError input
+            Expect.equal (YamlErrorCode.name error.Code) code (sprintf "The code of %A" input)
+            Expect.equal (showSpan error.Span) span (sprintf "The span of %A" input)
+            Expect.equal (error.Related |> List.map showSpan) related (sprintf "The related spans of %A" input)
+        Expect.stringContains (parseError "a:\n    b: 1\n  c: 2").Message "matches the indentation of no open collection" "A line between two indentations"
+        Expect.stringContains (parseError "k: \"q\"\n  x").Message "deeper than the node in front of it" "A line deeper than the node that ended"
+]
+
+let private spanText (span: SourceSpan option) : string =
+    match span with
+    | Some value -> showSpan value
+    | None -> "none"
+
+// The tests above compare trees without their spans. These compare the spans exactly. Lines and columns count from 1, and a column counts a code point.
+let private spanTests = testList "Spans" [
+    // yaml@2.6.1: {"k":"v","j":"w"} and {"k":{"a":1}}. A mapping starts at its first property when the property stands on a line of its own, and an entry ends where its value ends.
+    testCase "a mapping with properties on a line of its own spans from the first property to its last entry" <| fun _ ->
+        let root = parseRoot "&m\nk: v\nj: w"
+        Expect.equal (spanText root.Span) "1:1-3:5" "The mapping"
+        Expect.equal (root.PropertyLayout |> List.map (fun placement -> spanText placement.Span)) [ "1:1-1:3" ] "The anchor"
+        Expect.equal (YamlNode.entries root |> List.map (fun entry -> spanText entry.Span)) [ "2:1-2:5"; "3:1-3:5" ] "The entries"
+        let entry = (YamlNode.entries (parseRoot "k: !!map\n  a: 1")).Head
+        Expect.equal (spanText entry.Span) "1:1-2:7" "The entry"
+        Expect.equal (spanText entry.Value.Span) "1:4-2:7" "The value mapping starts at its tag"
+        Expect.equal (entry.Value.PropertyLayout |> List.map (fun placement -> spanText placement.Span)) [ "1:4-1:9" ] "The tag"
+
+    // yaml@2.6.1: {"a":null,"bb":null}. An explicit entry without a value ends at its key, and the missing value is a span of no width there.
+    testCase "an explicit entry without a value ends at its key" <| fun _ ->
+        let root = parseRoot "? a\n? bb"
+        Expect.equal (spanText root.Span) "1:1-2:5" "The mapping"
+        let entries = YamlNode.entries root
+        Expect.equal (entries |> List.map (fun entry -> spanText entry.Span)) [ "1:1-1:4"; "2:1-2:5" ] "The entries"
+        Expect.equal (entries |> List.map (fun entry -> spanText entry.Key.Span)) [ "1:3-1:4"; "2:3-2:5" ] "The keys"
+        Expect.equal (entries |> List.map (fun entry -> spanText entry.Value.Span)) [ "1:4-1:4"; "2:5-2:5" ] "The missing values"
+
+    // yaml@2.6.1: {"k":"","j":1} and [null,"x"]. A node that has properties and no content spans its properties, and its entry or item ends there.
+    testCase "a missing value behind a property spans the properties" <| fun _ ->
+        let entry = (YamlNode.entries (parseRoot "k: !!str\nj: 1")).Head
+        Expect.equal (spanText entry.Span) "1:1-1:9" "The entry"
+        Expect.equal (spanText entry.Value.Span) "1:4-1:9" "The value"
+        Expect.equal (entry.Value.PropertyLayout |> List.map (fun placement -> spanText placement.Span)) [ "1:4-1:9" ] "The tag"
+        let item = (YamlNode.items (parseRoot "- &a\n- x")).Head
+        Expect.equal (spanText item.Span) "1:1-1:5" "The item"
+        Expect.equal (spanText item.Node.Span) "1:3-1:5" "The node"
+
+    // yaml@2.6.1: [["a","b"]]. The inner sequence starts at its own dash, and so do its items.
+    testCase "the items of a compact nested sequence span from their own dash" <| fun _ ->
+        let outer = parseRoot "- - a\n  - b"
+        Expect.equal (spanText outer.Span) "1:1-2:6" "The outer sequence"
+        let outerItem = (YamlNode.items outer).Head
+        Expect.equal (spanText outerItem.Span) "1:1-2:6" "The outer item"
+        let inner = outerItem.Node
+        Expect.equal (spanText inner.Span) "1:3-2:6" "The inner sequence"
+        Expect.equal (YamlNode.items inner |> List.map (fun item -> spanText item.Span)) [ "1:3-1:6"; "2:3-2:6" ] "The inner items"
+        Expect.equal (YamlNode.items inner |> List.map (fun item -> spanText item.Node.Span)) [ "1:5-1:6"; "2:5-2:6" ] "The scalars"
+
+    // yaml@2.6.1 reads each of these inputs as {"a":1}, and the last one as {"a":1} and {"b":2}. [209] l-directive-document makes the directives part of the document, so its span starts at the first directive.
+    // Without a directive it starts at the `---`, and a bare document starts at its root. Comments and blank lines in front of the first directive or the `---` stand outside the
+    // span, and the ones between the directives and the `---` stand inside. The directives of the prelude carry their own spans.
+    testCase "a document with a directive and a start marker spans from the first directive" <| fun _ ->
+        let document = parseDocument "%YAML 1.2\n---\na: 1\n...\n"
+        let directives =
+            document.Prelude
+            |> List.choose (fun item ->
+                match item with
+                | PreludeItem.Directive directive -> Some(spanText directive.Span)
+                | PreludeItem.PreludeTrivia _ -> None)
+        Expect.equal directives [ "1:1-1:10" ] "The directive"
+        Expect.equal (spanText (document.StartMarker |> Option.bind (fun marker -> marker.Span))) "2:1-2:4" "The start marker"
+        Expect.equal (spanText document.Root.Span) "3:1-3:5" "The root"
+        Expect.equal (spanText (document.EndMarker |> Option.bind (fun marker -> marker.Span))) "4:1-4:4" "The end marker"
+        Expect.equal (spanText document.Span) "1:1-4:4" "The document"
+        let spansOfDocuments (input: string) =
+            (parseOk input).Parts
+            |> List.choose (fun part ->
+                match part with
+                | StreamPart.Document value -> Some(spanText value.Span)
+                | _ -> None)
+        Expect.equal (spansOfDocuments "# c\n%YAML 1.2\n---\na: 1\n...\n") [ "2:1-5:4" ] "A comment in front of the directive stands outside"
+        Expect.equal (spansOfDocuments "%YAML 1.2\n# c\n%TAG !e! tag:a,2000:\n\n---\na: 1\n") [ "1:1-6:5" ] "Trivia between the directives and the marker stand inside"
+        Expect.equal (spansOfDocuments "# c\n---\na: 1") [ "2:1-3:5" ] "Without a directive the document starts at its marker"
+        Expect.equal (spansOfDocuments "# c\na: 1") [ "2:1-2:5" ] "A bare document starts at its root"
+        Expect.equal (spansOfDocuments "a: 1\n...\n# c\n%YAML 1.2\n---\nb: 2") [ "1:1-2:4"; "4:1-6:5" ] "The second document starts at its own directive"
+
+    // yaml@2.6.1 reads a key of two U+1F600 characters with the value "x". An astral character is one column on every target.
+    testCase "an astral key spans one column for each character" <| fun _ ->
+        let entry = (YamlNode.entries (parseRoot "\U0001F600\U0001F600: x")).Head
+        Expect.equal (spanText entry.Key.Span) "1:1-1:3" "The key"
+        Expect.equal (spanText entry.Value.Span) "1:5-1:6" "The value"
+        Expect.equal (spanText entry.Span) "1:1-1:6" "The entry"
 ]
 
 let private depthTests = testList "Depth" [
@@ -747,27 +870,35 @@ let private propertyInput (lines: int) =
 
 let private parseOnly (input: string) = Parser.parseStream input |> ignore
 
+/// The builder of a scaling test with a check that the parser accepts its input and that the tree passes Validate.stream. expectLinear builds each input once,
+/// outside the timed runs, and the timed runs ignore the result of the parser.
+let private accepted (build: int -> string) : int -> string =
+    fun lines ->
+        let input = build lines
+        parseOk input |> ignore
+        input
+
 let private performanceTests = testList "Parser performance" [
     testCase "block mappings take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block mappings" parseOnly countLineBreaks mappingInput
+        expectLinear "The parser on block mappings" parseOnly countLineBreaks (accepted mappingInput)
 
     testCase "block sequences take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block sequences" parseOnly countLineBreaks sequenceInput
+        expectLinear "The parser on block sequences" parseOnly countLineBreaks (accepted sequenceInput)
 
     testCase "comments at the end of a nested block take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on trailing comments" parseOnly countLineBreaks commentInput
+        expectLinear "The parser on trailing comments" parseOnly countLineBreaks (accepted commentInput)
 
     testCase "a comment in front of every entry takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on interleaved comments" parseOnly countLineBreaks interleavedCommentInput
+        expectLinear "The parser on interleaved comments" parseOnly countLineBreaks (accepted interleavedCommentInput)
 
     testCase "block scalars take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block scalars" parseOnly countLineBreaks blockScalarInput
+        expectLinear "The parser on block scalars" parseOnly countLineBreaks (accepted blockScalarInput)
 
     testCase "a stream of many documents takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on many documents" parseOnly countLineBreaks documentInput
+        expectLinear "The parser on many documents" parseOnly countLineBreaks (accepted documentInput)
 
     testCase "properties and aliases take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on properties and aliases" parseOnly countLineBreaks propertyInput
+        expectLinear "The parser on properties and aliases" parseOnly countLineBreaks (accepted propertyInput)
 ]
 
 let rec private hasStructuredKey (node: YamlNode) : bool =
@@ -1318,6 +1449,7 @@ let Main =
         blockScalarStructureTests
         errorTests
         n1Tests
+        spanTests
         depthTests
         performanceTests
     ]

@@ -309,6 +309,11 @@ type DocumentMarker =
 /// content of a scalar splits no document. A document without a node has a root that is an empty plain
 /// scalar with a zero-width span.
 ///
+/// The span of a document starts at its first directive ([209] l-directive-document). Without a directive it
+/// starts at the `---`, and without a marker at the first token of the root. It ends with the `...` or with the root.
+/// Comments and blank lines in front of the first directive or the `---` stand outside the span, and the ones
+/// between two directives or between a directive and the `---` stand inside.
+///
 /// Rule R3 (trivia around the root). Trivia in front of a `---` or a directive always go to the `Prelude` of
 /// the document that the `---` or the directive opens, as `PreludeTrivia` in the order of the text. That
 /// holds also for trivia that stand behind the root of the document before when no `...` stands between.

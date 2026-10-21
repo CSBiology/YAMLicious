@@ -103,6 +103,21 @@ let private r4Tests = testList "R4 trivia in a block collection" [
         expectRoot "inputs:\n  a: string\n  # group comment\n  b: string" expected
         expectRoot "inputs:\n  a: string\n      # group comment\n  b: string" expected
 
+    // yaml@2.6.1 reads `a: 1`, a comment line, a blank line and `&x b: 2` as {"a":1,"b":2}, the same with `- a: 1` and `!!str b: 2` as [{"a":1,"b":2}], and `a: 1`, a comment
+    // line and `!!str : 2` as {"a":1,"":2}. A key with properties keeps the trivia in front of its line in the Before of its entry, as a key without properties does. The
+    // parseRoot behind expectRoot runs Validate.stream on each tree.
+    testCase "the trivia in front of a key with properties go to the Before of its entry" <| fun _ ->
+        let tagged = YamlNode.withTag (YamlTag.core "str") (sc "b")
+        expectRoot
+            "a: 1\n# c\n\n&x b: 2"
+            (YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); entryBefore [ note " c"; blank ] (YamlNode.withAnchor "x" (sc "b")) (sc "2") ])
+        expectRoot
+            "- a: 1\n  # c\n  !!str b: 2"
+            (seqOf [ YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); entryBefore [ note " c" ] tagged (sc "2") ] ])
+        expectRoot
+            "a: 1\n# c\n!!str : 2"
+            (YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); entryBefore [ note " c" ] (YamlNode.withTag (YamlTag.core "str") (sc "")) (sc "2") ])
+
     // Tests.YamlRead "Lower-indented comment before nested sequence stays in open block", "Key followed by full-line comment and unindented sequence" and
     // "Key followed by multiple full-line comments and unindented sequence". yaml@2.6.1 reads each of these as {"inputs":[{"id":"a","type":"string"}]} or
     // {"inputs":[{"id":"x"},{"id":"y"}]}.
