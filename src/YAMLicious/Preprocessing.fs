@@ -26,11 +26,6 @@ type private InputUnit =
     | Blank
     | Scalar of ScalarBlock
 
-let private isFlowCloserLine (line: Persil.TokenLine) =
-    match line.Text.Substring(0, line.CodeLength).Trim().TrimEnd(',') with
-    | "]" | "}" -> true
-    | _ -> false
-
 let private withIndent (indent: int) (line: string) =
     System.String(' ', indent) + line.TrimStart()
 
@@ -150,16 +145,6 @@ let private commentAt (indent: int) (item: InputUnit) =
     | InputUnit.Comment line -> InputUnit.Comment { line with Text = withIndent indent line.Text; CodeLength = indent }
     | other -> other
 
-/// The indentation for the comments in front of the unit `next`. A comment before a flow closer takes
-/// the indentation of the previous node when that node is deeper than the closer, and the indentation
-/// of the closer otherwise. Either way it stays inside the flow collection.
-let private commentIndentBefore (next: InputUnit) (previousIndent: int) =
-    match next with
-    | InputUnit.Code line ->
-        let indent = Line.countLeadingSpaces line.Text
-        if isFlowCloserLine line && previousIndent > indent then previousIndent else indent
-    | other -> indentOf other
-
 /// Closes the levels that are deeper than `indent`. `levels` holds the indentations of the open levels,
 /// innermost first, and each one is deeper than the level below it.
 let rec private closeDeeperLevels (indent: int) (levels: int list) =
@@ -210,10 +195,9 @@ let private alignCommentLines (units: InputUnit list) =
         | (InputUnit.Comment _ | InputUnit.Blank as item) :: rest ->
             loop rest (item :: gap) levels aligned
         | item :: rest ->
-            let previousIndent = match levels with top :: _ -> top | [] -> -1
             let moved =
                 if List.isEmpty gap then gap
-                else List.map (commentAt (commentIndentBefore item previousIndent)) gap
+                else List.map (commentAt (indentOf item)) gap
             loop rest [] (enterLevel (indentOf item) levels) (item :: (moved @ aligned))
 
     loop units [] [] []
@@ -267,12 +251,12 @@ let private splitNestedBlock (frameIndent: int) (units: InputUnit list) =
 
     loop [] units
 
-/// True when the code of a line, without its comment, ends in a character that opens a block: the colon
-/// of a key, or the bracket of a flow collection. A line with nothing behind its indicators but properties,
-/// as in `k: !!str`, opens a block too, because the node behind the properties follows on a later line.
+/// True when nothing stands behind the indicators of a line but its comment, as in `k:` or `- `. A line
+/// with nothing behind its indicators but properties, as in `k: !!str`, opens a block too, because the
+/// node behind the properties follows on a later line.
 let private opensBlock (line: Persil.TokenLine) =
     let code = line.Text.Substring(0, line.CodeLength).TrimEnd()
-    code.EndsWith("[") || code.EndsWith("{") || (LineValue.find code).Start >= code.Length
+    (LineValue.find code).Start >= code.Length
 
 /// Builds the elements of one frame, the units that share the indentation `frameIndent`. A deeper unit
 /// starts a nested frame, which becomes an `Intendation`. The elements come back in reverse order.

@@ -181,42 +181,57 @@ My Key2: <s f=3/> <c f=3/>
             [code; code; code; header; body; body; code; code; blank]
             [0, single "p q"; 1, dquote "r\n  s"; 2, single "t u"; 3, dquote "v"; 4, single "w"]
 
-    testCase "unclosed single quote does not swallow later strings or comments" <| fun () ->
-        let actual = Persil.tokenize "a: 'unclosed\nb: \"x\" # c\nc: 'y'\n"
-        Expect.equal (tokenizedText actual) "a: 'unclosed\nb: <s f=0/> <c f=0/>\nc: <s f=1/>\n" "text"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, dquote "x"; 1, single "y"]) "string map"
-        Expect.dictEqual actual.CommentMap (Dictionary<int, string>(Map [0, " c"])) "comment map"
+    testCase "a quote at a node start that never closes is an error that names its line" <| fun () ->
+        // yaml@2.6.1 rejects all four inputs with MISSING_CHAR
+        let expectUnclosed (input: string) (line: int) =
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: the quoted scalar that starts here is not closed."
+                $"The error of {input}"
+        expectUnclosed "a: 'unclosed\nb: 1\n" 1
+        expectUnclosed "a: \"never closed\nb: 'ok' # c" 1
+        expectUnclosed "a: 1\nb: 'p\nc: 2\n" 2
+        expectUnclosed "- [a, \"b]\n" 1
 
-    testCase "unclosed double quote at the end of the input does not swallow later strings or comments" <| fun () ->
-        let actual = Persil.tokenize "a: \"never closed\nb: 'ok' # c"
-        Expect.equal (tokenizedText actual) "a: \"never closed\nb: <s f=0/> <c f=0/>" "text"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, single "ok"]) "string map"
-        Expect.dictEqual actual.CommentMap (Dictionary<int, string>(Map [0, " c"])) "comment map"
-
-    testCase "several unclosed quotes in a row keep every closed string" <| fun () ->
-        let actual = Persil.tokenize "a: 'p\nb: \"q\nc: 'r'\nd: \"s\"\n"
-        Expect.equal (tokenizedText actual) "a: 'p\nb: \"q\nc: <s f=0/>\nd: <s f=1/>\n" "text"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, single "r"; 1, dquote "s"]) "string map"
-
-    testCase "a closing quote with a bad end boundary leaves the text alone and keeps later strings" <| fun () ->
-        // The quote closes, but a word follows it, so it was never a scalar.
-        expectTokens
-            "a: 'x' y\nb: \"z\" w\nc: 'ok'\n"
-            "a: 'x' y\nb: \"z\" w\nc: <s f=0/>\n"
-            [code; code; code; blank]
-            [0, single "ok"]
+    testCase "text behind a closing quote is an error that names the line of the quote" <| fun () ->
+        // yaml@2.6.1 rejects all inputs with UNEXPECTED_TOKEN or MISSING_CHAR
+        let expectTextBehind (input: string) (line: int) =
+            Expect.stringContains
+                (errorOf (fun () -> Persil.tokenize input |> ignore))
+                $"Line {line}: text follows the closing quote of a quoted scalar."
+                $"The error of {input}"
+        expectTextBehind "a: 'x' y\nb: 'ok'\n" 1
+        expectTextBehind "a: 1\nb: \"z\" w\n" 2
+        expectTextBehind "k: 'it''s' x" 1
+        expectTextBehind "a: 'x\n  y' z\n" 2
+        expectTextBehind "k: \"a\", b" 1
+        expectTextBehind "k: \"a\"]" 1
+        expectTextBehind "k: \"a\":b" 1
+        expectTextBehind "- [\"a\" b]" 1
+        // A line break does not end a node inside a flow collection.
+        expectTextBehind "[\"a\"\n b]" 1
 
     testCase "a probe does not search past the first closing quote when its boundary fails" <| fun () ->
-        // The first `'x'` fails its boundary. The scanner must not read on to the next quote and
-        // pair `'x' y\nb: '` as one scalar.
-        let actual = Persil.tokenize "a: 'x' y\nb: 'z'\n"
-        Expect.equal (tokenizedText actual) "a: 'x' y\nb: <s f=0/>\n" "text"
-        Expect.dictEqual actual.StringMap (stringMapOf [0, single "z"]) "string map"
+        // The first `'x'` fails its boundary, so the error names line 1. The scanner does not read on to
+        // the next quote and pair `'x' y\nb: '` as one scalar.
+        Expect.stringContains
+            (errorOf (fun () -> Persil.tokenize "a: 'x' y\nb: 'z'\n" |> ignore))
+            "Line 1: text follows the closing quote of a quoted scalar."
+            "The error names the first quote"
 
     testCase "quote at the end of the input without a line break" <| fun () ->
         expectTokens "a: 'x'" "a: <s f=0/>" [code] [0, single "x"]
-        expectTokens "a: 'x" "a: 'x" [code] []
-        expectTokens "a: \"x" "a: \"x" [code] []
+        // yaml@2.6.1 rejects both unclosed quotes with MISSING_CHAR
+        Expect.stringContains (errorOf (fun () -> Persil.tokenize "a: 'x" |> ignore)) "Line 1: the quoted scalar that starts here is not closed." "single"
+        Expect.stringContains (errorOf (fun () -> Persil.tokenize "a: \"x" |> ignore)) "Line 1: the quoted scalar that starts here is not closed." "double"
+
+    testCase "a closing quote followed by a blank, a colon or the end is a boundary" <| fun () ->
+        // yaml@2.6.1: {"a":"x","b":"y","k":1,"j":2}
+        expectTokens
+            "a: 'x'  \nb: \"y\"\n'k': 1\n\"j\" : 2\n"
+            "a: <s f=0/>  \nb: <s f=1/>\n<s f=2/>: 1\n<s f=3/> : 2\n"
+            [code; code; code; code; blank]
+            [0, single "x"; 1, dquote "y"; 2, single "k"; 3, dquote "j"]
 
     testCase "quotes in a word are not scalars" <| fun () ->
         expectTokens
@@ -232,14 +247,22 @@ My Key2: <s f=3/> <c f=3/>
             [code; code; code; code; blank]
             [0, dquote "x"; 1, single "y"; 2, dquote "z"; 3, single "v"]
 
-    testCase "a quote without a space behind a property is accepted lexically" <| fun () ->
+    testCase "a double quote without a space behind a tag is accepted lexically" <| fun () ->
         // The boundary rule has always accepted this spelling. The scanner must not insert a space,
         // and the lexical acceptance says nothing about whether the Reader accepts the property.
         expectTokens
-            "a: !tag\"x\"\nb: &anchor'y'\n"
-            "a: !tag<s f=0/>\nb: &anchor<s f=1/>\n"
-            [code; code; blank]
-            [0, dquote "x"; 1, single "y"]
+            "a: !tag\"x\"\n"
+            "a: !tag<s f=0/>\n"
+            [code; blank]
+            [0, dquote "x"]
+
+    testCase "a quote inside an anchor name or a single quote inside a tag name is part of the name" <| fun () ->
+        // yaml@2.6.1: {"a":null}, {"b":"z"}, {"c":"p"} and ["z"]. The quotes are characters of the names, so they open no scalar.
+        expectTokens
+            "a: &anchor'y'\nb: &x\"y z\nc: !t'y p\n- &x\"y\" z\n"
+            "a: &anchor'y'\nb: &x\"y z\nc: !t'y p\n- &x\"y\" z\n"
+            [code; code; code; code; blank]
+            []
 
     testCase "quotes after indicators and in flow collections" <| fun () ->
         expectTokens

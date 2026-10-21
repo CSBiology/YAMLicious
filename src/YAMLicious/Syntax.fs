@@ -81,18 +81,21 @@ module Placeholder =
 module Property =
 
     /// The index after the property token that starts at `start`, a `!` tag or a `&` anchor. A token
-    /// ends at whitespace. A shorthand tag or an anchor also ends at a flow indicator or a quote,
-    /// because neither can be part of a tag handle or an anchor name. A verbatim tag `!<...>` runs to
+    /// ends at whitespace. A shorthand tag or an anchor also ends at a flow indicator. A double quote
+    /// ends a tag, because the characters of a tag are those of a URI. An anchor may hold both quote
+    /// characters, as in `&a"b`, and a tag may hold a single quote. A verbatim tag `!<...>` runs to
     /// its closing `>` and may contain `:` and `,`, as in `!<tag:yaml.org,2002:str>`.
     let endIndex (s: string) (start: int) =
         let isSpace (c: char) =
             c = ' ' || c = '\t' || c = '\n' || c = '\r'
 
+        let isTag = s.[start] = '!'
+
         let endsShorthand (c: char) =
-            isSpace c || c = ',' || c = '[' || c = ']' || c = '{' || c = '}' || c = '\'' || c = '"'
+            isSpace c || c = ',' || c = '[' || c = ']' || c = '{' || c = '}' || (isTag && c = '"')
 
         let mutable i = start + 1
-        if s.[start] = '!' && i < s.Length && s.[i] = '<' then
+        if isTag && i < s.Length && s.[i] = '<' then
             while i < s.Length && s.[i] <> '>' && not (isSpace s.[i]) do
                 i <- i + 1
             if i < s.Length && s.[i] = '>' then i + 1 else i
@@ -188,17 +191,20 @@ module LineValue =
         else
             { Start = p; Owner = owner; Bare = not hasIndicator }
 
-    /// True when a tab stands between an entry indicator and a block collection that starts behind it on the
-    /// same line, as in `-\tk: v` or `- \t- a`. YAML 1.2.2 allows only spaces there. A tab in front of a flow
-    /// node, as in `-\tv`, is separation and stays valid. Like `find`, it expects quoted scalars as
-    /// placeholders and no comment.
+    /// True when a tab stands between an entry indicator or a document start marker and a block collection
+    /// that starts behind it on the same line, as in `-\tk: v`, `- \t- a` or `---\tk: v`. YAML 1.2.2 allows
+    /// only spaces there. A tab in front of a flow node, as in `-\tv`, is separation and stays valid. Like
+    /// `find`, it expects quoted scalars as placeholders and no comment.
     let hasTabBeforeCollection (line: string) : bool =
-        let mutable p = skipBlanks line 0
+        let startsMarker = line.StartsWith("---") && (line.Length = 3 || isBlankChar line.[3])
+        let mutable p = if startsMarker then 0 else skipBlanks line 0
+        // The marker takes three characters and an indicator one.
+        let mutable width = if startsMarker then 3 else 1
         let mutable found = false
-        while not found && p < line.Length && isEntryIndicator line p do
-            let next = skipBlanks line (p + 1)
+        while not found && p < line.Length && (width = 3 || isEntryIndicator line p) do
+            let next = skipBlanks line (p + width)
             let mutable tabbed = false
-            for k in p + 1 .. next - 1 do
+            for k in p + width .. next - 1 do
                 if line.[k] = '\t' then tabbed <- true
             let node = skipProperties line next
             let startsCollection =
@@ -206,6 +212,7 @@ module LineValue =
                 && (isEntryIndicator line node || (not (startsKeylessNode line node) && keyColon line node < line.Length))
             found <- tabbed && startsCollection
             p <- next
+            width <- 1
         found
 
 module BlockScalar =
@@ -433,6 +440,22 @@ module FlowTokens =
                 | [] -> (List.rev acc, [])
             loop cs acc
 
+        // A colon separates a key from its value when a blank, a flow indicator or the end of the text
+        // follows it. Otherwise it is part of a plain scalar, as in `12:45` or `http://example.com`.
+        let isIndicator (rest: char list) =
+            match rest with
+            | [] -> true
+            | c::_ -> c = ' ' || c = '\n' || c = '\r' || c = '\t' || c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
+
+        // A colon right behind a quoted scalar or a flow collection separates a key without a blank, as
+        // in `{"a":1}`.
+        let followsJsonLikeNode (acc: Token list) =
+            match acc with
+            | Token.String value::_ -> value.StartsWith("<s f=") && value.EndsWith("/>")
+            | Token.CloseBrace::_
+            | Token.CloseBracket::_ -> true
+            | _ -> false
+
         let rec tokenizeChars (chars: char list) (acc: Token list) : Token list =
             match chars with
             | [] -> List.rev (Token.EOF::acc)
@@ -441,7 +464,7 @@ module FlowTokens =
             | '}'::rest -> tokenizeChars rest (Token.CloseBrace::acc)
             | '['::rest -> tokenizeChars rest (Token.OpenBracket::acc)
             | ']'::rest -> tokenizeChars rest (Token.CloseBracket::acc)
-            | ':'::rest -> tokenizeChars rest (Token.Colon::acc)
+            | ':'::rest when isIndicator rest || followsJsonLikeNode acc -> tokenizeChars rest (Token.Colon::acc)
             | ','::rest -> tokenizeChars rest (Token.Comma::acc)
             | '"'::rest ->
                 let (str, remaining) = parseString rest []
@@ -453,13 +476,19 @@ module FlowTokens =
                     | [] -> (List.rev acc, [])
                     | '<'::'s'::' '::'f'::'='::rest ->
                         let (placeholder, remaining) = consumePlaceholder rest ['=';'f';' ';'s';'<']
-                        let (restStr, final) = parseUnquoted remaining []
-                        (placeholder @ restStr, final)
+                        // A colon or a comment behind the placeholder is a token of its own.
+                        match List.skipWhile (fun c -> c = ' ') remaining with
+                        | ':'::_
+                        | '<'::'c'::' '::'f'::'='::_ -> (placeholder, remaining)
+                        | _ ->
+                            let (restStr, final) = parseUnquoted remaining []
+                            (placeholder @ restStr, final)
                     | '<'::'c'::' '::'f'::'='::rest ->
-                        let (placeholder, remaining) = consumePlaceholder rest ['=';'f';' ';'c';'<']
-                        let (restStr, final) = parseUnquoted remaining []
-                        (placeholder @ restStr, final)
-                    | c::rest when c = '{' || c = '}' || c = '[' || c = ']' || c = ':' || c = ',' || c = '\n' || c = '\r' || c = '\t' ->
+                        // A comment placeholder is a token of its own. It also ends the plain scalar in front of it.
+                        if acc.IsEmpty then consumePlaceholder rest ['=';'f';' ';'c';'<'] else (List.rev acc, cs)
+                    | ':'::rest when isIndicator rest ->
+                        (List.rev acc, cs)
+                    | c::rest when c = '{' || c = '}' || c = '[' || c = ']' || c = ',' || c = '\n' || c = '\r' || c = '\t' ->
                         (List.rev acc, cs)
                     | ' '::rest when acc.IsEmpty ->
                         parseUnquoted rest acc

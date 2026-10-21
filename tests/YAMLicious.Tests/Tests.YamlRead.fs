@@ -1774,9 +1774,11 @@ Sammy Sosa: {
         Expect.equal actualFlowstyle expected "Flowstyle"
         Expect.equal actual expected "Blockstyle"
 
+    // yaml@2.6.1 reads the flow and the block text as the same value. A colon without a blank behind it, as in
+    // `{entryname:"arc"}`, is part of a plain key there, so every colon in the flow text has a blank behind it.
     testCase "NestedFlowStyleInlineArrays" <| fun _ ->
         let yamlFlowstyle = """requirements: {
-  InitialWorkDirRequirement: { listing: [{entryname:"arc",entry:"$(inputs.arcDirectory)", writable: true},{ entry: "$(inputs.outputDirectory)", writable: true }] },
+  InitialWorkDirRequirement: { listing: [{entryname: "arc",entry: "$(inputs.arcDirectory)", writable: true},{ entry: "$(inputs.outputDirectory)", writable: true }] },
   EnvVarRequirement: { envDef: [{ envName: "DOTNET_NOLOGO", envValue: "true" },{ envName: "TEST", envValue: "false" }] },
   SubworkflowFeatureRequirement: {}
 }"""
@@ -2654,16 +2656,222 @@ expression: >
         let decode (yaml: string) = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "valueFrom" Decode.string)
         Expect.equal (decode "valueFrom: $(inputs.a +\n  \"x\")") "$(inputs.a + \"x\")" "The line break folds into a space and the quotes stay."
         Expect.equal (decode "valueFrom: $(f(inputs.a,\n  \"x\", 1))") "$(f(inputs.a, \"x\", 1))" "A quote behind a comma on the second line stays."
-    // yaml@2.6.1 reads `k: [` followed by `a,`, `'b''c',` and `]` as {"k":["a","b'c"]}, and `k: [ "a"` followed by
-    // `, "b" ]` as {"k":["a","b"]}. It reads the other inputs as lists and mappings too. The reader has no pattern for
-    // these layouts. It stops with a message and never returns a text with the quotes lost.
-    testCase "A flow collection over several lines in a layout without a pattern is an error" <| fun _ ->
+    // yaml@2.6.1: {"data":["a","b","c"]}, {"data":[["a","b","c"],["d","e","f"],["g","h","i"]]}, {"data":["a","b","c"]},
+    // [["a","b","c"]], {"data":{"a":1,"b":2}}, {"k":["a","b"]}, {"expressionLib":["function f() { return 1; }","var x = 'a';"]}
+    // and {"k":["a"]}. The Reader reads each layout like the same collection on one line.
+    testCase "A flow collection over several lines reads in every layout" <| fun _ ->
+        let letters (values: string list) = sequenceNode [ for value in values -> scalarNode value ]
+        let abc = letters [ "a"; "b"; "c" ]
+        let doubleQuotedItem (value: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(value, style=ScalarStyle.DoubleQuoted)) ]
+        let cases =
+            [ ("data: [a, b,\n  c]", YAMLElement.Object [ entry "data" abc ])
+              ("data: [[a, b, c],\n       [d, e, f],\n       [g, h, i]]",
+               YAMLElement.Object [ entry "data" (sequenceNode [ letters [ "a"; "b"; "c" ]; letters [ "d"; "e"; "f" ]; letters [ "g"; "h"; "i" ] ]) ])
+              ("data:\n  [a, b,\n   c]", YAMLElement.Object [ entry "data" abc ])
+              ("- [a, b,\n   c]", YAMLElement.Object [ YAMLElement.Sequence [ abc ] ])
+              ("data: {a: 1,\n  b: 2}", YAMLElement.Object [ entry "data" (YAMLElement.Object [ entry "a" (scalarNode "1"); entry "b" (scalarNode "2") ]) ])
+              ("k: [\n  a,\n  b\n]", YAMLElement.Object [ entry "k" (letters [ "a"; "b" ]) ])
+              ("expressionLib: [\n  \"function f() { return 1; }\",\n  \"var x = 'a';\"\n]",
+               YAMLElement.Object [
+                   entry "expressionLib" (sequenceNode [ doubleQuotedItem "function f() { return 1; }"; doubleQuotedItem "var x = 'a';" ])
+               ])
+              ("k:\n    [\n      a\n  ]", YAMLElement.Object [ entry "k" (letters [ "a" ]) ]) ]
+        for (yaml, expected) in cases do
+            Expect.equal (Reader.read yaml) expected $"The tree of {yaml}"
+
+    // yaml@2.6.1: [{"parameter":{"5":null}}], {"C":["list",{"p1":"v_1","...":null,"in":"v_n"}]}, {"k":null} and
+    // {"a":null,"b":"c"}. An entry without a value maps to nothing, like a block key without a value.
+    testCase "A flow mapping entry without a value maps to nothing" <| fun _ ->
+        let nothing (key: string) = YAMLElement.Mapping(YAMLContent.create key, YAMLElement.Nil)
+        Expect.equal
+            (Reader.read "- parameter: { 5 }")
+            (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ entry "parameter" (YAMLElement.Object [ nothing "5" ]) ] ] ])
+            "A key alone in braces"
+        Expect.equal
+            (Reader.read "C: [list, {p1: \"v_1\", ..., in: \"v_n\"}]")
+            (YAMLElement.Object [
+                entry "C" (sequenceNode [
+                    scalarNode "list"
+                    YAMLElement.Object [
+                        entry "p1" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("v_1", style=ScalarStyle.DoubleQuoted)) ])
+                        nothing "..."
+                        entry "in" (YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("v_n", style=ScalarStyle.DoubleQuoted)) ])
+                    ]
+                ])
+            ])
+            "A key between two entries with values"
+        Expect.equal (Reader.read "{k:}") (YAMLElement.Object [ nothing "k" ]) "A colon with no value behind it"
+        Expect.equal
+            (Reader.read "{a, b: c}")
+            (YAMLElement.Object [ nothing "a"; entry "b" (scalarNode "c") ])
+            "A key without a colon in front of an entry"
+        Expect.equal (Reader.read "k: {a: 1,\n  b}") (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (scalarNode "1"); nothing "b" ]) ]) "Over two lines"
+
+    // yaml@2.6.1: [{"a":"b"}], [{"a":"b"},"c"], [{"a":null}], [{"a":"b"},{"c":"d"}] and ["a:b","12:45"]
+    testCase "A pair in a flow sequence is a mapping with one entry" <| fun _ ->
+        let pair (key: string) (value: YAMLElement) = YAMLElement.Object [ entry key value ]
+        Expect.equal (Reader.read "[a: b]") (YAMLElement.Object [ YAMLElement.Sequence [ pair "a" (scalarNode "b") ] ]) "One pair"
+        Expect.equal
+            (Reader.read "[a: b, c]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ pair "a" (scalarNode "b"); scalarNode "c" ] ])
+            "A pair and a scalar"
+        Expect.equal
+            (Reader.read "[a: ]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ pair "a" YAMLElement.Nil ] ])
+            "A pair without a value"
+        Expect.equal
+            (Reader.read "[a: b,\n  c: d]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ pair "a" (scalarNode "b"); pair "c" (scalarNode "d") ] ])
+            "Two pairs over two lines"
+        Expect.equal
+            (Reader.read "[a:b, 12:45]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ scalarNode "a:b"; scalarNode "12:45" ] ])
+            "A colon without a blank behind it is text"
+
+    // yaml@2.6.1: {"a:b":null,"c":"d"}, {"a:\"b\"":null}, {"a":"b","c":"d"} and {"time":"12:45","url":"http://x"}
+    testCase "A colon in a flow mapping separates a key only behind a blank, a flow indicator or a quote" <| fun _ ->
+        let nothing (key: string) = YAMLElement.Mapping(YAMLContent.create key, YAMLElement.Nil)
+        Expect.equal (Reader.read "{a:b, c: d}") (YAMLElement.Object [ nothing "a:b"; entry "c" (scalarNode "d") ]) "A colon inside a word"
+        Expect.equal (Reader.read "{a:\"b\"}") (YAMLElement.Object [ nothing "a:\"b\"" ]) "A quote behind a colon without a blank is text"
+        Expect.equal
+            (Reader.read "{\"a\":b, 'c':'d'}")
+            (YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("a", style=ScalarStyle.DoubleQuoted), scalarNode "b")
+                YAMLElement.Mapping(YAMLContent.create("c", style=ScalarStyle.SingleQuoted), YAMLElement.Object [ YAMLElement.Value(YAMLContent.create("d", style=ScalarStyle.SingleQuoted)) ])
+            ])
+            "A colon behind a quoted key"
+        Expect.equal
+            (Reader.read "{time: 12:45, url: http://x}")
+            (YAMLElement.Object [ entry "time" (scalarNode "12:45"); entry "url" (scalarNode "http://x") ])
+            "Colons inside values"
+
+    // yaml@2.6.1: {"k":["a","b"]} for all four inputs
+    testCase "Comments at the start, in the middle and at the end of a flow sequence over several lines" <| fun _ ->
+        let item (value: string) = scalarNode value
+        let comment (text: string) = YAMLElement.Comment text
+        let cases =
+            [ ("k: [ # c1\n  a,\n  b\n]", YAMLElement.Sequence [ comment " c1"; item "a"; item "b" ])
+              ("k: [\n  a, # c2\n  b\n]", YAMLElement.Sequence [ item "a"; comment " c2"; item "b" ])
+              ("k: [\n  a,\n  b\n  # c3\n]", YAMLElement.Sequence [ item "a"; item "b"; comment " c3" ])
+              ("k: [\n  # c1\n  a,\n  # c2\n  b # c3\n]", YAMLElement.Sequence [ comment " c1"; item "a"; comment " c2"; item "b"; comment " c3" ]) ]
+        for (yaml, sequence) in cases do
+            Expect.equal (Reader.read yaml) (YAMLElement.Object [ entry "k" (YAMLElement.Object [ sequence ]) ]) $"The tree of {yaml}"
+            let decoded = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "k" (Decode.list Decode.string))
+            Expect.equal decoded [ "a"; "b" ] $"The comments are no items in {yaml}"
+        // A comment behind a quoted item is no part of its value.
+        let quoted = Decode.read "k: [\n  \"a\", # c1\n  \"b\" # c2\n]" |> Decode.object (fun get -> get.Required.Field "k" (Decode.list Decode.string))
+        Expect.equal quoted [ "a"; "b" ] "The comments stay out of the quoted items"
+        // The comment behind the closer is the comment of the whole collection, as for a collection on one line.
+        Expect.equal
+            (Reader.read "k: [\n  a\n] # c4")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ comment " c4"; YAMLElement.Sequence [ item "a" ] ]) ])
+            "A comment behind the closer"
+
+    // yaml@2.6.1: {"k":{"a":1,"b":2}} and {"k":{"a":1}}
+    testCase "Comments in a flow mapping over several lines stay entries of the mapping" <| fun _ ->
+        let one = scalarNode "1"
+        let two = scalarNode "2"
+        Expect.equal
+            (Reader.read "k: {\n  # c1\n  a: 1, # c2\n  b: 2\n  # c3\n}")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [
+                    YAMLElement.Comment " c1"
+                    entry "a" one
+                    YAMLElement.Comment " c2"
+                    entry "b" two
+                    YAMLElement.Comment " c3"
+                ])
+            ])
+            "Comments at the start, in the middle and at the end"
+        Expect.equal
+            (Reader.read "k: {a: # c\n  1}")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" one; YAMLElement.Comment " c" ]) ])
+            "A comment between a colon and its value"
+
+    // yaml@2.6.1: [["a","b","c"],{"d":"e","f":"g"}] and {"k":[["a"],{"b":["c","d"]}]}
+    testCase "Flow collections nested over several lines" <| fun _ ->
+        Expect.equal
+            (Reader.read "[\n  [a, b,\n   c],\n  {d: e,\n   f: g}\n]")
+            (YAMLElement.Object [
+                YAMLElement.Sequence [
+                    sequenceNode [ scalarNode "a"; scalarNode "b"; scalarNode "c" ]
+                    YAMLElement.Object [ entry "d" (scalarNode "e"); entry "f" (scalarNode "g") ]
+                ]
+            ])
+            "A sequence and a mapping in a sequence"
+        Expect.equal
+            (Reader.read "k: [\n  [a],\n  {b: [c,\n    d]}\n]")
+            (YAMLElement.Object [
+                entry "k" (YAMLElement.Object [
+                    YAMLElement.Sequence [
+                        sequenceNode [ scalarNode "a" ]
+                        YAMLElement.Object [ entry "b" (sequenceNode [ scalarNode "c"; scalarNode "d" ]) ]
+                    ]
+                ])
+            ])
+            "A sequence in a mapping in a sequence"
+
+    // yaml@2.6.1: {"k":["a"]}, {"k":{"a":1,"b":2}}, {"k":{}}, [["a"]] and ["a","b"]. The model has no field for the
+    // properties of a collection. The Reader drops the core tag that names the collection and rejects an anchor, which
+    // it would lose, as it does for a block collection.
+    testCase "A flow collection behind properties reads as a collection" <| fun _ ->
+        Expect.equal (Reader.read "k: !!seq [\n  a\n]") (YAMLElement.Object [ entry "k" (sequenceNode [ scalarNode "a" ]) ]) "A tagged sequence"
+        Expect.throws (fun _ -> Reader.read "k: &x {a: 1,\n  b: 2}" |> ignore) "An anchored mapping"
+        Expect.equal (Reader.read "k: !!map {}") (YAMLElement.Object [ entry "k" (YAMLElement.Object []) ]) "A tagged empty mapping"
+        Expect.equal (Reader.read "- !!seq [a]") (YAMLElement.Object [ YAMLElement.Sequence [ sequenceNode [ scalarNode "a" ] ] ]) "A tagged sequence as an item"
+        Expect.equal
+            (Reader.read "!!seq [a,\n  b]")
+            (YAMLElement.Object [ YAMLElement.Sequence [ scalarNode "a"; scalarNode "b" ] ])
+            "A tagged sequence at the root"
+
+    // yaml@2.6.1: ["a b"], ["a\nb"], {"k":["a b","c d"]} and ["a b","c"]. A plain scalar over several lines is one
+    // string that Decode folds like a plain scalar outside a flow collection.
+    testCase "A plain scalar over several lines in a flow collection folds" <| fun _ ->
+        let decode (yaml: string) = Decode.read yaml |> Decode.list Decode.string
+        Expect.equal (decode "[\n  a\n  b\n]") [ "a b" ] "Two lines"
+        Expect.equal (decode "[a\n\n b]") [ "a\nb" ] "A blank line between the lines"
+        Expect.equal
+            (Decode.read "k: [\n  a\n  b,\n  c\n  d\n]" |> Decode.object (fun get -> get.Required.Field "k" (Decode.list Decode.string)))
+            [ "a b"; "c d" ]
+            "Two scalars"
+        Expect.equal (decode "[a\n b, c]") [ "a b"; "c" ] "A comma ends the scalar"
+
+    // yaml@2.6.1 rejects both inputs. The messages name the line of the opener.
+    testCase "A flow collection that does not close over several lines is an error that names the opener" <| fun _ ->
+        let message (yaml: string) = try (Reader.read yaml |> ignore; "") with e -> e.Message
+        Expect.stringContains (message "k: [a,\n  b}") "Line 1: `}` closes a `[`." "A closer of the other kind"
+        Expect.stringContains (message "a: 1\nk: [\n  x") "Line 2: the flow collection opened here is not closed." "A collection that is still open"
+        Expect.stringContains (message "k: [\n  {a: b\n  ]") "Line 2: `]` closes a `{`." "The line of the inner opener"
+
+    // yaml@2.6.1 reads all three requirements with the expressionLib ["function f(a){ return a; }","function g(b){ return b; }"].
+    testCase "An expressionLib flow sequence of a CWL requirement reads with a trailing comma and comments" <| fun _ ->
+        let expected = [ "function f(a){ return a; }"; "function g(b){ return b; }" ]
         let inputs =
-            [ "k: [\n  a,\n  'b''c',\n]"; "k: [ \"a\"\n  , \"b\" ]"; "k: [a,\n  b]"; "k: {a: 1,\n  b: 2}"
-              "- [a,\n  b]"; "- {\n  a: 1\n}"; "k: !!seq [\n  a\n]"; "[a,\n b]" ]
+            [ "requirements:\n  - class: InlineJavascriptRequirement\n    expressionLib: [\n      \"function f(a){ return a; }\", # c1\n      \"function g(b){ return b; }\", # c2\n    ]\n"
+              "requirements:\n  - class: InlineJavascriptRequirement\n    expressionLib: [\n      \"function f(a){ return a; }\",\n      \"function g(b){ return b; }\",\n    ]\n"
+              "requirements:\n  - class: InlineJavascriptRequirement\n    expressionLib: [\n      # first\n      \"function f(a){ return a; }\",\n      # second\n      \"function g(b){ return b; }\"\n    ]\n" ]
         for yaml in inputs do
-            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
-            Expect.stringContains message "A flow collection over several lines in this layout is not supported yet" $"{yaml} stops with a clear message"
+            let decoded =
+                Decode.read yaml
+                |> Decode.object (fun get ->
+                    get.Required.Field "requirements" (Decode.list (Decode.object (fun item -> item.Required.Field "expressionLib" (Decode.list Decode.string)))))
+            Expect.equal decoded [ expected ] $"The expressionLib of {yaml}"
+
+    // yaml@2.6.1: {"[ a ]":"b"}, {"a":["b"]} and {"[ a ]":["b"]}. The Reader reads a complex key as its text.
+    testCase "Flow collections over several lines as explicit keys and values" <| fun _ ->
+        let key (text: string) = YAMLContent.create text
+        Expect.equal
+            (Reader.read "? [\n  a\n]\n: b")
+            (YAMLElement.Object [ YAMLElement.Mapping(key "[ a ]", scalarNode "b") ])
+            "A key"
+        Expect.equal
+            (Reader.read "? a\n: [\n  b\n]")
+            (YAMLElement.Object [ entry "a" (sequenceNode [ scalarNode "b" ]) ])
+            "A value"
+        Expect.equal
+            (Reader.read "? [\n  a\n]\n: [\n  b\n]")
+            (YAMLElement.Object [ YAMLElement.Mapping(key "[ a ]", sequenceNode [ scalarNode "b" ]) ])
+            "A key and a value"
 
     // yaml@2.6.1 reads `k:` as {"k":null}, `k:` followed by `j: 1` as {"k":null,"j":1}, `k: # c` as {"k":null}, and
     // `a:` followed by an indented `k:` and `b: 1` as {"a":{"k":null},"b":1}.

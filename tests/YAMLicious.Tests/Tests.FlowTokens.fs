@@ -189,6 +189,60 @@ let Main = testList "FlowTokens" [
                 Token.EOF
             ]
             Expect.equal tokens expected "Should tokenize flow content with newlines"
+
+        testCase "comment placeholder ends a plain scalar and starts none" <| fun _ ->
+            let tokens = tokenize "[a <c f=0/> b, <c f=1/> c]"
+            let expected = [
+                Token.OpenBracket
+                Token.String "a "
+                Token.String "<c f=0/>"
+                Token.String "b"
+                Token.Comma
+                Token.String "<c f=1/>"
+                Token.String "c"
+                Token.CloseBracket
+                Token.EOF
+            ]
+            Expect.equal tokens expected "A comment placeholder is a token of its own"
+            Expect.equal
+                (tokenize "[<s f=0/> <c f=1/> ]")
+                [ Token.OpenBracket; Token.String "<s f=0/>"; Token.String "<c f=1/>"; Token.CloseBracket; Token.EOF ]
+                "A comment behind a string placeholder is a token of its own"
+
+        testCase "colon without a blank behind it is part of a plain scalar" <| fun _ ->
+            let tokens = tokenize "[a:b, 12:45, http://x]"
+            let expected = [
+                Token.OpenBracket
+                Token.String "a:b"
+                Token.Comma
+                Token.String "12:45"
+                Token.Comma
+                Token.String "http://x"
+                Token.CloseBracket
+                Token.EOF
+            ]
+            Expect.equal tokens expected "Only a colon with a blank or a flow indicator behind it separates"
+
+        testCase "colon with a flow indicator or the end behind it separates" <| fun _ ->
+            Expect.equal
+                (tokenize "{a:, b:}")
+                [ Token.OpenBrace; Token.String "a"; Token.Colon; Token.Comma; Token.String "b"; Token.Colon; Token.CloseBrace; Token.EOF ]
+                "A comma and a closer behind the colon"
+            Expect.equal
+                (tokenize "[a: b]")
+                [ Token.OpenBracket; Token.String "a"; Token.Colon; Token.String "b"; Token.CloseBracket; Token.EOF ]
+                "A pair in a sequence"
+
+        testCase "colon directly behind a quoted scalar or a flow collection separates" <| fun _ ->
+            Expect.equal
+                (tokenize "{<s f=0/>:b, <s f=1/> : c}")
+                [ Token.OpenBrace; Token.String "<s f=0/>"; Token.Colon; Token.String "b"; Token.Comma
+                  Token.String "<s f=1/>"; Token.Colon; Token.String "c"; Token.CloseBrace; Token.EOF ]
+                "A quoted key"
+            Expect.equal
+                (tokenize "{[a]:b}")
+                [ Token.OpenBrace; Token.OpenBracket; Token.String "a"; Token.CloseBracket; Token.Colon; Token.String "b"; Token.CloseBrace; Token.EOF ]
+                "A flow collection as a key"
     ]
 
     testList "edge cases" [

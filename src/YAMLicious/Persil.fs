@@ -37,8 +37,9 @@ type TokenLine =
       /// The header and the body lines of one block scalar share this id. Every other line has `NoBlock`.
       /// A `--- |` line keeps its `DocumentStart` kind and carries the id of the block it opens.
       BlockId: int
-      /// The physical line of the input, counted from 1, where the emitted line starts. A quoted scalar
-      /// that spans several lines collapses into one emitted line and keeps the number of its first line.
+      /// The physical line of the input, counted from 1, where the emitted line starts. A quoted scalar,
+      /// a plain scalar or a flow collection that spans several lines collapses into one emitted line and
+      /// keeps the number of its first line.
       SourceLine: int
       /// The key of the comment that ends the line in the comment map, or `NoComment`. A comment-only
       /// line has one too.
@@ -49,7 +50,8 @@ type TokenLine =
 
 /// The scanner output. `Lines` holds the emitted text split at the line breaks that the scanner emitted,
 /// with one placeholder per quoted scalar and per comment. A line break inside a quoted scalar is not
-/// emitted, so a multiline scalar collapses into one placeholder on one line.
+/// emitted, so a multiline scalar collapses into one placeholder on one line. A line break inside a
+/// flow collection becomes a space, so the collection stays on the line where it opens.
 type TokenizedYaml =
     { Lines: TokenLine[]
       StringMap: Dictionary<int, StringMapEntry>
@@ -84,11 +86,12 @@ let private foldSingleQuoted (s: string) =
                 sb.Append(line) |> ignore
         sb.ToString().Replace("''", "'")
 
+/// The results of a quote probe that name a failure. A success is the offset behind the closing quote.
 [<Literal>]
-let private Unknown = -2
+let private NotClosed = -1
 
 [<Literal>]
-let private Failed = -1
+let private TextBehind = -2
 
 [<Literal>]
 let private Unresolved = -1
@@ -97,6 +100,10 @@ let private Unresolved = -1
 [<Literal>]
 let private RootOwner = -1
 
+/// The owner of the flow collection on the line in progress, before a line break inside the collection asks for it.
+[<Literal>]
+let private OwnerUnknown = -3
+
 /// No plain scalar is open. It differs from `RootOwner`, the owner of a plain scalar at the root.
 [<Literal>]
 let private NoPlain = -2
@@ -104,11 +111,11 @@ let private NoPlain = -2
 /// One pass over a newline-normalized string. The scanner owns the lexical decisions: where quoted
 /// scalars, comments, directives, document markers and block scalar bodies are.
 ///
-/// It keeps a source cursor and builds the output line by line, which lets a quoted scalar span several
-/// source lines while it emits one placeholder. Quotes get a transactional probe that reads ahead
-/// without changing any state. A failed probe emits only the opening quote and the scan resumes right
-/// after it, so an unclosed quote cannot swallow later strings or comments. The probes memoize their
-/// result per source offset, which keeps the total work linear even for malformed input.
+/// It keeps a source cursor and builds the output line by line, which lets a quoted scalar or a flow
+/// collection span several source lines while it emits one line. A quote at a node start opens a quoted
+/// scalar. A probe reads ahead to its closing quote without changing any state, and the scan continues
+/// behind that quote. A scalar that does not close, or a closing quote with text behind it, is an error,
+/// so every probe either skips the text it read or stops the scan, and the total work stays linear.
 ///
 /// A block scalar body is copied as it is, without any interpretation.
 type private Scanner(s: string) =
@@ -123,11 +130,8 @@ type private Scanner(s: string) =
     let mutable foldedBreaks = 0
     let mutable lineNumber = 1
 
-    // Memo tables of the quote probes, indexed by the source offset where quoted content may continue.
-    // An entry holds the offset behind a valid closing quote, Failed, or Unknown before the first probe.
-    let pending = ResizeArray<int>()
-    let mutable singleEnds: int[] = Array.empty
-    let mutable doubleEnds: int[] = Array.empty
+    // The line breaks that the last quote probe passed inside the scalar.
+    let mutable probeBreaks = 0
 
     let mutable i = 0
     let mutable finished = false
@@ -138,6 +142,10 @@ type private Scanner(s: string) =
     let mutable lineComment = NoComment
     /// Where the comment placeholder starts in the line, or -1 without a comment.
     let mutable codeLength = -1
+    // The length of the line and whether it ends in a blank. A StringBuilder of Fable JS adds up its pieces
+    // to report the length, so a line that merges a long flow collection keeps the count itself.
+    let mutable lineLength = 0
+    let mutable lastBlank = false
 
     // The lexical context of the line, which the quote rules and the property rule read.
     // True where a node may start. A quote opens a scalar there and a tag or an anchor there is one
@@ -148,16 +156,28 @@ type private Scanner(s: string) =
     // a blank in front of its hash (YAML 1.2.2 6.6), so a hash at this offset is an error.
     let mutable tokenEnd = -1
     // The flow collections that are open, as the `[` or `{` that opened each one, and the physical line of
-    // that opener. A flow collection can span several lines, so both lists carry over to the next line
-    // and only a document marker ends them. Inside a flow collection, a quote can open a scalar behind
-    // `[`, `{`, `,` and `:`. Outside one, a comma or a bracket in a plain scalar is text. A line inside a
-    // flow collection starts with the node-start state that the line before it ended with, so a quote
-    // behind plain text on the previous line is text. A line that continues a plain scalar has no node
-    // start, so a bracket there is text and opens nothing.
+    // that opener. A flow collection can span several lines. The scanner merges those lines into the
+    // emitted line where the collection opens, so both lists are empty at the start of every line, and a
+    // document marker or the end of the input inside a collection is an error. Inside a flow collection,
+    // a quote can open a scalar behind `[`, `{`, `,` and `:`. Outside one, a comma or a bracket in a plain
+    // scalar is text.
     let flowOpeners = ResizeArray<char>()
     let flowLines = ResizeArray<int>()
-    // True when the line in progress starts inside a flow collection.
-    let mutable startedInFlow = false
+    // Whether the current entry of each open flow collection has its colon already.
+    let flowColons = ResizeArray<bool>()
+    // The indentation that a line inside a flow collection must exceed, or OwnerUnknown. It is the owner of
+    // the value that the collection is, which the first line break inside the collection looks up.
+    let mutable flowOwner = OwnerUnknown
+    // The first line that holds more than blanks behind the line break that a lookahead started at: the
+    // offset of its first character, the offset where the line starts, and the line breaks passed on the way.
+    let mutable nextAt = 0
+    let mutable nextLineStart = 0
+    let mutable nextBreaks = 0
+    // True right behind a flow collection that closed, until a separator follows. Only a comment, a `,` or
+    // a closer can follow it, so text, a bracket or a colon there is an error.
+    let mutable afterCloser = false
+    // True when a comment inside a flow collection ended a node. Only a `,` or a closer can follow it.
+    let mutable commentEndedNode = false
 
     // The columns of the block nodes that the structural lines opened and that are still open, from the
     // outermost to the innermost. A structural line is a line of code that does not continue a plain
@@ -207,6 +227,17 @@ type private Scanner(s: string) =
 
     let isBlankChar (c: char) = c = ' ' || c = '\t'
 
+    /// Appends a character or a text to the line in progress and keeps its length and its last character.
+    let emit (c: char) =
+        line.Append(c) |> ignore
+        lineLength <- lineLength + 1
+        lastBlank <- isBlankChar c
+
+    let emitText (text: string) =
+        line.Append(text) |> ignore
+        lineLength <- lineLength + text.Length
+        lastBlank <- false
+
     /// True when a document marker starts at `k`. The caller passes the first index of a line.
     /// YAML forbids markers inside a scalar, so a quote probe stops at one.
     let markerAt (k: int) =
@@ -219,84 +250,78 @@ type private Scanner(s: string) =
             else
                 false
 
-    /// The closing quote must end its token: only blanks, then a line end, a comment, a flow
-    /// indicator or a colon may follow.
-    let endsAtBoundary (next: int) =
+    let nextIsBlank (k: int) =
+        k >= n || s.[k] = ' ' || s.[k] = '\t' || s.[k] = '\n'
+
+    /// The closing quote must end its node. Only blanks, then a line end or a comment may follow. A colon
+    /// may follow when it separates a key, and in a flow collection also a `,` or a closer. A line end does
+    /// not end the node in a flow collection, so the check looks at the first character of a later line.
+    let endsAtBoundary (next: int) (inFlow: bool) =
         let mutable j = next
-        while j < n && isBlankChar s.[j] do
+        while j < n && (isBlankChar s.[j] || (inFlow && s.[j] = '\n')) do
             j <- j + 1
         if j >= n then
             true
         else
             let c = s.[j]
-            c = '\n' || c = '\r' || c = '#' || c = ',' || c = ']' || c = '}' || c = ':'
+            c = '\n' || c = '#'
+            || (c = ':' && (inFlow || nextIsBlank (j + 1)))
+            || (inFlow && (c = ',' || c = ']' || c = '}'))
 
-    /// The offset behind the closing quote of the single-quoted scalar that opens at `opening`, or
-    /// Failed. A doubled quote is content. The probe reads only, and it records the answer for every
-    /// offset it passed, so a later opener inside the same stretch gets the answer without a walk.
-    let probeSingle (opening: int) =
-        if singleEnds.Length = 0 then
-            singleEnds <- Array.create (n + 1) Unknown
-        pending.Clear()
+    /// The offset behind the closing quote of the single-quoted scalar that opens at `opening`, NotClosed
+    /// when the scalar does not close before the input or a document marker ends, or TextBehind when text
+    /// follows the closing quote. A doubled quote is content. The probe reads only, and it counts the
+    /// line breaks inside the scalar in probeBreaks.
+    let probeSingle (opening: int) (inFlow: bool) =
+        probeBreaks <- 0
         let mutable p = opening + 1
-        let mutable result = Unknown
-        while result = Unknown do
+        let mutable result = 0
+        while result = 0 do
             if p >= n then
-                result <- Failed
+                result <- NotClosed
             else
-                let known = singleEnds.[p]
-                if known <> Unknown then
-                    result <- known
-                else
-                    pending.Add p
-                    let c = s.[p]
-                    if c = '\'' then
-                        if p + 1 < n && s.[p + 1] = '\'' then
-                            p <- p + 2
-                        elif endsAtBoundary (p + 1) then
-                            result <- p + 1
-                        else
-                            result <- Failed
-                    elif c = '\n' then
-                        if markerAt (p + 1) then result <- Failed else p <- p + 1
+                let c = s.[p]
+                if c = '\'' then
+                    if p + 1 < n && s.[p + 1] = '\'' then
+                        p <- p + 2
+                    elif endsAtBoundary (p + 1) inFlow then
+                        result <- p + 1
                     else
+                        result <- TextBehind
+                elif c = '\n' then
+                    if markerAt (p + 1) then
+                        result <- NotClosed
+                    else
+                        probeBreaks <- probeBreaks + 1
                         p <- p + 1
-        for k in 0 .. pending.Count - 1 do
-            singleEnds.[pending.[k]] <- result
+                else
+                    p <- p + 1
         result
 
     /// Like probeSingle for a double-quoted scalar. A backslash escapes the next character.
-    let probeDouble (opening: int) =
-        if doubleEnds.Length = 0 then
-            doubleEnds <- Array.create (n + 1) Unknown
-        pending.Clear()
+    let probeDouble (opening: int) (inFlow: bool) =
+        probeBreaks <- 0
         let mutable p = opening + 1
-        let mutable result = Unknown
-        while result = Unknown do
+        let mutable result = 0
+        while result = 0 do
             if p >= n then
-                result <- Failed
+                result <- NotClosed
             else
-                let known = doubleEnds.[p]
-                if known <> Unknown then
-                    result <- known
-                else
-                    pending.Add p
-                    let c = s.[p]
-                    if c = '"' then
-                        if endsAtBoundary (p + 1) then result <- p + 1 else result <- Failed
-                    elif c = '\\' then
-                        // An escaped line break still ends the line, so the marker check below sees it.
-                        if p + 1 < n && s.[p + 1] = '\n' then p <- p + 1 else p <- p + 2
-                    elif c = '\n' then
-                        if markerAt (p + 1) then result <- Failed else p <- p + 1
+                let c = s.[p]
+                if c = '"' then
+                    result <- if endsAtBoundary (p + 1) inFlow then p + 1 else TextBehind
+                elif c = '\\' then
+                    // An escaped line break still ends the line, so the marker check below sees it.
+                    if p + 1 < n && s.[p + 1] = '\n' then p <- p + 1 else p <- p + 2
+                elif c = '\n' then
+                    if markerAt (p + 1) then
+                        result <- NotClosed
                     else
+                        probeBreaks <- probeBreaks + 1
                         p <- p + 1
-        for k in 0 .. pending.Count - 1 do
-            doubleEnds.[pending.[k]] <- result
+                else
+                    p <- p + 1
         result
-
-    let nextIsBlank (k: int) =
-        k >= n || s.[k] = ' ' || s.[k] = '\t' || s.[k] = '\n'
 
     /// True when a token inside a flow collection ends at `k`: at a blank, at a flow indicator or at the end.
     let endsFlowToken (k: int) =
@@ -306,7 +331,7 @@ type private Scanner(s: string) =
     let physicalLine () = records.Count + 1 + foldedBreaks
 
     /// Notes what the character `c` at a node start begins. A plain scalar cannot start with an indicator,
-    /// so a node that begins with an alias, a quote or a block scalar indicator is no open plain scalar.
+    /// so a node that begins with an alias or a block scalar indicator is no open plain scalar.
     /// The reserved `%`, `@` and backquote begin no node at all. A comma outside a flow collection and a
     /// hash that starts no comment begin none either, so each of them is an error. The other indicators
     /// never get here, because a flow collection, a closer, a property and a quoted scalar each have a
@@ -326,28 +351,165 @@ type private Scanner(s: string) =
             if Option.isNone (BlockScalar.parseHeader (copyRange i stop)) then
                 failwithf "Line %d: a block scalar header allows only an indentation digit and a chomping sign behind the `%s`." (physicalLine ()) (string c)
             plainOpen <- false
-        | '*' | '\'' | '"' ->
+        | '*' ->
             plainOpen <- false
         | _ ->
             plainOpen <- true
-            plainStartPos <- line.Length
+            plainStartPos <- lineLength
             plainStartSrc <- i
             plainStringMark <- strings.Count
 
-    /// Appends a character of a plain scalar. At a node start it begins the scalar.
+    /// True when a plain scalar inside a flow collection ends at `k`: at a flow indicator, at a colon with
+    /// a blank or a flow indicator behind it, and at a hash behind a blank (YAML 1.2.2 7.3.3).
+    let endsFlowPlain (k: int) =
+        let c = s.[k]
+        c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
+        || (c = ':' && endsFlowToken (k + 1))
+        || (c = '#' && k > 0 && isBlankChar s.[k - 1])
+
+    /// The offset where the text of a plain scalar that starts at `from` ends on its line: the character
+    /// that ends the scalar, or the line break, or the end of the input.
+    let flowPlainEnd (from: int) =
+        let mutable e = from
+        while e < n && s.[e] <> NewLineChar && not (endsFlowPlain e) do
+            e <- e + 1
+        e
+
+    /// Looks for the first line behind the line break at `from` that holds more than blanks and records
+    /// where it is. Returns false when only blanks follow.
+    let lookAhead (from: int) =
+        let mutable p = from
+        let mutable breaks = 0
+        let mutable start = from + 1
+        while p < n && (s.[p] = NewLineChar || isBlankChar s.[p]) do
+            if s.[p] = NewLineChar then
+                breaks <- breaks + 1
+                start <- p + 1
+            p <- p + 1
+        nextAt <- p
+        nextLineStart <- start
+        nextBreaks <- breaks
+        p < n
+
+    /// The indentation that the lines of the flow collection on the line in progress must exceed. It is
+    /// the owner of the value that the collection is, found the way trackStructure finds it for the
+    /// finished line. The first line break inside a collection asks for it, and the line keeps the answer.
+    let ensureFlowOwner () =
+        if flowOwner = OwnerUnknown then
+            let text = line.ToString()
+            let value = LineValue.find text
+            if value.Bare then
+                let indent = Line.countLeadingSpaces text
+                // A document start clears the owners when the line is finished.
+                let mutable top = if lineKind = LineKind.DocumentStart then -1 else owners.Count - 1
+                while top >= 0 && owners.[top] >= indent do
+                    top <- top - 1
+                flowOwner <- if top >= 0 then owners.[top] else RootOwner
+            else
+                flowOwner <- value.Owner
+
+    /// Checks that the line found by the last lookahead keeps the indentation of the flow collection. The
+    /// lines of a collection must be indented deeper than the node that owns it. A line that opens with a
+    /// closer may sit at the column of the owner, as in the CWL layout `k: [` followed by `]` at column 0.
+    /// A comment line may sit anywhere.
+    let checkFlowIndent () =
+        let c = s.[nextAt]
+        if c <> '#' then
+            ensureFlowOwner ()
+            let mutable spaces = nextLineStart
+            while spaces < nextAt && s.[spaces] = ' ' do
+                spaces <- spaces + 1
+            let indent = spaces - nextLineStart
+            if indent < flowOwner || (indent = flowOwner && c <> ']' && c <> '}') then
+                failwithf "Line %d: a line inside a flow collection must be indented deeper than the node that owns the collection." (physicalLine () + nextBreaks)
+
+    /// Rejects text or a bracket that follows a flow collection or a comment inside one directly. A node
+    /// that has ended needs a `,` or a closer behind it.
+    let rejectGlued () =
+        if afterCloser then
+            failwithf "Line %d: a flow collection ends its node, so only a comment, a `,` or a closer can follow it." (physicalLine ())
+        if commentEndedNode then
+            failwithf "Line %d: a comment ended the node in front of it, so only a `,` or a closer can follow." (physicalLine ())
+
+    /// Folds a plain scalar that starts at the cursor inside a flow collection and goes on in the next
+    /// lines (YAML 1.2.2 7.3.3). Each line of the scalar is one segment of a string table entry, as in
+    /// absorbPlain, and one placeholder takes the scalar's place. A flow indicator, a colon that
+    /// separates a key, a comment, a document marker and the end of the input end the scalar. The
+    /// lines must be indented like the other lines of the collection. Returns false for a scalar that
+    /// ends on its first line, which the scan reads character by character.
+    let foldFlowPlain () =
+        let firstEnd = flowPlainEnd i
+        if firstEnd >= n || s.[firstEnd] <> NewLineChar then
+            false
+        else
+            let segments = ResizeArray<string>()
+            let mutable stop = firstEnd
+            while stop > i && isBlankChar s.[stop - 1] do
+                stop <- stop - 1
+            segments.Add(copyRange i stop)
+
+            // `cursor` is the line break behind the last line that the scalar took, and `breaks` counts the
+            // line breaks from the end of the first line to it.
+            let mutable cursor = firstEnd
+            let mutable breaks = 0
+            let mutable scanning = true
+            while scanning do
+                if not (lookAhead cursor) then
+                    scanning <- false
+                else
+                    let c = s.[nextAt]
+                    if markerAt nextLineStart || c = ',' || c = '[' || c = ']' || c = '{' || c = '}' || c = '#' then
+                        scanning <- false
+                    else
+                        checkFlowIndent ()
+                        let e = flowPlainEnd nextAt
+                        if e < n && s.[e] = ':' then
+                            failwithf "Line %d: the key of a flow mapping entry must be on a single line." (physicalLine () + breaks + nextBreaks)
+                        let mutable textEnd = e
+                        while textEnd > nextAt && isBlankChar s.[textEnd - 1] do
+                            textEnd <- textEnd - 1
+                        for _ in 1 .. nextBreaks - 1 do
+                            segments.Add ""
+                        segments.Add(copyRange nextAt textEnd)
+                        breaks <- breaks + nextBreaks
+                        cursor <- e
+                        if e >= n || s.[e] <> NewLineChar then scanning <- false
+
+            if segments.Count = 1 then
+                false
+            else
+                let stringId = strings.Count
+                strings.Add(stringId, { Value = String.Join(string NewLineChar, segments.ToArray()); Kind = QuotedStringKind.PlainScalar })
+                emitText ("<s f=" + string stringId + "/>")
+                atNodeStart <- false
+                plainOpen <- false
+                hasCode <- true
+                foldedBreaks <- foldedBreaks + breaks
+                i <- cursor
+                // The blanks in front of a comment went with the end of the last line.
+                if cursor < n && s.[cursor] = '#' then emit ' '
+                true
+
+    /// Appends a character of a plain scalar. At a node start it begins the scalar. Inside a flow
+    /// collection a scalar that goes on in the next lines becomes one placeholder at once.
     let appendPlain (c: char) =
+        rejectGlued ()
+        let startsFlowScalar = atNodeStart && flowOpeners.Count > 0
         if atNodeStart then startPlain c
-        line.Append(c) |> ignore
-        atNodeStart <- false
-        hasCode <- true
-        i <- i + 1
+        if not (startsFlowScalar && plainOpen && foldFlowPlain ()) then
+            emit c
+            atNodeStart <- false
+            hasCode <- true
+            i <- i + 1
 
     /// Appends a character that ends a token and a node. `startsNode` tells whether a node may start
     /// behind it.
     let appendSeparator (c: char) (startsNode: bool) =
-        line.Append(c) |> ignore
+        emit c
         atNodeStart <- startsNode
         plainOpen <- false
+        afterCloser <- false
+        commentEndedNode <- false
         hasCode <- true
         i <- i + 1
 
@@ -365,7 +527,7 @@ type private Scanner(s: string) =
             else
                 { Value = raw; Kind = QuotedStringKind.DoubleQuotedString }
         strings.Add(stringId, entry)
-        line.Append("<s f=" + string stringId + "/>") |> ignore
+        emitText ("<s f=" + string stringId + "/>")
         atNodeStart <- false
         plainOpen <- false
         hasCode <- true
@@ -387,10 +549,11 @@ type private Scanner(s: string) =
     /// and a placeholder replaces it. The Reader restores it as the text it was, with the style of a
     /// plain scalar.
     let commitLiteralPlaceholder (stop: int) =
+        rejectGlued ()
         if atNodeStart then startPlain '<'
         let stringId = strings.Count
         strings.Add(stringId, { Value = copyRange i stop; Kind = QuotedStringKind.PlainScalar })
-        line.Append("<s f=" + string stringId + "/>") |> ignore
+        emitText ("<s f=" + string stringId + "/>")
         atNodeStart <- false
         hasCode <- true
         i <- stop
@@ -406,30 +569,38 @@ type private Scanner(s: string) =
             failwithf "Line %d: `%s` closes a `%s`." flowLines.[top] (string c) (string opener)
         flowOpeners.RemoveAt top
         flowLines.RemoveAt top
+        flowColons.RemoveAt top
 
     /// A quote opens a scalar only where a node may start. It does not open one inside a word, as in
-    /// `don't` or `rock 'n' roll`, and not inside a plain scalar either, as in `o["k"]` or `a, "b"`.
+    /// `don't` or `rock 'n' roll`, and not inside a plain scalar either, as in `o["k"]` or `a, "b"`. A
+    /// quote at a node start that does not open a valid scalar is an error.
     let tryQuote (isSingle: bool) =
         if atNodeStart then
-            let next = if isSingle then probeSingle i else probeDouble i
-            if next > 0 then
+            let inFlow = flowOpeners.Count > 0
+            let next = if isSingle then probeSingle i inFlow else probeDouble i inFlow
+            if next = NotClosed then
+                failwithf "Line %d: the quoted scalar that starts here is not closed." (physicalLine ())
+            elif next = TextBehind then
+                failwithf "Line %d: text follows the closing quote of a quoted scalar." (physicalLine () + probeBreaks)
+            else
                 commitString isSingle i next
                 true
-            else
-                false
         else
             false
 
-    /// Takes everything behind the `#` at the cursor, up to the line break, as one comment.
-    let takeComment () =
+    /// Takes everything behind the `#` at the cursor, up to the line break, as one comment. The comment
+    /// behind the code of a line is the comment of the line. A comment inside a flow collection stays in
+    /// the text as a placeholder, where the Reader's flow parser reads it as an entry of the collection.
+    let takeComment (insideFlow: bool) =
         let mutable e = i + 1
         while e < n && s.[e] <> '\n' do
             e <- e + 1
         let commentId = comments.Count
         comments.Add(commentId, copyRange (i + 1) e)
-        codeLength <- line.Length
-        line.Append("<c f=" + string commentId + "/>") |> ignore
-        lineComment <- commentId
+        if not insideFlow then
+            codeLength <- lineLength
+            lineComment <- commentId
+        emitText ("<c f=" + string commentId + "/>")
         i <- e
 
     /// True when the text holds a colon that a blank or the end of the text follows. Such a colon makes
@@ -449,8 +620,7 @@ type private Scanner(s: string) =
             owners.Clear()
             endedOwner <- NoPlain
         let structural =
-            hasCode && not startedInFlow
-            && (kind = LineKind.Code || kind = LineKind.BlockHeader || kind = LineKind.DocumentStart)
+            hasCode && (kind = LineKind.Code || kind = LineKind.BlockHeader || kind = LineKind.DocumentStart)
         let mutable opens = NoPlain
         if structural then
             let indent = Line.countLeadingSpaces text
@@ -569,13 +739,16 @@ type private Scanner(s: string) =
             let prefix = line.ToString().Substring(0, plainStartPos)
             let stringId = strings.Count
             strings.Add(stringId, { Value = String.Join(string NewLineChar, segments.ToArray()); Kind = QuotedStringKind.PlainScalar })
-            line.Clear().Append(prefix).Append("<s f=" + string stringId + "/>") |> ignore
+            line.Clear() |> ignore
+            lineLength <- 0
+            emitText prefix
+            emitText ("<s f=" + string stringId + "/>")
             foldedBreaks <- foldedBreaks + taken
             i <- at
             if commentAt >= 0 then
-                line.Append(' ') |> ignore
+                emit ' '
                 i <- commentAt
-                takeComment ()
+                takeComment false
 
     /// Looks for a block scalar header in the code of the finished line and records the line. The
     /// code is the emitted text before any comment placeholder, so a quoted scalar is a placeholder
@@ -585,7 +758,7 @@ type private Scanner(s: string) =
         let mutable kind = lineKind
         let mutable opened = NoBlock
         let codeEnd = if lineComment = NoComment then text.Length else codeLength
-        if hasCode && not startedInFlow && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
+        if hasCode && (lineKind = LineKind.Code || lineKind = LineKind.DocumentStart) then
             match BlockScalar.tryParseHeaderCode (text.Substring(0, codeEnd)) with
             | Some found ->
                 opened <- blockCount
@@ -655,12 +828,23 @@ type private Scanner(s: string) =
             if i >= n || s.[i] = '\n' then
                 lineDone <- true
             elif s.[i] = '#' && CommentMarker.startsAt s i then
-                takeComment ()
+                takeComment false
             else
-                line.Append(s.[i]) |> ignore
+                emit s.[i]
                 i <- i + 1
 
-    /// Scans the content of one emitted line up to an unquoted line break or the end of the input.
+    /// Merges the line break at the cursor into the line in progress, which holds a flow collection
+    /// that is still open. The break and the indentation of the next line that holds more than blanks
+    /// become one space. Blank lines in between vanish, and the physical lines count on.
+    let mergeFlowBreak () =
+        if not (lookAhead i) || markerAt nextLineStart then failUnclosedFlow ()
+        checkFlowIndent ()
+        if not lastBlank then emit ' '
+        foldedBreaks <- foldedBreaks + nextBreaks
+        i <- nextAt
+
+    /// Scans the content of one emitted line up to an unquoted line break or the end of the input. A line
+    /// break inside a flow collection does not end the line.
     let scanContent () =
         let mutable lineDone = false
         while not lineDone do
@@ -670,9 +854,9 @@ type private Scanner(s: string) =
                 let c = s.[i]
                 match c with
                 | '\n' ->
-                    lineDone <- true
+                    if flowOpeners.Count > 0 then mergeFlowBreak () else lineDone <- true
                 | ' ' | '\t' ->
-                    line.Append(c) |> ignore
+                    emit c
                     i <- i + 1
                 | '\'' ->
                     if not (tryQuote true) then appendPlain c
@@ -680,16 +864,27 @@ type private Scanner(s: string) =
                     if not (tryQuote false) then appendPlain c
                 | '#' ->
                     if CommentMarker.startsAt s i then
-                        takeComment ()
+                        if flowOpeners.Count > 0 then
+                            // The comment ends a node when it follows one, and then no text may follow.
+                            let endsNode = not atNodeStart
+                            takeComment true
+                            if endsNode then commentEndedNode <- true
+                        else
+                            takeComment false
                     elif i = tokenEnd then
                         failwithf "Line %d: a comment needs a space or a tab before the #." (physicalLine ())
                     else
                         appendPlain c
                 | '[' | '{' ->
-                    // A bracket in the middle of a plain scalar is text, as in `o[1]`.
+                    // A bracket in the middle of a plain scalar is text, as in `o[1]`. Inside a flow collection
+                    // a plain scalar ends at a bracket, and a node in front of the bracket needs a `,` or a `:`.
                     if atNodeStart || flowOpeners.Count > 0 then
+                        rejectGlued ()
+                        if not atNodeStart then
+                            failwithf "Line %d: a node in front of this flow collection needs a `,` or a `:` behind it." (physicalLine ())
                         flowOpeners.Add c
                         flowLines.Add(physicalLine ())
+                        flowColons.Add false
                         appendSeparator c true
                     else
                         appendPlain c
@@ -699,27 +894,47 @@ type private Scanner(s: string) =
                         closeFlow c
                         appendSeparator c false
                         tokenEnd <- i
+                        afterCloser <- true
                     elif plainOpen then
                         appendPlain c
                     else
                         failwithf "Line %d: `%s` closes no flow collection." (physicalLine ()) (string c)
                 | ',' ->
-                    if flowOpeners.Count > 0 then appendSeparator c true else appendPlain c
+                    if flowOpeners.Count > 0 then
+                        flowColons.[flowColons.Count - 1] <- false
+                        appendSeparator c true
+                    else
+                        appendPlain c
                 | '<' ->
                     let stop = placeholderEnd i
                     if stop > 0 then commitLiteralPlaceholder stop else appendPlain c
                 | ':' ->
-                    // In a flow collection a colon needs no blank behind it, as in `{"a":"b"}`.
-                    if flowOpeners.Count > 0 then
-                        appendSeparator c true
-                    elif nextIsBlank (i + 1) then
-                        // The first colon ends the key. A plain scalar behind it is a value and ends at the line break.
-                        if plainOpen && keySeparated then
-                            failwithf "Line %d: a plain scalar cannot contain `: `." (physicalLine ())
-                        if not atNodeStart then keySeparated <- true
-                        appendSeparator c true
-                    else
+                    // A colon separates a key from its value when a blank follows it. In a flow collection
+                    // a flow indicator can follow it too, and a quoted scalar or a flow collection can stand
+                    // directly in front of it, as in `{"a":"b"}`. Anywhere else the colon is text, as in `a:b`.
+                    let separates =
+                        if flowOpeners.Count > 0 then i = tokenEnd || endsFlowToken (i + 1) else nextIsBlank (i + 1)
+                    if not separates then
                         appendPlain c
+                    else
+                        // A flow collection cannot be the key of an entry, which the Reader cannot represent.
+                        if afterCloser then
+                            failwithf "Line %d: a flow collection as the key of an entry is not supported. Write the key as `? [...]` and the value on a line that starts with `:`." (physicalLine ())
+                        if flowOpeners.Count > 0 then
+                            let top = flowColons.Count - 1
+                            if flowColons.[top] then
+                                failwithf "Line %d: an entry of a flow collection can hold only one `:`." (physicalLine ())
+                            flowColons.[top] <- true
+                        else
+                            // The first colon ends the key. The value behind it, plain or quoted, ends at
+                            // the line break, so another colon that separates is an error.
+                            if keySeparated then
+                                if plainOpen then
+                                    failwithf "Line %d: a plain scalar cannot contain `: `." (physicalLine ())
+                                else
+                                    failwithf "Line %d: a second `: ` follows the colon that separated the key from its value." (physicalLine ())
+                            if not atNodeStart then keySeparated <- true
+                        appendSeparator c true
                 | '-' | '?' ->
                     // An indicator needs a blank behind it. Without one the character begins a plain scalar.
                     // A flow collection holds no block sequence, so a dash there needs a plain character behind it.
@@ -731,7 +946,7 @@ type private Scanner(s: string) =
                         // A property is one token. A quote inside it must not start a scalar.
                         let e = Property.endIndex s i
                         for k in i .. e - 1 do
-                            line.Append(s.[k]) |> ignore
+                            emit s.[k]
                         hasCode <- true
                         i <- e
                     else
@@ -742,6 +957,8 @@ type private Scanner(s: string) =
     /// Scans one emitted line, starting at a physical line start.
     let scanLine () =
         line.Clear() |> ignore
+        lineLength <- 0
+        lastBlank <- false
         lineNumber <- records.Count + 1 + foldedBreaks
         lineKind <- LineKind.Code
         hasCode <- false
@@ -749,17 +966,18 @@ type private Scanner(s: string) =
         codeLength <- -1
         plainOpen <- false
         keySeparated <- false
-        startedInFlow <- flowOpeners.Count > 0
-        if not startedInFlow then atNodeStart <- true
+        flowOwner <- OwnerUnknown
+        afterCloser <- false
+        commentEndedNode <- false
+        atNodeStart <- true
 
         if i < n && s.[i] = '%' && inPrelude then
             scanDirective ()
         else
             if i < n && (s.[i] = '-' || s.[i] = '.') && markerAt i then
                 lineKind <- if s.[i] = '-' then LineKind.DocumentStart else LineKind.DocumentEnd
-                if startedInFlow then failUnclosedFlow ()
                 for _ in 1 .. 3 do
-                    line.Append(s.[i]) |> ignore
+                    emit s.[i]
                 i <- i + 3
             scanContent ()
 

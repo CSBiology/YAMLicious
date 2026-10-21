@@ -419,19 +419,11 @@ next: v"""
         ]
         Expect.equal (Reader.readDocuments yaml) expected "The header after a start marker should open a block scalar"
 
-    testCase "A document marker inside a quoted scalar ends the document" <| fun _ ->
-        // yaml@2.6.1 rejects the input. A quote never crosses a marker, so the marker still splits
-        // the documents and the unclosed quote stays plain text.
-        let yaml = "a: 'x\n---\nb: 1\n"
-        let actual = Reader.readDocuments yaml
-        Expect.equal actual.Length 2 "The marker should split the input into two documents"
-        Expect.equal
-            actual.[1]
-            (YAMLElement.Object [
-                YAMLElement.Mapping(
-                    YAMLContent.create("b"),
-                    YAMLElement.Object [YAMLElement.Value(YAMLContent.create("1"))]
-                )
-            ])
-            "The second document should be unaffected by the quote before the marker"
+    testCase "A document marker inside a quoted scalar is an error" <| fun _ ->
+        // yaml@2.6.1 rejects the input with MISSING_CHAR. A quote never crosses a marker, so the
+        // scalar that starts on line 1 never closes.
+        Expect.stringContains
+            (errorOf (fun () -> Reader.readDocuments "a: 'x\n---\nb: 1\n" |> ignore))
+            "Line 1: the quoted scalar that starts here is not closed."
+            "The error names the line of the quote"
 ]

@@ -187,12 +187,13 @@ rbi:
         Expect.equal actual expected "Complex key (sequence) should be flattened string"
 
     testCase "5.1.3 Nested mapping as key" <| fun _ ->
+        // yaml@2.6.1: {"[ New York Yankees, Atlanta Braves ]":["2001-07-02","2001-08-12","2001-08-14"]}
         let yaml = """? [ New York Yankees,
     Atlanta Braves ]
 : [ 2001-07-02, 2001-08-12,
     2001-08-14 ]"""
         let actual = Reader.read yaml
-        let expectedKey = "[ New York Yankees,\nAtlanta Braves ]"
+        let expectedKey = "[ New York Yankees, Atlanta Braves ]"
         let expected = YAMLElement.Object [
             YAMLElement.Mapping(
                  YAMLContent.create(expectedKey),

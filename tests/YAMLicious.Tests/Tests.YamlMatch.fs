@@ -47,34 +47,6 @@ let Main = testList "YamlMatch" [
             Expect.equal res.Comment (Some 1) ""
         | _ -> Expect.isFalse true ""
 
-    testCase "Match SequenceSquareOpener" <| fun _ ->
-        let yamlElement = Line "["
-        match yamlElement with
-        | SequenceSquareOpener res -> 
-            Expect.isNone res.Comment ""
-        | _ -> Expect.isFalse true ""
-
-    testCase "Match SequenceSquareOpener + Comment" <| fun _ ->
-        let yamlElement = Line "[ <c f=1/>"
-        match yamlElement with
-        | SequenceSquareOpener res -> 
-            Expect.equal res.Comment (Some 1) ""
-        | _ -> Expect.isFalse true ""
-
-    testCase "Match SequenceSquareCloser" <| fun _ ->
-        let yamlElement = Line "]"
-        match yamlElement with
-        | SequenceSquareCloser res -> 
-            Expect.isNone res.Comment ""
-        | _ -> Expect.isFalse true ""
-
-    testCase "Match SequenceSquareCloser + Comment" <| fun _ ->
-        let yamlElement = Line "] <c f=1/>"
-        match yamlElement with
-        | SequenceSquareCloser res -> 
-            Expect.equal res.Comment (Some 1) ""
-        | _ -> Expect.isFalse true ""
-
     testCase "Match SequenceMinusOpener" <| fun _ ->
         let yamlElement = Line "-"
         match yamlElement with

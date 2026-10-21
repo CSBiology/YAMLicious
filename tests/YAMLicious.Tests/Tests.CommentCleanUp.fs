@@ -129,15 +129,22 @@ My Key: <c f=0/>
         // yaml@2.6.1 rejects the input with MISSING_CHAR
         Expect.throws (fun () -> Persil.tokenize "\"x\"#suffix" |> ignore) "A comment needs a blank in front of its hash."
 
-    testCase "a comment behind an unclosed quote is still found" <| fun _ ->
-        expectComments "a: 'open # c\nb: 1 # d\n" "a: 'open <c f=0/>\nb: 1 <c f=1/>\n" [code; code; blank] [0, " c"; 1, " d"] |> ignore
+    testCase "a hash behind a quote that never closes is no comment" <| fun _ ->
+        // yaml@2.6.1 rejects the input with MISSING_CHAR
+        Expect.stringContains
+            (errorOf (fun () -> Persil.tokenize "a: 'open # c\nb: 1 # d\n" |> ignore))
+            "Line 1: the quoted scalar that starts here is not closed."
+            "The hash is inside the quote"
 
-    testCase "comments inside a multiline flow collection stay comments" <| fun _ ->
+    testCase "comments inside a multiline flow collection stay in the merged line" <| fun _ ->
+        // yaml@2.6.1: {"a":["x","y"]}
         let actual =
             expectComments
                 "a: [ # open\n  'x', # one\n  \"y\" # two\n] # close\n"
-                "a: [ <c f=0/>\n  <s f=0/>, <c f=1/>\n  <s f=1/> <c f=2/>\n] <c f=3/>\n"
-                [code; code; code; code; blank]
+                "a: [ <c f=0/> <s f=0/>, <c f=1/> <s f=1/> <c f=2/> ] <c f=3/>\n"
+                [code; blank]
                 [0, " open"; 1, " one"; 2, " two"; 3, " close"]
         Expect.equal actual.StringMap.Count 2 "both strings"
+        Expect.equal actual.Lines.[0].CommentId 3 "only the comment behind the closer is the comment of the line"
+        Expect.equal actual.Lines.[0].CodeLength (actual.Lines.[0].Text.Length - "<c f=3/>".Length) "the code ends in front of that comment"
 ]

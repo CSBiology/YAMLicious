@@ -50,6 +50,14 @@ module Expect =
 let tokenizedText (tokenized: YAMLicious.Persil.TokenizedYaml) =
     System.String.Join("\n", tokenized.Lines |> Array.map (fun line -> line.Text))
 
+/// The message of the exception that the action throws, or an empty string when it succeeds.
+let errorOf (action: unit -> unit) =
+    try
+        action ()
+        ""
+    with e ->
+        e.Message
+
 /// Runs the action repeatedly for a fixed time and returns the milliseconds of one run. Fable has no
 /// Stopwatch, so the clock is the system time, and a window of 50 ms holds many runs of a short action.
 let private sampleMilliseconds (action: unit -> unit) =

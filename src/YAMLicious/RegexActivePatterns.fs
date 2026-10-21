@@ -103,34 +103,6 @@ let (|FlowStyleArray|_|) (input: PreprocessorElement) =
 // Backward compatibility alias
 let (|InlineSequence|_|) = (|FlowStyleArray|_|)
 
-let (|SequenceSquareOpener|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s -> 
-        let line = trimForPattern s
-        let m = Regex.Match(line, SequenceOpenerPattern) 
-        if m.Success then 
-            let comment: int option = 
-                let v = m.Groups.["comment"].Value
-                if v = "" then None else Some (int v)
-            Some {| Comment = comment|}
-        else
-            None
-    | _ -> None
-
-let (|SequenceSquareCloser|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s -> 
-        let line = trimForPattern s
-        let m = Regex.Match(line, SequenceCloserPattern) 
-        if m.Success then 
-            let comment: int option = 
-                let v = m.Groups.["comment"].Value
-                if v = "" then None else Some (int v)
-            Some {| Comment = comment|}
-        else
-            None
-    | _ -> None
-
 let (|FlowStyleObject|_|) (input: PreprocessorElement) =
     match input with
     | Line s -> 
@@ -149,40 +121,6 @@ let (|FlowStyleObject|_|) (input: PreprocessorElement) =
 
 // Backward compatibility alias
 let (|InlineJSON|_|) = (|FlowStyleObject|_|)
-
-let (|FlowStyleObjectOpener|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s -> 
-        let line = trimForPattern s
-        let m = Regex.Match(line, FlowStyleObjectOpenerPattern) 
-        if m.Success then 
-            let comment: int option = 
-                let v = m.Groups.["comment"].Value
-                if v = "" then None else Some (int v)
-            Some {| Key = m.Groups.["key"].Value; Comment = comment|}
-        else
-            None
-    | _ -> None
-
-// Backward compatibility alias
-let (|JSONKeyOpener|_|) = (|FlowStyleObjectOpener|_|)
-
-let (|FlowStyleObjectCloser|_|) (input: PreprocessorElement) =
-    match input with
-    | Line s -> 
-        let line = trimForPattern s
-        let m = Regex.Match(line, FlowStyleObjectCloserPattern) 
-        if m.Success then 
-            let comment: int option = 
-                let v = m.Groups.["comment"].Value
-                if v = "" then None else Some (int v)
-            Some {| Comment = comment|}
-        else
-            None
-    | _ -> None
-
-// Backward compatibility alias
-let (|JSONCloser|_|) = (|FlowStyleObjectCloser|_|)
 
 let (|WithAnchor|_|) (input: string) =
     let m = Regex.Match(input, AnchorPattern)
