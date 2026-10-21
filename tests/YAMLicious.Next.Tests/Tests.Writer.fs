@@ -1059,6 +1059,166 @@ let private writeClipScalarsAtDepth (text: string) =
         node <- YamlNode.sequence [ YamlNode.item node ]
     Writer.writeNode defaults node |> ignore
 
+let private styleTests = testList "Ported from ScalarStyles, BlockScalars and YamlRead" [
+    // Tests.ScalarStyles "Writer emits styled inline sequence scalars with quotes". yaml@2.6.1 reads the text as {"items":["a","b"]}. The old writer chose the inline form for
+    // every sequence of scalars. The tree stores the style, so the test builds a flow sequence.
+    testCase "a flow sequence keeps the quotes of its scalars" <| fun _ ->
+        expectNode (mapOf [ "items", flowSeq [ sq "a"; dq "b" ] ]) "items: ['a', \"b\"]\n"
+
+    // Tests.ScalarStyles "Writer preserves plain multiline sequence style on read-write-read" and "Writer preserves plain multiline mapping style on read-write-read".
+    // yaml@2.6.1 reads the inputs as ["My Value 1 My Value 2","My Value 3"] and {"note":"line1 line2"}. The old tree kept the lines of the source and the writer wrote them
+    // again. The new tree holds the folded text, so the text comes back on one line.
+    testCase "a plain scalar that the parser folded is written on one line" <| fun _ ->
+        expectWritten "- My Value 1\n  My Value 2\n- My Value 3\n" "- My Value 1 My Value 2\n- My Value 3\n"
+        expectWritten "note: line1\n  line2\n" "note: line1 line2\n"
+
+    // Tests.ScalarStyles "Explicit indentation indicator round-trip preserves semantic value" and "Explicit indentation indicator round-trip keeps a sequence item scalar".
+    // yaml@2.6.1 reads the texts as {"doc":"explicit\n"} and [" explicit\n"].
+    testCase "a stored indentation indicator comes back in the same text" <| fun _ ->
+        expectStable "doc: |2\n  explicit\n"
+        expectStable "- |1\n  explicit\n"
+
+    // Tests.ScalarStyles "Writer adds an indentation indicator when the first line of a mapping value starts with a space", "Writer adds an indentation indicator to the default strip
+    // chomping", "Writer counts the indentation indicator from the header of a nested mapping value", "Writer adds an indentation indicator when the first line of a sequence item
+    // starts with a space", "Writer adds an indentation indicator when the first line of a root value starts with a space" and "Writer adds no indentation indicator when the first
+    // nonblank line starts without a space". yaml@2.6.1 reads each expected text back as the original value. The old tests built values without a style and the writer chose the
+    // block form. The tree stores the style now, so the tests build literal scalars.
+    testCase "a literal scalar with a space at the start of its first line gets an indentation indicator in every position" <| fun _ ->
+        let value = "  leading spaces first line\nnormal second line\n"
+        expectNode (mapOf [ "k", lit value ]) "k: |2\n    leading spaces first line\n  normal second line\n"
+        expectNode
+            (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "  leading spaces first line\nnormal second line" ])
+            "k: |2-\n    leading spaces first line\n  normal second line\n"
+        expectNode (mapOf [ "a", mapOf [ "k", lit value ] ]) "a:\n  k: |2\n      leading spaces first line\n    normal second line\n"
+        expectNode (seqOf [ lit value ]) "- |2\n    leading spaces first line\n  normal second line\n"
+        expectNode (lit value) "|2\n    leading spaces first line\n  normal second line\n"
+        expectNode (mapOf [ "k", lit "first\n  second\n" ]) "k: |\n  first\n    second\n"
+
+    // Tests.ScalarStyles "Expression block scalar keeps quote delimiters and stays block style on write". yaml@2.6.1 reads the folded text with its quotes and its more indented
+    // lines as one string.
+    testCase "a folded expression keeps its quotes and its block style" <| fun _ ->
+        expectStable "expression: >\n  ${ return (function() {\n    function trimItem(datum) {\n      var permittedKeys = ['class', 'basename'];\n      if (datum.basename === \"own\" || datum.basename === \".tmp\") return null;\n      if (datum.class === \"Directory\") return null;\n      return entry;\n    }\n    return trimItem(inputs.source);\n  })(); }\n"
+
+    // Tests.ScalarStyles "Writer preserves key tag and anchor metadata in mapping emission". yaml@2.6.1 reads the text as {"k":"v"}. The tag comes first, as in the layout that the
+    // tree stores.
+    testCase "the tag and the anchor of a key stand in front of the key" <| fun _ ->
+        let key = YamlNode.withAnchor "a1" (YamlNode.withTag (YamlTag.Named { Prefix = ""; Suffix = "tag:foo" }) (sc "k"))
+        let node = YamlNode.mapping [ YamlNode.entry key (sc "v") ]
+        expectNode node "!<tag:foo> &a1 k: v\n"
+        Expect.nodeEqual (parseRoot "!<tag:foo> &a1 k: v\n") node "The text reads as the same tree"
+
+    // Tests.ScalarStyles "Writer preserves mapping-key comments on non-inline mappings" and "Non-specific tag round-trip remains '!'". yaml@2.6.1 reads the texts as {"a":{"b":"c"}}
+    // and ["12"].
+    testCase "a comment behind a key and the non-specific tag come back in the same text" <| fun _ ->
+        expectStable "a: # key\n  b: c\n"
+        expectStable "- ! 12\n"
+
+    // Tests.ScalarStyles "isPlainSafe classifies structurally unsafe strings" and "Style-less safe scalar stays plain and round-trips". The function is gone, because the writer
+    // decides the spelling. yaml@2.6.1 reads each text as the string that the node holds. The old lists had the empty string and a string with a line feed among the unsafe strings.
+    // A plain scalar without text is a missing value now, and a plain scalar with a line feed is written over several lines, so both leave the lists.
+    testCase "a plain scalar that can stand plain stays plain in a mapping value" <| fun _ ->
+        for text in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.cwl#main" ] do
+            expectNode (mapOf [ "k", sc text ]) (sprintf "k: %s\n" text)
+            Expect.nodeEqual (parseRoot (sprintf "k: %s\n" text)) (mapOf [ "k", sc text ]) (sprintf "%s reads back as the same tree" text)
+
+    // Tests.ScalarStyles "isPlainSafe classifies structurally unsafe strings", "Style-less unsafe scalar auto-selects double-quoted and round-trips" and "Style-less unsafe
+    // scalars survive read-write-read unchanged". yaml@2.6.1 reads the written texts as the strings that the nodes hold. The tab inside "tab\there" is no problem for a plain scalar,
+    // so the test only reads that text back.
+    testCase "a plain scalar that cannot stand plain is written in double quotes and reads back" <| fun _ ->
+        for text in [ "a: b"; "@id"; "*ref"; "- item"; "x # y"; "x\t# y"; " padded"; "trailing "; "-"; "'q"; "\"q" ] do
+            let written = writeNode (mapOf [ "k", sc text ])
+            Expect.isTrue (written.StartsWith "k: \"") (sprintf "%A is written in double quotes: %s" text written)
+            Expect.nodeEqual (parseRoot written) (mapOf [ "k", dq text ]) (sprintf "%A reads back" text)
+            Expect.equal (writeNode (parseRoot written)) written (sprintf "The text of %A is stable" text)
+        let tab = writeNode (mapOf [ "k", sc "tab\there" ])
+        Expect.equal (Decode.string (YamlNode.entries (parseRoot tab)).Head.Value) "tab\there" "The tab reads back"
+
+    // Tests.ScalarStyles "isPlainSafe applies the flow indicator rules only in Flow context", "Writer double-quotes a flow sequence item that contains commas and quotes", "Writer
+    // double-quotes flow sequence items that contain flow indicators", "Writer keeps the block rules for flow indicators in a mapping value" and "Writer keeps flow-safe flow
+    // sequence items plain". yaml@2.6.1 reads k: [f(a, b)] as the two items "f(a" and "b)", and it reads each expected text as the single value of the node.
+    testCase "a flow indicator in a plain scalar is text in a block mapping and a reason for double quotes in a flow sequence" <| fun _ ->
+        for text in [ "f(a, b)"; "function f(a){ return a; }"; "a[0]"; "x{y}"; "a:]"; "a:," ] do
+            expectNode (mapOf [ "k", sc text ]) (sprintf "k: %s\n" text)
+            expectNode (mapOf [ "k", flowSeq [ sc text ] ]) (sprintf "k: [\"%s\"]\n" text)
+        expectNode (mapOf [ "k", sc "x: {y}" ]) "k: \"x: {y}\"\n"
+        expectNode (mapOf [ "k", flowSeq [ sc "x: {y}" ] ]) "k: [\"x: {y}\"]\n"
+        expectNode (mapOf [ "k", flowSeq [ sc "x.replace(/#/g, \"_\"), y" ] ]) "k: [\"x.replace(/#/g, \\\"_\\\"), y\"]\n"
+        let safe = [ "abc"; "hello world"; "C#"; "tool.cwl#main"; "a:b"; "3:30"; ":x" ]
+        expectNode (mapOf [ "k", flowSeq [ for text in safe -> sc text ] ]) "k: [abc, hello world, C#, tool.cwl#main, a:b, 3:30, :x]\n"
+
+    // Tests.ScalarStyles "Writer puts the comment of a multiline plain mapping value behind its last line" and "Writer puts the comment of a multiline plain sequence item behind its
+    // last line". yaml@2.6.1 reads the texts as {"k":"$(f(a, \"x\"))"...} with the line feed of the empty line, and it rejects a comment behind the first line. The tree holds the
+    // line feed, and the writer writes an empty line for it.
+    testCase "the comment of a plain scalar over several lines stands behind its last line" <| fun _ ->
+        let withComment = YamlNode.withTrailingComment (comment " note") (sc "$(f(a,\n\"x\"))")
+        let mapping = YamlNode.mapping [ entryOf "k" withComment; entryOf "j" (sc "x") ]
+        expectNode mapping "k: $(f(a,\n\n  \"x\")) # note\nj: x\n"
+        Expect.nodeEqual (parseRoot "k: $(f(a,\n\n  \"x\")) # note\nj: x\n") mapping "The mapping reads back"
+        let sequence = seqOf [ withComment; sc "x" ]
+        expectNode sequence "- $(f(a,\n\n  \"x\")) # note\n- x\n"
+        Expect.nodeEqual (parseRoot "- $(f(a,\n\n  \"x\")) # note\n- x\n") sequence "The sequence reads back"
+
+    // Tests.BlockScalars "A line of spaces survives writing and reading" and "Writer adds an indentation indicator when the first line is a line of spaces". yaml@2.6.1 reads
+    // the written texts back as "a\n \nb\n", "a\n\n  \nb" and " \na\n". A line of spaces keeps its spaces behind the indentation.
+    testCase "a line of spaces in a block scalar keeps its spaces" <| fun _ ->
+        expectNode (mapOf [ "k", lit "a\n \nb\n" ]) "k: |\n  a\n   \n  b\n"
+        let two = mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "a\n\n  \nb" ]
+        let written = writeNode two
+        Expect.isTrue (written.StartsWith "k: |-\n  a\n") "The header and the first line"
+        Expect.isTrue (written.Contains "\n    \n") "The line of two spaces keeps them behind the indentation"
+        Expect.nodeEqual (parseRoot written) two "The text reads back as the same value"
+        expectNode (mapOf [ "k", lit " \na\n" ]) "k: |2\n   \n  a\n"
+        Expect.nodeEqual
+            (parseRoot "k: |2\n   \n  a\n")
+            (mapOf [ "k", blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) " \na\n" ])
+            "The indicator is part of the tree"
+
+    // Tests.Escapes "A double-quoted scalar with a line break round-trips through the writer". yaml@2.6.1 reads the text as {"one \n\n  two \t":"v"}. The writer escapes the line breaks
+    // and the tab, so the output never relies on folding.
+    testCase "a double-quoted key with line breaks and a tab is written with escapes" <| fun _ ->
+        let node = YamlNode.mapping [ YamlNode.entry (dq "one \n\n  two \t") (sc "v") ]
+        expectNode node "\"one \\n\\n  two \\t\": v\n"
+        Expect.nodeEqual (parseRoot "\"one \\n\\n  two \\t\": v\n") node "The text reads back as the same tree"
+
+    // Tests.AdvancedFeatures "7.7 A writer round trip keeps the tag and the anchor of the scalars". yaml@2.6.1 reads the texts as {"k":"a b"}, {"k":"a"}, ["a b"], {"k":"x\n"} and ["y"].
+    testCase "the tag and the anchor of a scalar with its value on a later line survive writing" <| fun _ ->
+        for text in [ "k: !!str\n  a\n  b"; "k: &x\n  a"; "- !!str\n  a\n  b"; "k: !t\n  |\n    x"; "- &a\n  >-\n    y" ] do
+            let stream = parseOk text
+            let written = Writer.writeDocuments defaults stream
+            Expect.streamEqual (parseOk written) stream (sprintf "The tree of %A after writing" text)
+            Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The text of %A is stable" text)
+
+    // Tests.Tokenizer "a placeholder-shaped value reads like a plain scalar and survives the writer", Tests.YamlRead "KeyValue empty inline sequence roundtrips as brackets", "An empty
+    // sequence item writes as a bare dash", "A key without a value reads as None and writes as the key" and "Nested sequences of mappings and dollar keys survive write and read",
+    // Tests.YamlGenericRead "Preprocessing read/write keeps stable structural indentation". yaml@2.6.1 reads the texts as {"a":"<c f=0/>"}, {"value":[]}, ["a",null,{}], {"k":[null,"x"]}
+    // and {"k":null} for the keys without a value. The old tests built the elements by hand or compared a text with a part of it, so the tests here compare the whole text.
+    testCase "the texts of the old round trip tests come back as the same text" <| fun _ ->
+        for text in [ "a: <c f=0/>\n"; "a: <s f=1/>\n"; "value: []\n"; "- a\n-\n- {}\n"; "k:\n  -\n  - x\n"; "k:\n"; "k:\nj: 1\n"; "a:\n  k:\nb: 1\n"; "k: # c\n"; "- k:\n- b\n" ] do
+            expectStable text
+        expectWritten "a:\n      b:\n        c: d" "a:\n  b:\n    c: d\n"
+        // Tests.ReaderDocuments "A document without a node round trips through the writer". The old Nil is a missing root. A text without a node writes nothing, and the comments stay.
+        expectWritten "" ""
+        expectWritten "# c" "# c\n"
+        expectWritten "# c1\n# c2" "# c1\n# c2\n"
+        for text in [ "fileCollectionSet:\n- - class: File\n    path: a_1\n  - class: File\n    path: a_2\n- - class: File\n    path: b_1\n"; "$namespaces:\n  s: https://schema.org/\n$schemas:\n- https://x\n" ] do
+            let stream = parseOk text
+            Expect.streamEqual (parseOk (Writer.writeDocuments defaults stream)) stream (sprintf "The tree of %A after writing" text)
+
+    // Tests.YamlRead "CWL ExpressionTool full roundtrip preserves expression and empty object". yaml@2.6.1 reads the text as the tool with its expression in a folded scalar and
+    // `InlineJavascriptRequirement: {}`. The empty flow mapping stays a flow mapping, the expression keeps its helper functions and the second write gives the first text again.
+    testCase "a CWL ExpressionTool keeps its expression and its empty flow mapping through the writer" <| fun _ ->
+        let text =
+            "#!/usr/bin/env cwl-runner\n\ncwlVersion: v1.2\nclass: ExpressionTool\nid: \"T_join_out\"\nlabel: Gives back the joined folder called from \"analysis\", holding all given files and the subfolders.\nrequirements:\n  InlineJavascriptRequirement: {}\ninputs:\n  base_path:\n    type: Directory\n  item_single:\n    type: File?\n  item_array:\n    type: File[]?\n  container_single:\n    type: Directory?\n  container_array:\n    type: Directory[]?\n  relabel:\n    type: string?\noutputs:\n  joined_D:\n    type: Directory\n    doc: \"Merged results output folder\"\nexpression: >\n  ${ return (function() {\n    function trimItem(datum) {\n      var permittedKeys = ['class', 'basename', 'checksum', 'listing'];\n      var shortened = {};\n      for (var i = 0; i < permittedKeys.length; i++) {\n        var key = permittedKeys[i];\n        if (datum[key] !== undefined) shortened[key] = datum[key];\n      }\n      return shortened.class && shortened.basename ? shortened : null;\n      return name.replace(/\\.webp$/, \"\").replace(/\\.gif$/, \"\");\n    }\n\n    var collection = [];\n    if (inputs.container_single) collection.push(trimItem(inputs.container_single));\n    if (inputs.item_single) collection.push(trimItem(inputs.item_single));\n\n    return {\n      joined_D: { class: \"Directory\", basename: inputs.relabel || \"analysis\", listing: collection }\n    };\n  })(); }"
+        let stream = parseOk text
+        let written = Writer.writeDocuments defaults stream
+        let reparsed = parseOk written
+        Expect.streamEqual reparsed stream "The tree after the round trip"
+        Expect.isTrue (written.Contains "{}") "The empty flow mapping is written"
+        Expect.isTrue (written.Contains "trimItem(datum)") "The trimItem helper survives"
+        Expect.isTrue (written.Contains "permittedKeys") "The array of allowed fields survives"
+        Expect.equal (Writer.writeDocuments defaults reparsed) written "The second write gives the first text"
+]
+
 let private depthTests = testList "Deep trees and linear time" [
     testCase "a block sequence nested 10000 levels deep" <| fun _ ->
         Expect.equal (writeNode (nestedSequence depth)) (repeated "- " depth + "x\n") "One dash on the line for each level"
@@ -1117,4 +1277,4 @@ let private depthTests = testList "Deep trees and linear time" [
 ]
 
 let Main =
-    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; invalidTreeTests; depthTests ]
+    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; styleTests; invalidTreeTests; depthTests ]

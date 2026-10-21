@@ -327,6 +327,117 @@ let private validationTests = testList "The validation package example" [
         Expect.equal (dataOf encoded) (dataOf (parseRoot text)) "The data projections are equal"
 ]
 
+/// The text of a mapping with the node as the value of the key k.
+let private writeValue (node: YamlNode) : string =
+    Writer.writeNode WriterOptions.defaults (YamlNode.mapping [ YamlNode.entry (sc "k") node ])
+
+/// The text of the node as a document.
+let private writeDocument (node: YamlNode) : string = Writer.writeNode WriterOptions.defaults node
+
+/// The value of the key k in the text.
+let private readValue (decoder: Decoder<'T>) (text: string) : 'T =
+    Decode.object (fun get -> get.Required.Field "k" decoder) (parseRoot text)
+
+let private writtenTests = testList "Encoders through the writer" [
+    // The old tests of Tests.EncoderDecoder compared the text that Writer.write made from the element. The tests above compare the node, and these tests keep the text. Each text
+    // goes through the parser and the decoder again. yaml@2.6.1 reads each of these texts as null, a bool, an int or a float when it is plain, and as the string itself when it is
+    // double-quoted.
+    testCase "Encode.string is written in double quotes when the core schema reads it as null, bool, int or float, and plain otherwise" <| fun _ ->
+        let lookalikes =
+            [ "null"; "Null"; "NULL"; "~"; ""
+              "true"; "True"; "TRUE"; "false"; "False"; "FALSE"
+              "1"; "-1"; "+1"; "007"; "0o17"; "0x1F"
+              "1.5"; "-1.5"; ".5"; "5."; "1e3"; "1.5E-3"; "-.5e+2"
+              ".inf"; "-.inf"; "+.inf"; ".Inf"; ".INF"; ".nan"; ".NaN"; ".NAN" ]
+        for text in lookalikes do
+            let written = writeValue (Encode.string text)
+            Expect.equal written (sprintf "k: \"%s\"\n" text) (sprintf "'%s' is written in quotes" text)
+            Expect.equal (readValue Decode.string written) text (sprintf "'%s' reads back as the string" text)
+        // yaml@2.6.1 reads each of these plain texts as the string itself. YAML 1.2 does not resolve yes, no, on and off, so they stay plain.
+        for text in [ "abc"; "1a"; "true1"; "nulls"; "1.0.0"; "0x"; "yes"; "no"; "on"; "off" ] do
+            let written = writeValue (Encode.string text)
+            Expect.equal written (sprintf "k: %s\n" text) (sprintf "'%s' is written plain" text)
+            Expect.equal (readValue Decode.string written) text (sprintf "'%s' reads back as the string" text)
+
+    // yaml@2.6.1 reads `k: true`, `k: false`, `k: 5`, `k: -5` and `k: 1.5` as the bool and the numbers, and `k: -9223372036854775808` and `k: 9223372036854775807` as the bigints
+    // when it runs with intAsBigInt.
+    testCase "Encode.bool, int, int64 and float are written plain and read back" <| fun _ ->
+        Expect.equal (writeValue (Encode.bool true)) "k: true\n" "true"
+        Expect.equal (writeValue (Encode.bool false)) "k: false\n" "false"
+        Expect.equal (readValue Decode.bool "k: true\n") true "Decode.bool reads true"
+        Expect.equal (readValue Decode.bool "k: false\n") false "Decode.bool reads false"
+        Expect.equal (writeValue (Encode.int 5)) "k: 5\n" "int"
+        Expect.equal (writeValue (Encode.int -5)) "k: -5\n" "negative int"
+        Expect.equal (writeValue (Encode.float 1.5)) "k: 1.5\n" "float"
+        Expect.equal (writeValue (Encode.int64 System.Int64.MinValue)) "k: -9223372036854775808\n" "Int64.MinValue"
+        Expect.equal (writeValue (Encode.int64 System.Int64.MaxValue)) "k: 9223372036854775807\n" "Int64.MaxValue"
+        for value in [ System.Int64.MinValue; System.Int64.MaxValue; 0L; -1L; 3000000000L ] do
+            Expect.equal (readValue Decode.int64 (writeValue (Encode.int64 value))) value (sprintf "%d reads back" value)
+
+    // yaml@2.6.1 reads `k: .nan`, `k: .inf` and `k: -.inf` as NaN, Infinity and -Infinity. The core schema of yaml@2.6.1 resolves 1.0, 100.0 and -2.0 as floats.
+    testCase "Encode.float is written in the core schema spelling and reads back" <| fun _ ->
+        Expect.equal (writeValue (Encode.float nan)) "k: .nan\n" "nan"
+        Expect.equal (writeValue (Encode.float infinity)) "k: .inf\n" "infinity"
+        Expect.equal (writeValue (Encode.float (-infinity))) "k: -.inf\n" "negative infinity"
+        Expect.equal (writeValue (Encode.float 1.0)) "k: 1.0\n" "1.0"
+        Expect.equal (writeValue (Encode.float 100.0)) "k: 100.0\n" "100.0"
+        Expect.equal (writeValue (Encode.float -2.0)) "k: -2.0\n" "-2.0"
+        Expect.equal (writeValue (Encode.float 0.0)) "k: 0.0\n" "0.0"
+        let values =
+            [ nan; infinity; -infinity; 0.1; 1e21; -0.0; 0.0; 123.0; -1.5; 1e-7; 1e16
+              0.30000000000000004; 5e-324; 1.7976931348623157e308; 1.0; 1e15; 1e100; -1e-100 ]
+        for value in values do
+            let written = writeValue (Encode.float value)
+            Expect.sameFloat (readValue Decode.float written) value (sprintf "%s reads back" written)
+
+    // yaml@2.6.1 reads `k: "null"`, `k: "~"` and `k: "1"` as the strings null, ~ and 1, and `k: ""` as the empty string.
+    testCase "Encode.option and Encode.char are written so that they read back" <| fun _ ->
+        for text in [ "null"; "~"; "" ] do
+            let written = writeValue (Encode.option Encode.string (Some text))
+            Expect.equal (readValue (Decode.option Decode.string) written) (Some text) (sprintf "Some '%s' reads back" text)
+        Expect.equal (readValue (Decode.option Decode.string) (writeValue (Encode.option Encode.string None))) None "None reads back as None"
+        Expect.equal (writeValue (Encode.char '1')) "k: \"1\"\n" "'1' is quoted"
+        Expect.equal (writeValue (Encode.char '~')) "k: \"~\"\n" "'~' is quoted"
+        Expect.equal (writeValue (Encode.char 'a')) "k: a\n" "'a' stays plain"
+        Expect.equal (readValue Decode.char "k: \"1\"\n") '1' "'1' reads back"
+        Expect.equal (readValue Decode.char "k: \"~\"\n") '~' "'~' reads back"
+
+    // yaml@2.6.1 with mapAsMap reads the quoted keys "true", "1", "null" and "1.5" as strings. It reads the plain keys true and 1 as the bool true and the number 1. A map lists its entries
+    // in the order of its keys and a dictionary in the order of insertion.
+    testCase "Encode.map, Encode.dict and Encode.object write the keys such as true and 1 in double quotes" <| fun _ ->
+        let map = Encode.map Encode.string Encode.int (Map [ "true", 1; "1", 2 ])
+        Expect.equal (writeDocument map) "\"1\": 2\n\"true\": 1\n" "map keys are quoted"
+        Expect.equal (writeDocument map |> parseRoot |> Decode.map Decode.string Decode.int) (Map [ "true", 1; "1", 2 ]) "map keys read back"
+        let dictionary = System.Collections.Generic.Dictionary<string, int>()
+        dictionary.Add("true", 1)
+        dictionary.Add("1", 2)
+        Expect.equal (writeDocument (Encode.dict Encode.string Encode.int dictionary)) "\"true\": 1\n\"1\": 2\n" "dict keys are quoted"
+        let node = Encode.object [ "null", Encode.int 1; "1.5", Encode.int 2; "name", Encode.int 3 ]
+        Expect.equal (writeDocument node) "\"null\": 1\n\"1.5\": 2\nname: 3\n" "object keys are quoted when they need it"
+
+    // yaml@2.6.1 reads `k:` followed by `- a`, `- b c` and `- "true"` as {"k":["a","b c","true"]} and the root sequence `- a`, `- b` as ["a","b"]. The old writer wrote the
+    // items of Encode.values in a flow sequence. The encoder builds a block sequence now.
+    testCase "Encode.values is written as a block sequence that Decode.values reads back" <| fun _ ->
+        let written = writeValue (Encode.values id [ "a"; "b c"; "true" ])
+        Expect.equal written "k:\n  - a\n  - b c\n  - \"true\"\n" "The items stay separate"
+        Expect.equal (readValue (Decode.values Decode.string) written) [ "a"; "b c"; "true" ] "The items read back"
+        let root = writeDocument (Encode.values id [ "a"; "b" ])
+        Expect.equal root "- a\n- b\n" "The root is a block sequence"
+        Expect.equal (root |> parseRoot |> Decode.values Decode.string) [ "a"; "b" ] "The root items read back"
+
+    // yaml@2.6.1 reads the texts as the two fields, the second a list of three packages of which the last has no version. The old texts put the dash of each package on a line of its own.
+    // A mapping in an item continues the line of its dash in the new writer, as the tests of the writer show.
+    testCase "the validation package is written as the text that the parser reads" <| fun _ ->
+        Expect.equal (writeDocument (validationEncoder validation)) (validationText + "\n") "The encoded value"
+        let extension = "\nauthor: TestAuthor\nauthor_emails:\n  - test1@email.com\n  - test2@email.com"
+        let read = Decode.object (fun get -> get.Overflow.FieldList [ "format_definition"; "inspection_packages" ]) (parseRoot (validationText + extension))
+        let typedFields =
+            [ "format_definition", Encode.string validation.FormatDefinitionVersion
+              "inspection_packages", Encode.list packageEncoder validation.Packages ]
+        let extensionFields = [ for entry in read -> Decode.string entry.Key, entry.Value ]
+        Expect.equal (writeDocument (Encode.object (typedFields @ extensionFields))) (validationText + extension + "\n") "The encoded value with its extension"
+]
+
 // -------------------------------------------------------------------------------------------------------------------
 // Generated values
 
@@ -582,5 +693,6 @@ let Main =
         dateTests
         collectionTests
         validationTests
+        writtenTests
         roundTripTests
     ]

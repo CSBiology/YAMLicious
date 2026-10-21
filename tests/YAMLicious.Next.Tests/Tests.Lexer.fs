@@ -1026,6 +1026,33 @@ let private entriesInput (lines: int) =
 let private longLineInput (lines: int) =
     "k: " + String.replicate lines "word " + "\nj: \"" + String.replicate lines "word " + "\"\n"
 
+/// Lines with unbalanced quotes inside plain scalars. No quote stands at a node start, so none of them opens a scalar.
+let private plainQuoteInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    for i in 0 .. lines - 1 do
+        let text =
+            match i % 3 with
+            | 0 -> sprintf "k%d: it's a 'quoted word %d" i i
+            | 1 -> sprintf "k%d: 3\" wide \"x %d" i i
+            | _ -> sprintf "k%d: rock 'n' roll %d" i i
+        sb.Append(text).Append("\n") |> ignore
+    sb.ToString()
+
+/// Groups of six lines with four quoted scalars, one comment, a plain scalar with an apostrophe in a word and a long plain scalar.
+let private oldQuotedInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    for i in 0 .. lines - 1 do
+        let text =
+            match i % 6 with
+            | 0 -> sprintf "k%d: 'ok %d'" i i
+            | 1 -> sprintf "k%d: \"ok %d\"" i i
+            | 2 -> sprintf "k%d: 'ok %d' # c%d" i i i
+            | 3 -> sprintf "k%d: don't stop %d" i i
+            | 4 -> sprintf "k%d: \"ok %d\"" i i
+            | _ -> sprintf "k%d: plain %s" i (System.String('x', 120))
+        sb.Append(text).Append("\n") |> ignore
+    sb.ToString()
+
 let private performanceTests = testList "Lexer performance" [
     // The lexer reads the text once. The empty lines behind a plain scalar are read twice at most, once by the look for a continuation line and once
     // as blank lines. The reference is a single pass over the characters.
@@ -1058,6 +1085,23 @@ let private performanceTests = testList "Lexer performance" [
 
     testCase "a restore does not send the marks back to the start of the text" <| fun _ ->
         expectLinear "Marks around a snapshot and a restore" rewindMarks countLineBreaks fixedWidthInput
+
+    // Tests.Tokenizer "the time grows linearly with unbalanced quotes inside plain scalars" and "a long input of quoted scalars keeps every string and comment". The old tests counted the string
+    // table and the comment table of the scanner. The lexer returns the quoted scalars and the comments as lexemes, so the test counts those.
+    testCase "unbalanced quotes inside plain scalars open no scalar and take time linear in the length of the input" <| fun _ ->
+        let styles = scalarsOf (plainQuoteInput 600) |> List.map (fun scalar -> scalar.Style)
+        Expect.isTrue (styles |> List.forall (fun style -> style = ScalarStyle.Plain)) "No quote stands at a node start, so no scalar is quoted"
+        expectLinear "The lexer on unbalanced quotes" (countLexemes >> ignore) countLineBreaks plainQuoteInput
+
+    testCase "a long input of quoted scalars keeps every scalar and comment" <| fun _ ->
+        let lines = 6000
+        let lexemes = lex (oldQuotedInput lines)
+        let count (prefix: string) = lexemes |> List.filter (fun lexeme -> lexeme.StartsWith prefix) |> List.length
+        Expect.equal (count "single:" + count "double:") (lines / 6 * 4) "Four quoted scalars in each group of six lines"
+        Expect.equal (count "#") (lines / 6) "One comment in each group of six lines"
+        Expect.isTrue (List.contains "plain:don't stop 3" lexemes) "The apostrophe in a word stays text"
+        Expect.isTrue (List.contains ("plain:plain " + System.String('x', 120)) lexemes) "A plain scalar behind the quoted ones stays plain"
+        expectLinear "The lexer on the old quoted scalars" (countLexemes >> ignore) countLineBreaks oldQuotedInput
 ]
 
 let Main = testList "Lexer" [

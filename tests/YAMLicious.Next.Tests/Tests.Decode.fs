@@ -803,6 +803,82 @@ let private flowTests = testList "Flow inputs" [
         Expect.equal (Decode.option (Decode.map Decode.string Decode.string) (parseRoot "{}")) (Some Map.empty) "The empty flow mapping is no empty document"
 ]
 
+let private oldSuiteTests = testList "Tests of the old suite" [
+    // The old tests "integer", "float", "char", "bool", "some option" and "none option" of Tests.EncoderDecoder. yaml@2.6.1 reads 23, 123.45678, c, true, 42 and null as the int, the float,
+    // the string c, the bool, the int and the null.
+    testCase "a scalar as the root reads as an int, a float, a char, a bool and an option" <| fun _ ->
+        Expect.equal (Decode.int (parseRoot "23")) 23 "integer"
+        Expect.sameFloat (Decode.float (parseRoot "123.45678")) 123.45678 "float"
+        Expect.equal (Decode.char (parseRoot "c")) 'c' "char"
+        Expect.equal (Decode.bool (parseRoot "true")) true "bool"
+        Expect.equal (Decode.option Decode.int (parseRoot "42")) (Some 42) "some option"
+        Expect.equal (Decode.option Decode.int (parseRoot "null")) None "none option"
+
+    // Tests.YamlRead "Decode reads the shape of an OpenAPI file with indentless sequences". yaml@2.6.1 reads the servers and the tags of the root, and for the operation behind the key
+    // /participants.json the tags, the summary, the parameters and the response 200 behind them. The sequences stand at the column of their key.
+    testCase "an OpenAPI file with indentless sequences decodes into its servers, tags and operation" <| fun _ ->
+        let yaml =
+            String.concat "\n" [
+                "openapi: 3.0.1"
+                "servers:"
+                "- url: https://reference.example-site.com/reference-library/api/"
+                "- url: http://localhost:4400/reference-library/api/"
+                ""
+                "tags:"
+                "- name: documents"
+                "  description: Some details on the sections offered by the service"
+                "paths:"
+                "  /participants.json:"
+                "    get:"
+                "      tags:"
+                "      - participants"
+                "      summary: List all Participants"
+                "      parameters:"
+                "      - name: id"
+                "        in: path"
+                "        required: true"
+                "        schema:"
+                "          type: string"
+                "      responses:"
+                "        200:"
+                "          description: request went through"
+            ]
+        let decodeParameter = Decode.object (fun p -> p.Required.Field "name" Decode.string, p.Required.Field "in" Decode.string)
+        let decodeGet =
+            Decode.object (fun get ->
+                get.Required.Field "tags" (Decode.list Decode.string),
+                get.Required.Field "summary" Decode.string,
+                get.Required.Field "parameters" (Decode.list decodeParameter),
+                get.Required.Field "responses" (Decode.object (fun r -> r.Required.Field "200" (Decode.object (fun ok -> ok.Required.Field "description" Decode.string)))))
+        let decoded =
+            parseRoot yaml
+            |> Decode.object (fun root ->
+                root.Required.Field "servers" (Decode.list (Decode.object (fun s -> s.Required.Field "url" Decode.string))),
+                root.Required.Field "tags" (Decode.list (Decode.object (fun t -> t.Required.Field "name" Decode.string))),
+                root.Required.Field "paths" (Decode.object (fun paths ->
+                    paths.Required.Field "/participants.json" (Decode.object (fun path -> path.Required.Field "get" decodeGet)))))
+        let servers, tagNames, (getTags, summary, parameters, description) = decoded
+        Expect.equal servers [ "https://reference.example-site.com/reference-library/api/"; "http://localhost:4400/reference-library/api/" ] "The servers"
+        Expect.equal tagNames [ "documents" ] "The tags at the root"
+        Expect.equal getTags [ "participants" ] "The indentless tags of the operation"
+        Expect.equal summary "List all Participants" "The sibling behind the tags"
+        Expect.equal parameters [ ("id", "path") ] "The indentless parameters"
+        Expect.equal description "request went through" "The responses behind the parameters"
+
+    // Tests.YamlRead "Decode reads an OpenAPI path with a parameter in its key". yaml@2.6.1 reads the key /participants/{id}.json as a plain scalar.
+    testCase "an OpenAPI path with a parameter in its key decodes" <| fun _ ->
+        let yaml = "paths:\n  /participants/{id}.json:\n    get:\n      tags:\n      - participants\n      parameters:\n      - name: id\n        in: path\n"
+        let decoded =
+            parseRoot yaml
+            |> Decode.object (fun root ->
+                root.Required.Field "paths" (Decode.object (fun paths ->
+                    paths.Required.Field "/participants/{id}.json" (Decode.object (fun path ->
+                        path.Required.Field "get" (Decode.object (fun get ->
+                            get.Required.Field "tags" (Decode.list Decode.string),
+                            get.Required.Field "parameters" (Decode.list (Decode.object (fun p -> p.Required.Field "name" Decode.string, p.Required.Field "in" Decode.string))))))))))
+        Expect.equal decoded ([ "participants" ], [ ("id", "path") ]) "The operation behind the braces key"
+]
+
 // -------------------------------------------------------------------------------------------------------------------
 // Linear time
 
@@ -876,5 +952,6 @@ let Main =
         nodeTests
         getterTests
         flowTests
+        oldSuiteTests
         linearTests
     ]

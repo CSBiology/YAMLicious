@@ -809,6 +809,94 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectLexemes "k: [ a,\n# c\n  b ]" [ "plain:k"; ":"; "["; "plain:a"; ","; "#own: c"; "plain:b"; "]" ]
 ]
 
+// The inputs of the old tests that asserted the output of the scanner, with its lines and block ids, or the tree of the old reader. The first column names the old
+// test. The scanner has no counterpart, so the input stays and the assertion moves to the value that yaml@2.6.1 reads for it. ERROR marks a text that yaml@2.6.1
+// rejects. A lone carriage return is left out of these inputs, because yaml@2.6.1 reads it as a character and the spec as a line break.
+let private oldScalarRows : (string * string * string) list = [
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "a: 'x' y\nb: 'ok'\n", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "a: 1\nb: \"z\" w\n", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "k: 'it''s' x", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "a: 'x\n  y' z\n", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "k: \"a\", b", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "k: \"a\"]", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "k: \"a\":b", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "- [\"a\" b]", "ERROR"
+    "StringCleanUp text behind a closing quote is an error that names the line of the quote", "[\"a\"\n b]", "ERROR"
+    "StringCleanUp a probe does not search past the first closing quote when its boundary fails", "a: 'x' y\nb: 'z'\n", "ERROR"
+    "CommentCleanUp comment-only lines keep their indentation", "a:\n  # one\n    # two\nb: 1\n#three\n", "{\"a\":null,\"b\":1}"
+    "Tokenizer an indentation indicator counts from the key of a compact mapping", "- key: |2\n    x\n  other: 1\n", "[{\"key\":\"x\\n\",\"other\":1}]"
+    "Tokenizer an indentation indicator counts from the key of a compact mapping", "- key: |2\n   x\n", "ERROR"
+    "Tokenizer an indentation indicator counts from the dash of a sequence item", "- |2\n   x\n  y\n", "[\" x\\ny\\n\"]"
+    "Tokenizer an indentation indicator counts from the dash of a sequence item", "- |2\n   x\n- z\n", "[\" x\\n\",\"z\"]"
+    "Tokenizer an indentation indicator counts from the last dash of a nested item", "- - |2\n    x\n  - y\n", "[[\"x\\n\",\"y\"]]"
+    "Tokenizer an indentation indicator counts from the last dash of a nested item", "- - |\n  x\n", "ERROR"
+    "Tokenizer a header is found behind a trailing comment", "a: | # note\n  'x'\nb: 'y'\n", "{\"a\":\"'x'\\n\",\"b\":\"y\"}"
+    "Tokenizer a comment between the header indentation and the content indentation ends the block", "a: |\n    x\n  # c\nb: 1\n", "{\"a\":\"x\\n\",\"b\":1}"
+    "Tokenizer blank lines belong to the body and do not set the indentation", "a: |\n\n  x\n\n   \nb: 'q'\n\n", "{\"a\":\"\\nx\\n\\n \\n\",\"b\":\"q\"}"
+    "Tokenizer a tab after the indentation is content", "a: |\n  \tx 'q'\n  y\nb: 'z'\n", "{\"a\":\"\\tx 'q'\\ny\\n\",\"b\":\"z\"}"
+    "Tokenizer header-looking text in a body is literal", "a: |\n  b: |\n    'x'\n  - c: 'y'\nd: 'z'\n", "{\"a\":\"b: |\\n  'x'\\n- c: 'y'\\n\",\"d\":\"z\"}"
+    "Tokenizer line endings are normalized once", "a: 'x\r\n  y'\r\nb: |\r\n  \"q\"\r\nc: \"z\"\r\n", "{\"a\":\"x y\",\"b\":\"\\\"q\\\"\\n\",\"c\":\"z\"}"
+    "Tokenizer a block at the end of the input", "a: |", "{\"a\":\"\"}"
+    "Tokenizer a block at the end of the input", "a: |\n", "{\"a\":\"\"}"
+    "Tokenizer a block at the end of the input", "a: |\nx\n", "ERROR"
+    "Tokenizer a body is copied without placeholders and the maps ignore it", "a: |\n  it's \"x\" # y\n  'z' ### w\nb: 'q' # c\n", "{\"a\":\"it's \\\"x\\\" # y\\n'z' ### w\\n\",\"b\":\"q\"}"
+    "Tokenizer placeholder spellings in a body stay text", "a: |\n  <s f=0/>\n  <c f=0/>\nb: 'q'\n", "{\"a\":\"<s f=0/>\\n<c f=0/>\\n\",\"b\":\"q\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: \"b\" #c", "{\"k\":\"b\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: C#", "{\"k\":\"C#\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: tool.cwl#main", "{\"k\":\"tool.cwl#main\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: a#b", "{\"k\":\"a#b\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: a]#c", "{\"k\":\"a]#c\"}"
+    "Tokenizer a folded block and a literal block after a multiline quote", "a: 'p\n  q'\nb: |\n  one\n  \"two\"\nc: >\n  three 'four'\nd: \"five\"\n", "{\"a\":\"p q\",\"b\":\"one\\n\\\"two\\\"\\n\",\"c\":\"three 'four'\\n\",\"d\":\"five\"}"
+    "Tokenizer a quoted key with a hash keeps the following block and strings", "\"a #b\": |\n  x # not a comment\n  'y'\nz: \"w\"\n", "{\"a #b\":\"x # not a comment\\n'y'\\n\",\"z\":\"w\"}"
+    "Tokenizer text behind the bar is no header", "a: | extra\n  \"q\"\n", "ERROR"
+    "Tokenizer placeholder spellings in a body are content", "a: |\n  <s f=0/> and \"q\"\nb: \"w\"\nc: |\n  <s f=1/>\n", "{\"a\":\"<s f=0/> and \\\"q\\\"\\n\",\"b\":\"w\",\"c\":\"<s f=1/>\\n\"}"
+    "Tokenizer an unclosed quote is an error of the Reader too", "a: 'unclosed\nb: 1\n", "ERROR"
+    "Tokenizer an unbalanced bracket in a sequence item does not hide the block scalar after it", "- desc\n  [bar\n- |\n  echo 'hi'\n", "[\"desc [bar\",\"echo 'hi'\\n\"]"
+    "Tokenizer text in the shape of a comment placeholder is a value and the real comment stays with its line", "a: x <c f=0/>\nb: 1 # real\n", "{\"a\":\"x <c f=0/>\",\"b\":1}"
+    "Tokenizer text in the shape of a comment placeholder is a value and the real comment stays with its line", "a: x <c f=0/>\n", "{\"a\":\"x <c f=0/>\"}"
+    "Tokenizer text in the shape of a string placeholder is a value", "- x <s f=7/>\n- y\n", "[\"x <s f=7/>\",\"y\"]"
+    "Tokenizer text in the shape of a string placeholder is a value", "a: <c f=0/>\n", "{\"a\":\"<c f=0/>\"}"
+    "Tokenizer only ASCII digits make the shape of a placeholder", "a: x <s f=\u0661/>\n", "{\"a\":\"x <s f=\u0661/>\"}"
+    "Tokenizer only ASCII digits make the shape of a placeholder", "a: x <c f=\u0661/>\n", "{\"a\":\"x <c f=\u0661/>\"}"
+    "Tokenizer only ASCII digits make the shape of a placeholder", "<c f=\u0661/>: 1\n", "{\"<c f=\u0661/>\":1}"
+    "Tokenizer a placeholder-shaped value reads like a plain scalar and survives the writer", "a: <c f=0/>\n", "{\"a\":\"<c f=0/>\"}"
+    "Tokenizer a placeholder-shaped value reads like a plain scalar and survives the writer", "a: <s f=1/>\n", "{\"a\":\"<s f=1/>\"}"
+    "Tokenizer a value on a line of its own continues over the next lines", "valueFrom:\n  $(f(inputs.a,\n  \"x\", 1))", "{\"valueFrom\":\"$(f(inputs.a, \\\"x\\\", 1))\"}"
+    "Tokenizer a value on a line of its own continues over the next lines", "k:\n  a\n  \"b\"", "{\"k\":\"a \\\"b\\\"\"}"
+    "Tokenizer a value on a line of its own continues over the next lines", "k:\n  a\nj: 1", "{\"k\":\"a\",\"j\":1}"
+    "Tokenizer a value on a line of its own continues over the next lines", "--- a\n  \"b\"", "\"a \\\"b\\\"\""
+    "Tokenizer a value on a line of its own continues over the next lines", "-\n  a\n  \"b\", c", "[\"a \\\"b\\\", c\"]"
+    "Tokenizer a value on a line of its own continues over the next lines", "-\n  a\n- b", "[\"a\",\"b\"]"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "k:\n  - x\n  - ...\n  - y", "{\"k\":[\"x\",\"...\",\"y\"]}"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "k: ...\nj: 1", "{\"k\":\"...\",\"j\":1}"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "- ...\n- y", "[\"...\",\"y\"]"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "k:\n  ...", "{\"k\":\"...\"}"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "a: 1\n...\n", "{\"a\":1}"
+    "Tokenizer a triple dot that is not at column 0 is text and one at column 0 ends the document", "a: 1\n...\nb: 2\n", "[{\"a\":1},{\"b\":2}]"
+    "Tokenizer Decode folds the lines of a plain scalar", "valueFrom: $(f(inputs.a,\n  \"x\", 1))", "{\"valueFrom\":\"$(f(inputs.a, \\\"x\\\", 1))\"}"
+    "Tokenizer Decode folds the lines of a plain scalar", "k: a\n  b  \n  c", "{\"k\":\"a b c\"}"
+    "Tokenizer Decode folds the lines of a plain scalar", "k: a\n\n  b", "{\"k\":\"a\\nb\"}"
+    "Tokenizer Decode folds the lines of a plain scalar", "k: a\n  - x", "{\"k\":\"a - x\"}"
+    "Tokenizer Decode folds the lines of a plain scalar", "a\nb", "\"a b\""
+    "Tokenizer a comment behind the last line of a plain scalar is the comment of the value", "k: a\n  b #c", "{\"k\":\"a b\"}"
+    "Tokenizer a mapping key or a comment inside a plain scalar is an error", "k: a\n  b: c", "ERROR"
+    "Tokenizer a mapping key or a comment inside a plain scalar is an error", "k: a # c\n  b", "ERROR"
+    "Escapes Double-quoted escape: complex mix", "key: \"\\t\\n\\x41\"", "{\"key\":\"\\t\\nA\"}"
+    "Escapes Double-quoted escaped continuation keeps trailing spaces before the backslash", "\"trailing spaces   \\\nnext\"", "\"trailing spaces   next\""
+    "AdvancedFeatures 6.1.1 Single-quoted with escaped quote", "single: 'here''s to \"quotes\"'", "{\"single\":\"here's to \\\"quotes\\\"\"}"
+    "AdvancedFeatures 6.1.2 Single-quoted preserves backslashes", "tie-fighter: '|\\-*-/|'", "{\"tie-fighter\":\"|\\\\-*-/|\"}"
+    "AdvancedFeatures 6.1.3 Multi-line single-quoted", "single: ' 1st non-empty\n\n 2nd non-empty \n 3rd non-empty '", "{\"single\":\" 1st non-empty\\n2nd non-empty 3rd non-empty \"}"
+    "BlockScalars A property in front of the header does not move the boundary", "- !!str |\n    x\n- y\n", "[\"x\\n\",\"y\"]"
+    "BlockScalars A property in front of the header does not move the boundary", "- &a |\n    x\n- y\n", "[\"x\\n\",\"y\"]"
+    "BlockScalars A property in front of the header does not move the boundary", "- !!str |\n    x\n  y\n", "ERROR"
+    "BlockScalars A property in front of the header does not move the boundary", "- &a |\n    x\n  y\n", "ERROR"
+    "BlockScalars A sibling of a compact mapping scalar after a terminating comment is no boundary error", "- k: |\n    text\n# about next\n  next: 1\n", "[{\"k\":\"text\\n\",\"next\":1}]"
+]
+
+let private oldInputTests = testList "Inputs of the old tests" [
+    testCase "the scalar inputs of the old scanner and reader tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldScalarRows
+]
+
 let Main = testList "Scalars" [
     quotedTests
     escapeTests
@@ -817,4 +905,5 @@ let Main = testList "Scalars" [
     spaceLineTests
     lineBreakTests
     flowScalarTests
+    oldInputTests
 ]

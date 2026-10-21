@@ -529,3 +529,31 @@ let explicitFlowEntry (key: YamlNode) (value: YamlNode) : MappingEntry = { YamlN
 
 /// The value of the only document of the text as JSON, from `valueJson`.
 let valueOf (input: string) : string = valueJson (parseRoot input)
+
+/// The values of the documents of the text as JSON from `valueJson`. A text with one document gives its value, any other count gives a JSON list.
+/// A text that the parser rejects gives ERROR, the spelling that the expectations use for a text that yaml@2.6.1 rejects.
+let yamlValueOf (input: string) : string =
+    match Parser.parseStream input with
+    | Error _ -> "ERROR"
+    | Ok stream ->
+        let problems = Validate.stream stream
+        if not problems.IsEmpty then
+            failwithf "The tree of %A breaks the slot rules: %s" input (String.concat "; " problems)
+        let values =
+            [ for part in stream.Parts do
+                  match part with
+                  | StreamPart.Document document -> yield valueJson document.Root
+                  | _ -> () ]
+        match values with
+        | [ single ] -> single
+        | _ -> "[" + String.concat "," values + "]"
+
+/// Checks the rows of an old test, an input and the value that yaml@2.6.1 reads, and reports every difference together.
+let expectYamlValues (rows: (string * string * string) list) =
+    let differences =
+        [ for (reference, input, expected) in rows do
+              let actual = yamlValueOf input
+              if actual <> expected then
+                  yield sprintf "%s: %A reads as %s and not as %s" reference input actual expected ]
+    if not differences.IsEmpty then
+        failwith (String.concat "\n" differences)

@@ -461,6 +461,63 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
             [ document (closed (plainDocument (sc "a"))); document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "b"))) ]
 ]
 
+// The inputs of the old tests that asserted the lines of the scanner or the elements of the old reader for markers, directives and documents. The first column names
+// the old test. The assertion moves to the value that yaml@2.6.1 reads, and ERROR marks a text that yaml@2.6.1 rejects.
+let private oldDocumentRows : (string * string * string) list = [
+    "Tokenizer a document marker ends a block", "a: |\n  x\n---\nb: 'q'\n", "[{\"a\":\"x\\n\"},{\"b\":\"q\"}]"
+    "Tokenizer a body keeps text that looks like markers and directives", "a: |\n  ---\n  ...\n  %YAML 1.2\nb: 1\n", "{\"a\":\"---\\n...\\n%YAML 1.2\\n\",\"b\":1}"
+    "Tokenizer a comment behind the start marker", "--- # c\na: 1\n", "{\"a\":1}"
+    "Tokenizer a block scalar behind the start marker", "--- |\n  x 'q'\n", "\"x 'q'\\n\""
+    "Tokenizer quoted content behind the start marker", "--- 'x' # c\n--- !!str \"y\"\n", "[\"x\",\"y\"]"
+    "Tokenizer a percent sign in content is no directive", "a: 1\n%YAML 1.2\n", "ERROR"
+    "Tokenizer a percent sign in content is no directive", "a: |\n  b\n%TAG\n", "ERROR"
+    "Tokenizer a percent sign in content is no directive", "a: |\n  b\n  %TAG\n", "{\"a\":\"b\\n%TAG\\n\"}"
+    "Tokenizer a directive follows an end marker and every start marker ends the prelude", "a: 1\n...\n%YAML 1.2\n---\nb: 2\n", "[{\"a\":1},{\"b\":2}]"
+    "Tokenizer a directive follows an end marker and every start marker ends the prelude", "---\na: 1\n---\n%TAG ! t!\n---\nb: 2\n", "ERROR"
+    "Tokenizer a directive follows an end marker and every start marker ends the prelude", "---\n%TAG ! t!\n", "ERROR"
+    "Tokenizer a marker needs a separator behind it and sits at column 0", "---a: 1\n...foo\n --- x\n--- a\n...", "ERROR"
+    "Tokenizer a marker needs a separator behind it and sits at column 0", "---\t\n---", "[null,null]"
+    "Tokenizer a quote does not cross a marker", "a: 'x\n---\ny'\n", "ERROR"
+    "Tokenizer a quote does not cross a marker", "a: \"x\n...\ny\"\n---\nb: 'z'\n", "ERROR"
+    "Tokenizer a quote does not cross a marker", "a: \"x\\\n---\ny\"\n", "ERROR"
+    "Tokenizer a marker inside a quote that closes before it is no marker", "a: 'x\n  ---\n  y'\n", "{\"a\":\"x --- y\"}"
+    "Tokenizer directives and the start marker are removed and prelude comments stay", "# lead\n%YAML 1.2\n---\na: 1\n", "{\"a\":1}"
+    "Tokenizer a comment behind a directive stays as a comment line", "%YAML 1.2 # c\n---\na: 1\n", "{\"a\":1}"
+    "Tokenizer content behind the start marker becomes the first line", "--- 'q'\n", "\"q\""
+    "Tokenizer content behind the start marker becomes the first line", "--- |\n  x\n", "\"x\\n\""
+    "Tokenizer tag directives", "%TAG !e! tag:example.com,2000:app/ # c\n%FOO bar\n---\n!e!foo bar\n", "\"bar\""
+    "Tokenizer the body ends at the first end marker the scanner found", "k:\n  - ...\n  - y\n", "{\"k\":[\"...\",\"y\"]}"
+    "Tokenizer the empty first and last line are cut and body blanks stay", "\n# c\na: 1\n", "{\"a\":1}"
+    "Tokenizer the empty first and last line are cut and body blanks stay", "a: |+\n  x\n\n\n", "{\"a\":\"x\\n\\n\\n\"}"
+    "Tokenizer every document keeps its own directives", "%YAML 1.2\n---\na: 1\n...\n%TAG !e! tag:e,2000:\n---\nb: 2\n", "[{\"a\":1},{\"b\":2}]"
+    "Tokenizer a start marker does not pass its directives on", "%YAML 1.2\n---\n---\nb: 2\n", "[null,{\"b\":2}]"
+    "Tokenizer a marker makes a document without a body", "---\n...\n", "null"
+    "Tokenizer a marker makes a document without a body", "%YAML 1.2\n---\n", "null"
+    "Tokenizer a marker makes a document without a body", "---\n---\n", "[null,null]"
+    "Tokenizer a marker makes a document without a body", "a: 1\n---\n", "[{\"a\":1},null]"
+    "Tokenizer a prelude comment is the first line of the document behind it", "a: 1\n...\n# c\n---\nb: 2\n", "[{\"a\":1},{\"b\":2}]"
+    "Tokenizer leading comments and directives are read as the start of the document", "# lead\n%YAML 1.2\n---\na: 1\n", "{\"a\":1}"
+    "Tokenizer leading comments and directives are read as the start of the document", "%YAML 1.2\n# lead\n---\na: 1\n", "{\"a\":1}"
+    "Tokenizer leading comments and directives are read as the start of the document", "# lead\n---\na: 1\n", "{\"a\":1}"
+    "Tokenizer leading comments and directives are read as the start of the document", "--- # c\na: 1\n", "{\"a\":1}"
+    "Tokenizer a block scalar behind the start marker", "--- |\n  x\n", "\"x\\n\""
+    "Tokenizer a block scalar behind the start marker", "--- |\n  x \"q\"\n  y 'r'\n", "\"x \\\"q\\\"\\ny 'r'\\n\""
+    "ReaderDocuments Block scalars behind start markers", "--- !!str |\n  x\n--- &a |\n  y\n", "[\"x\\n\",\"y\\n\"]"
+    "YamlRead Multi-document: Document with end marker", "---\nkey: value\n...", "{\"key\":\"value\"}"
+]
+
+let private oldInputTests = testList "Inputs of the old tests" [
+    testCase "the document inputs of the old scanner and reader tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldDocumentRows
+
+    // Tests.Tokenizer "a marker makes a document without a body" and "a document that holds only directives is dropped". yaml@2.6.1 reads `a: 1`, `...`, `...` as the documents {"a":1} and null,
+    // `%YAML 1.2` alone as no document and `a: 1`, `...`, `%YAML 1.2` as {"a":1}. YAML 1.2.2 lets an end marker follow an end marker without a document ([205] l-document-suffix)
+    // and asks for the start marker of a document with directives ([209] l-directive-document). The candidate follows the spec, so it reads one document for the first text and rejects the others.
+    testCase "the old document counts where the spec and yaml@2.6.1 differ" <| fun _ ->
+        Expect.equal (yamlValueOf "a: 1\n...\n...\n") "{\"a\":1}" "An end marker behind an end marker ends no document"
+        Expect.equal (yamlValueOf "%YAML 1.2\n") "ERROR" "A directive alone makes no document"
+        Expect.equal (yamlValueOf "a: 1\n...\n%YAML 1.2\n") "ERROR" "A directive behind an end marker needs a start marker"
+]
+
 let Main =
     testList "Documents" [
         singleTests
@@ -471,4 +528,5 @@ let Main =
         suffixTests
         flowRootTests
         byteOrderMarkTests
+        oldInputTests
     ]

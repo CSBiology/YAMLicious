@@ -860,6 +860,54 @@ let private propertyInput (lines: int) =
         sb.Append(sprintf "k%d: !!str &a%d value\nr%d: *base\n" i i i) |> ignore
     sb.ToString()
 
+/// A mapping whose first value is a plain scalar of the given number of continuation lines.
+let private plainContinuationInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("k: start\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("j: 1\n") |> ignore
+    sb.ToString()
+
+/// A literal block scalar of the given number of lines in front of a sibling.
+let private blockBodyInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("a: |\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("b: 1\n") |> ignore
+    sb.ToString()
+
+/// A run of comments at columns 0 to 8 with a blank line now and then, between a block scalar and its sibling.
+let private commentRunInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("root:\n  a: |\n    x\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# c%d\n" i) |> ignore
+        if i % 7 = 0 then sb.Append("\n") |> ignore
+    sb.Append("  b: 1\nc: 2\n") |> ignore
+    sb.ToString()
+
+/// A flow sequence in a block sequence with a run of comments in front of its closer.
+let private flowCloserCommentInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("a:\n  - [\n    1,\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(sprintf "# c%d\n" i) |> ignore
+    sb.Append("    ]\n") |> ignore
+    sb.ToString()
+
+/// Runs of blank lines in the middle and at the end of nested mappings.
+let private blankLinesInput (blanks: int) =
+    "a:\n  b: 1\n" + String.replicate blanks "\n" + "  c: 2\nd: 3\n" + String.replicate blanks "\n"
+
+/// Many block scalars, each followed by a comment.
+let private scalarThenCommentInput (scalars: int) =
+    let sb = System.Text.StringBuilder()
+    for i in 0 .. scalars / 3 - 1 do
+        sb.Append(sprintf "k%d: |\n  x\n# c\n" i) |> ignore
+    sb.ToString()
+
 let private parseOnly (input: string) = Parser.parseStream input |> ignore
 
 /// The builder of a scaling test with a check that the parser accepts its input and that the tree passes Validate.stream. expectLinear builds each input once,
@@ -891,6 +939,21 @@ let private performanceTests = testList "Parser performance" [
 
     testCase "properties and aliases take time linear in the length of the input" <| fun _ ->
         expectLinear "The parser on properties and aliases" parseOnly countLineBreaks (accepted propertyInput)
+
+    // Tests.BlockScalars "The time grows linearly with a run of comments in front of a flow closer", "The time grows linearly with a run of blank lines" and "The time grows linearly with the
+    // number of scalars and comments", Tests.Tokenizer "the read time grows linearly with the lines of a plain scalar". The old tests timed Preprocessing.read against the scanner. These tests
+    // time the parser against a pass over the characters.
+    testCase "a run of comments in front of a flow closer takes time linear in the length of the input" <| fun _ ->
+        expectLinear "The parser on comments in front of a flow closer" parseOnly countLineBreaks (accepted flowCloserCommentInput)
+
+    testCase "runs of blank lines take time linear in the length of the input" <| fun _ ->
+        expectLinear "The parser on runs of blank lines" parseOnly countLineBreaks (accepted blankLinesInput)
+
+    testCase "many block scalars with a comment behind them take time linear in the length of the input" <| fun _ ->
+        expectLinear "The parser on block scalars and comments" parseOnly countLineBreaks (accepted scalarThenCommentInput)
+
+    testCase "a plain scalar over many lines takes time linear in the length of the input" <| fun _ ->
+        expectLinear "The parser on a plain scalar over many lines" parseOnly countLineBreaks (accepted plainContinuationInput)
 ]
 
 let rec private hasStructuredKey (node: YamlNode) : bool =
@@ -1438,6 +1501,130 @@ let private moreTests = testList "More ports" [
         Expect.equal (parseErrorOf "a: |\n  x\n# c\n  bad\n---\nb: 1\n") "bad-indentation@4" "The line of the text"
 ]
 
+// The inputs of the old scanner tests for the block structure, with the rejections of the scanner. The first column names the old test. The old tests asserted the
+// message of the scanner, which the error codes of the parser replace, so the input stays and the assertion moves to the value that yaml@2.6.1 reads. ERROR marks a
+// text that yaml@2.6.1 rejects.
+let private oldParserRows : (string * string * string) list = [
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "[%bad]", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "{@a: 1}", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "- `x`", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "k: %x", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "- %x", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "? %x", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "[a, @b]", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "k: !!str %x", "ERROR"
+    "Tokenizer a plain scalar cannot start with a percent sign, an at sign or a backquote", "{a: %x}", "ERROR"
+    "Tokenizer the reserved characters are text inside a plain scalar and on a continuation line", "k: a\n  %x", "{\"k\":\"a %x\"}"
+    "Tokenizer the reserved characters are text inside a plain scalar and on a continuation line", "k: a %x", "{\"k\":\"a %x\"}"
+    "Tokenizer the reserved characters are text inside a plain scalar and on a continuation line", "k: a@b", "{\"k\":\"a@b\"}"
+    "Tokenizer the reserved characters are text inside a plain scalar and on a continuation line", "k: x`y", "{\"k\":\"x`y\"}"
+    "Tokenizer a comment ends the plain scalar only for a line that is deeper", "k: # c\n  \"b\"", "{\"k\":\"b\"}"
+    "Tokenizer a comment ends the plain scalar only for a line that is deeper", "k: a # c\nj: \"x\"", "{\"k\":\"a\",\"j\":\"x\"}"
+    "Tokenizer a comment ends the plain scalar only for a line that is deeper", "- k: a # c\n  j: \"x\"", "[{\"k\":\"a\",\"j\":\"x\"}]"
+    "Tokenizer a comment ends the plain scalar only for a line that is deeper", "? a # c\n: b", "{\"a\":\"b\"}"
+    "Tokenizer a comment ends the plain scalar only for a line that is deeper", "a # c\n--- \"b\"", "[\"a\",\"b\"]"
+    "Tokenizer no plain scalar is open behind a quoted scalar or a bare key", "k: \"a\"\n  \"b\"", "ERROR"
+    "Tokenizer no plain scalar is open behind a quoted scalar or a bare key", "k:\n  \"b\"", "{\"k\":\"b\"}"
+    "Tokenizer a line that is not deeper than the owner of the scalar is no continuation", "k: a\n\"b\"", "ERROR"
+    "Tokenizer a line that is not deeper than the owner of the scalar is no continuation", "- a\n\"b\"", "ERROR"
+    "Tokenizer a line that is not deeper than the owner of the scalar is no continuation", "- - a\n  \"b\"", "ERROR"
+    "Tokenizer a line that is not deeper than the owner of the scalar is no continuation", "- k: v\n  \"b\"", "ERROR"
+    "Tokenizer a line that is not deeper than the owner of the scalar is no continuation", "- k: v\n   \"b\"", "[{\"k\":\"v \\\"b\\\"\"}]"
+    "Tokenizer a block collection cannot start on the line of its key", "k: - a", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "- k: - a", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "k: ? a", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "a: 1\nk: &x - a", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "? a: - b", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "k: ?", "ERROR"
+    "Tokenizer a block collection cannot start on the line of its key", "- - a", "[[\"a\"]]"
+    "Tokenizer a block collection cannot start on the line of its key", "- ? a", "[{\"a\":null}]"
+    "Tokenizer a block collection cannot start on the line of its key", "k: -x", "{\"k\":\"-x\"}"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "valueFrom: $(inputs.a ? 'x: y' : \"z\")", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "valueFrom: $(inputs.a ? 'x' : 'y')", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "k: a: b", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "k: a:", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "k: x {\"a\": 1}", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "k: a: b: c", "ERROR"
+    "Tokenizer a colon followed by a blank inside a plain scalar value is an error", "- k: a: b", "ERROR"
+    "Tokenizer a second colon behind a quoted part of the line is an error", "k: \"x\": 1", "ERROR"
+    "Tokenizer a second colon behind a quoted part of the line is an error", "\"a\": \"b\": c", "ERROR"
+    "Tokenizer a second colon behind a quoted part of the line is an error", "k: \"x\" : 1", "ERROR"
+    "Tokenizer a second colon behind a quoted part of the line is an error", "k: 'x': 1", "ERROR"
+    "Tokenizer a second colon behind a quoted part of the line is an error", "- \"a\": \"b\": c", "ERROR"
+    "YamlRead Lower-indented comment between nested workflow steps stays in open block", "steps:\n  first:\n    run: tool.cwl\n    in: []\n    out: []\n# separator\n  second:\n    run: tool.cwl\n    in: []\n    out: []", "{\"steps\":{\"first\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]},\"second\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]}}}"
+    "YamlRead Comment under a nested key with sequence value", "r:\n  a:\n    # c\n    - 1", "{\"r\":{\"a\":[1]}}"
+]
+
+let private oldInputTests = testList "Inputs of the old tests" [
+    testCase "the block structure inputs of the old scanner tests read the value that yaml@2.6.1 reads" <| fun _ -> expectYamlValues oldParserRows
+
+    // Tests.Tokenizer "a block collection cannot start on the line of its key". The old test listed `: - a`, `k: -` and `k: - # c` among the valid compact forms, and yaml@2.6.1 reads them as {"":["a"]},
+    // {"k":[null]} and {"k":[null]}. In YAML 1.2.2 the node behind the colon of an implicit entry is a block collection only on a later line, and a plain scalar cannot be a lone dash. The
+    // candidate follows the spec and rejects the three texts.
+    testCase "a block sequence behind the colon of an implicit entry is an error where yaml@2.6.1 reads it" <| fun _ ->
+        for input in [ ": - a"; "k: -"; "k: - # c" ] do
+            Expect.equal (yamlValueOf input) "ERROR" (sprintf "%A is rejected" input)
+
+    // Tests.Tokenizer "every emitted line knows its physical line", "a multiline quoted scalar keeps the number of its first line and the lines behind it count on", "a merged plain scalar keeps
+    // the number of its first line and the lines behind it count on", "line endings do not change the numbers" and "the preparation keeps the numbers of the lines it keeps". The old scanner gave
+    // each emitted line the number of its source line. The parser gives each node a span, so the test reads the line of a key behind a scalar that goes over several lines. The numbers are the
+    // old ones. A lone carriage return is a line break for the spec, and yaml@2.6.1 reads it as a character.
+    testCase "a key behind a scalar over several lines stands on its own line" <| fun _ ->
+        let lineOfKey (input: string) (key: string) =
+            let isKey (entry: MappingEntry) =
+                match entry.Key.Kind with
+                | YamlNodeKind.Scalar scalar -> scalar.Value = key
+                | _ -> false
+            let entry = YamlNode.entries (parseRoot input) |> List.find isKey
+            entry.Key.Span.Value.Start.Line
+        let rows =
+            [ "a: 1\n\nb: |\n  x\n\n  y\nc: 2\n", "b", 3
+              "a: 1\n\nb: |\n  x\n\n  y\nc: 2\n", "c", 7
+              "a: 'x\n  y'\nb: 1\n", "b", 3
+              "a: \"x\n\n  y\"\nb: 1\n", "b", 4
+              "a: \"x\\\n  y\"\nb: 1\n", "b", 3
+              "a: 'p\n q'\nb: \"r\n s\"\nc: |\n  z\n", "b", 3
+              "a: 'p\n q'\nb: \"r\n s\"\nc: |\n  z\n", "c", 5
+              "a: x\n  y\nb: 1\n", "b", 3
+              "a: x\n\n  y\nb: 1\n", "b", 4
+              "a: x\n  y\n\nb: 1\n", "b", 4
+              "a: x\n  y # c\nb: 1\n", "b", 3
+              "a: 1\r\nb: |\r\n  x\r\nc: 2\r\n", "c", 4
+              "a: 1\rb: 2\r", "b", 2
+              "%YAML 1.2\n---\na: 1\n", "a", 3
+              "%YAML 1.2 # c\n---\na: 1\n", "a", 3
+              "--- # c\na: 1\n", "a", 2 ]
+        for (input, key, line) in rows do
+            Expect.equal (lineOfKey input key) line (sprintf "The line of %s in %A" key input)
+
+    // Tests.Tokenizer "a plain scalar of more than 5000 lines reads as one value" and Tests.BlockScalars "A body of more than 5000 lines reads as one scalar". The old tests guarded the
+    // recursion of the old reader. The parser keeps its state on the heap, and the tests keep the inputs of the old ones. The plain scalar folds its lines, so its value has a space where the
+    // old value had a line feed.
+    testCase "a plain scalar of 5200 lines and a block scalar of 5200 lines read as one value each" <| fun _ ->
+        let lines = 5200
+        let folded = String.concat " " ("start" :: [ for i in 0 .. lines - 1 -> sprintf "line %d" i ])
+        Expect.equal (valueOf (plainContinuationInput lines)) (sprintf "{\"k\":\"%s\",\"j\":1}" folded) "The plain scalar and its sibling"
+        let body = String.concat "" [ for i in 0 .. lines - 1 -> sprintf "line %d\\n" i ]
+        Expect.equal (valueOf (blockBodyInput lines)) (sprintf "{\"a\":\"%s\",\"b\":1}" body) "The block scalar and its sibling"
+
+    // Tests.BlockScalars "A run of more than 5000 comments after a scalar keeps its order". The comments stand between two entries of a mapping, so they go to the Before of the second entry
+    // whatever their columns (rule R4).
+    testCase "a run of 5200 comments behind a block scalar keeps its order" <| fun _ ->
+        let comments = 5200
+        let root = parseRoot (commentRunInput comments)
+        let inner = (YamlNode.entries root).Head.Value
+        let sibling = (YamlNode.entries inner).[1]
+        let texts =
+            [ for trivia in sibling.Before do
+                  match trivia with
+                  | Trivia.FullLineComment c -> yield c.Text
+                  | _ -> () ]
+        Expect.equal texts.Length comments "Every comment is in front of the sibling"
+        Expect.equal texts.Head " c0" "The first comment stays first"
+        Expect.equal (List.last texts) (sprintf " c%d" (comments - 1)) "The last comment stays last"
+        Expect.equal (valueOf (commentRunInput comments)) "{\"root\":{\"a\":\"x\\n\",\"b\":1},\"c\":2}" "The values"
+]
+
 let Main =
     testList "Parser" [
         mappingTests
@@ -1452,4 +1639,5 @@ let Main =
         spanTests
         depthTests
         performanceTests
+        oldInputTests
     ]
