@@ -1789,7 +1789,7 @@ type internal YamlParser(cursor: Cursor) =
             else this.LineStep()
         { Parts = List.ofSeq parts }
 
-/// The parser of the candidate. It reads the whole syntax: block and flow collections, scalars, aliases,
+/// The parser. It reads the whole syntax: block and flow collections, scalars, aliases,
 /// properties and the documents of a stream.
 module Parser =
 

@@ -4,8 +4,8 @@ open System
 open System.Text
 
 /// Projections of a stream into plain JSON, for the comparison of a parse with another parser. They do not
-/// depend on the F# types, so the output of this project, of the old library and of yaml@2.6.1 can be
-/// compared as JSON, one line for each input.
+/// depend on the F# types, so the output of this library and of yaml@2.6.1 can be compared as JSON, one
+/// line for each input.
 ///
 /// Three contracts, which stay apart on purpose:
 ///
@@ -20,7 +20,36 @@ open System.Text
 /// needs it is written.
 module Projection =
 
-    open NodePath
+    // The place of a node for the projections: its slot, spelled as the validator spells it, and its key path in the
+    // style of a JSON pointer. The two paths have the same depth, and the functions of NodePath cut both of them.
+    type private PathInfo =
+        { Slots: NodePath.PathInfo
+          Pointers: NodePath.PathInfo }
+
+    let private noSegment: NodePath.PathInfo =
+        { Parent = None
+          Segment = ""
+          Depth = 0 }
+
+    let private rootPath: PathInfo =
+        { Slots = NodePath.rootPath
+          Pointers = noSegment }
+
+    /// The path for the slots of a document that are not in the tree: the prelude, the markers, and the
+    /// trivia around the root.
+    let private documentPath: PathInfo =
+        { Slots = noSegment
+          Pointers = noSegment }
+
+    let private slotOf (path: PathInfo) = NodePath.slotOf path.Slots
+
+    let private pointerOf (path: PathInfo) = NodePath.materialize path.Pointers ""
+
+    let private child (parent: PathInfo) (pointer: string) (slot: string) : PathInfo =
+        { Slots = NodePath.child parent.Slots slot
+          Pointers = NodePath.child parent.Pointers pointer }
+
+    let private escapePointer (text: string) = text.Replace("~", "~0").Replace("/", "~1")
 
     /// The result of a parse for the line of a corpus run: a stream, or the errors as pairs of an error code
     /// and a 1-based line.
@@ -652,7 +681,7 @@ module Projection =
     let failureOf (error: YamlError) : string =
         failure [ (YamlErrorCode.name error.Code, error.Span.Start.Line) ]
 
-    /// One line of a corpus run, in the format of the files in m0/ref and m0/old, without a line break:
+    /// One line of a corpus run, without a line break:
     /// `{"set":S,"id":I,"sha256":H, ...}`. An accepted stream adds the fields of `data` and a `presentation`
     /// member. A rejected one adds the fields of `failure`.
     let line (set: string) (id: string) (sha256: string) (outcome: Outcome) : string =

@@ -9,11 +9,11 @@ module Tests.Flow
 // Tests.YamlRead, Tests.Tokenizer and the N1 cases. The first column names the old test.
 //
 // Changes against the old tests, each from the new model or a ruling of the specification:
-// - A flow collection or an alias as the key of an entry is valid now. The old reader rejected both, because it kept scalar keys only (Tests.Keys).
+// - A flow collection or an alias as the key of an entry is valid now. The reader before 2.0.0 rejected both, because it kept scalar keys only (Tests.Keys).
 // - `{?}` and `[?]` are errors: [142] and [150] ask for a separator behind the question mark, and a flow indicator is none. yaml@2.6.1 reads `{"":null}`.
-// - The old tests that read the merged lines of the preprocessing (Persil.tokenize, expectLines) have no counterpart. The parser reads the lines of a
+// - The old tests that read the merged lines of the scanner stage have no counterpart. The parser reads the lines of a
 //   flow collection directly, and the tests check the tree, the spans and the lines of the errors.
-// - The old tests of the writer (Writer.Formatting.mkInlineSequence and the round trips) wait for M5.
+// - The old tests of the writer (Writer.Formatting.mkInlineSequence and the round trips) are in Tests.Writer and Tests.RoundTrip.
 
 open Fable.Pyxpecto
 open YAMLicious
@@ -349,7 +349,7 @@ let private shapeTests = testList "Flow sequences and flow mappings" [
         Expect.isTrue document.StartMarker.IsSome "The marker"
         Expect.nodeEqual document.Root (flowSeq [ sc "a" ]) "The root on the line of the marker"
 
-    // Tests.Tokenizer "the lines behind a merged flow collection keep their source line numbers" and "text behind the closer stays on the merged line". The old preprocessing merged the lines of a
+    // Tests.Tokenizer "the lines behind a merged flow collection keep their source line numbers" and "text behind the closer stays on the merged line". The preprocessing before 2.0.0 merged the lines of a
     // collection, so it had to remember the physical lines. The parser reads the lines as they are, and the spans carry them. The span of a collection runs from its opener to its closer, and the
     // span of a missing value has no width.
     testCase "the spans of a flow collection and of its parts" <| fun _ ->
@@ -517,7 +517,7 @@ let private scalarTests = testList "Scalars inside a flow collection" [
 let private endOfInputTests = testList "Block scalars with flow characters at the end of the input" [
     // Tests.YamlRead "CWL ExpressionTool roundtrip preserves block scalar" and "CWL ExpressionTool join output roundtrip YAML". yaml@2.6.1 reads the folded value with a line feed at its end:
     // {"expression":"${ return { \"out\": name }; }\n"}. The text has no line break at its end, and [165] b-chomped-last gives a clipped value no line feed then. That is the deliberate difference
-    // of the lexer (M2). The braces inside the scalar are text.
+    // of the lexer. The braces inside the scalar are text.
     testCase "a folded scalar that holds braces has no final line feed at the end of the input" <| fun _ ->
         Expect.equal (valueOf "expression: >\n  ${ return { \"out\": name }; }") "{\"expression\":\"${ return { \\\"out\\\": name }; }\"}" "Without a line break at the end"
         Expect.equal (valueOf "expression: >\n  ${ return { \"out\": name }; }\n") "{\"expression\":\"${ return { \\\"out\\\": name }; }\\n\"}" "With a line break at the end"
@@ -586,7 +586,7 @@ let private layoutTests = testList "Layouts over several lines" [
 let private propertyTests = testList "Properties in a flow collection" [
     // Tests.YamlRead "A flow collection behind properties reads as a collection". yaml@2.6.1: {"k":["a"]}, {"k":{"a":1,"b":2}}, {"k":{}}, [["a"]], ["a","b"].
     // The core tag of a flow mapping is a property like any other here.
-    // Tests.AdvancedFeatures "7.10 A core tag on the collection it names is dropped": the old reader dropped the core tag of the collection that it names, because its model had no field for the
+    // Tests.AdvancedFeatures "7.10 A core tag on the collection it names is dropped": the reader before 2.0.0 dropped the core tag of the collection that it names, because its model had no field for the
     // properties of a collection. The tree keeps the tag as a property of the collection, so the tests below expect it.
     testCase "tags and anchors on a flow collection" <| fun _ ->
         expectRoot "k: !!map {a: 1}" (mapOf [ "k", YamlNode.withTag (YamlTag.core "map") (flowMap [ "a", sc "1" ]) ])
@@ -630,7 +630,7 @@ let private propertyTests = testList "Properties in a flow collection" [
         expectRoot "{!<tag:yaml.org,2002:str> k: v}" (YamlNode.flowMapping [ YamlNode.entry (YamlNode.withTag str (sc "k")) (sc "v") ])
 
     // Properties on a collection in front of a key belong to the key. A property that stands on a line of its own in front of a flow collection of the
-    // block structure belongs to the collection, or to the mapping that the collection opens as a key (the block split of M3).
+    // block structure belongs to the collection, or to the mapping that the collection opens as a key (the block split).
     testCase "own-line properties of a flow collection follow the block split" <| fun _ ->
         let keyed = parseRoot "&a [x]: 1"
         Expect.nodeEqual keyed (YamlNode.mapping [ YamlNode.entry (YamlNode.withAnchor "a" (flowSeq [ sc "x" ])) (sc "1") ]) "On the key line they belong to the key"
@@ -737,7 +737,7 @@ let private errorTests = testList "Flow errors" [
         expectError "[a]\n[b]" "unexpected-content@2"
         expectError "k: [a]:b" "unexpected-content@1"
 
-    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator". The old reader accepted a question
+    // Tests.Tokenizer "a question mark in a flow collection is an explicit key only in front of a blank or a flow indicator". The reader before 2.0.0 accepted a question
     // mark in front of a flow indicator (yaml@2.6.1 reads {"":null}). [142] and [150] ask for a separator behind the question mark, and a flow indicator is
     // none, so the question mark starts neither an explicit key nor a plain scalar.
     testCase "a question mark in front of a flow indicator is an error" <| fun _ ->

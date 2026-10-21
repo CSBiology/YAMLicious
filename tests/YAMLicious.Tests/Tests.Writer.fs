@@ -945,8 +945,8 @@ let private policyTests = testList "Style policies" [
         expectTwice "k: [ [a] # c\n ] # o\nj: 1\n" "k:\n  - - a\n# c\n# o\nj: 1\n"
 
     // yaml@2.6.1 reads the first two inputs as [null,"b"] and {"k":"","j":1}, and the expected texts in the same way. It rejects a comma that stands on a line behind a
-    // property, so the third input, which rule 22 of M3 reads, has no reference. A node that holds properties only keeps the comment behind it in its TrailingComment in a
-    // flow collection (rule 21 of M3). In a block collection the comment stands behind the properties. When the line holds the comment of the line break behind the property
+    // property, so the third input, which this parser reads, has no reference. A node that holds properties only keeps the comment behind it in its TrailingComment in a
+    // flow collection. In a block collection the comment stands behind the properties. When the line holds the comment of the line break behind the property
     // already, the second comment stands in front of what follows.
     testCase "Canonical keeps the comment behind a node that holds properties only" <| fun _ ->
         expectTwice "[&a , # c\n b]\n" "- &a # c\n- b\n"

@@ -1,6 +1,6 @@
 namespace YAMLicious
 
-// The element model of the next YAMLicious. It describes the serialization tree of a YAML stream: values,
+// The node model. It describes the serialization tree of a YAML stream: values,
 // properties, scalar and collection styles, the place of every comment, directives and document boundaries.
 // It keeps none of the original spacing, quote escapes, line wrapping of scalars or indentation of
 // collections.

@@ -222,8 +222,8 @@ let private r4EndTests = testList "R4 trivia behind the last node of a document"
         expectRoot "a:\n    b:\n        c: 1\n      # note\n" (mapOf [ "a", withEnd [ note " note" ] (mapOf [ "b", inner ]) ])
 
     // Tests.YamlRead "Trailing comments never reopen a level that an earlier comment closed". yaml@2.6.1: {"a":{"b":1}}. The comment at 2 spaces goes to the root, and the comment
-    // behind it, at 4 spaces, fits the mapping that holds b. A comment goes to no deeper End than the comment before it in the same run (ruling R4 of M3), so the second comment goes
-    // to the root as well, and the writer prints the comments in the order of the text. The old reader put both comments in the root mapping.
+    // behind it, at 4 spaces, fits the mapping that holds b. A comment goes to no deeper End than the comment before it in the same run (rule R4), so the second comment goes
+    // to the root as well, and the writer prints the comments in the order of the text. The reader before 2.0.0 put both comments in the root mapping.
     testCase "a comment at the end goes to no deeper End than the comment before it" <| fun _ ->
         expectRoot "a:\n    b: 1\n  # x\n    # y\n" (withEnd [ note " x"; note " y" ] (mapOf [ "a", mapOf [ "b", sc "1" ] ]))
         // Comments in the order of falling columns keep their own Ends, and a comment that rises again stays at the depth of the one before it.
@@ -239,7 +239,7 @@ let private r4EndTests = testList "R4 trivia behind the last node of a document"
         expectRoot "a:\n  b: 1\n\n  # c\n" (mapOf [ "a", withEnd [ blank; note " c" ] (mapOf [ "b", sc "1" ]) ])
         expectRoot "a:\n  b: 1\n  # c\n\n" (mapOf [ "a", withEnd [ note " c"; blank ] (mapOf [ "b", sc "1" ]) ])
         expectRoot "a:\n  b: 1\n\n" (withEnd [ blank ] (mapOf [ "a", mapOf [ "b", sc "1" ] ]))
-        // The comment at 0 spaces goes to the root, so the comment behind it, at 2 spaces, goes there too (ruling R4 of M3).
+        // The comment at 0 spaces goes to the root, so the comment behind it, at 2 spaces, goes there too (rule R4).
         expectRoot "a:\n  b: 1\n\n# c\n  # d\n" (withEnd [ blank; note " c"; note " d" ] (mapOf [ "a", mapOf [ "b", sc "1" ] ]))
         expectRoot "a:\n  b: 1\n  # d\n\n# c\n" (withEnd [ blank; note " c" ] (mapOf [ "a", withEnd [ note " d" ] (mapOf [ "b", sc "1" ]) ]))
 
@@ -491,7 +491,7 @@ let private rule21Tests = testList "Rules 21 and 22 on a node with properties an
         expectRoot "{a: !!str # c\n , b: 1}" (flowMap [ "a", tagged; "b", sc "1" ])
         let anchored = withLayout [ placement PropertyName.Anchor (newLine (Some " c") []) ] (YamlNode.withAnchor "a" nothing)
         expectRoot "[&a # c\n , b]" (flowSeq [ anchored; sc "b" ])
-        // The trivia lines behind the property go to the Before of the next item (rule 1b of M3 for a property-only node).
+        // The trivia lines behind the property go to the Before of the next item (for a property-only node).
         expectRoot "[!!str\n # d\n , b]" (YamlNode.flowSequence [ YamlNode.item (YamlNode.withTag strTag nothing); itemBefore [ note " d" ] (sc "b") ])
 ]
 
@@ -510,7 +510,7 @@ let private r8FlowTests = testList "R8 the closer of a flow collection" [
 
 let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
     // Tests.CommentCleanUp "comments in values and behind values", "Text in the shape of a comment placeholder is text and not a comment", "Hash without preceding whitespace is not a comment",
-    // "C# and a hash behind a word are text" and "a comment keeps its payload as written". The old tests checked the emitted text of the preprocessing with its placeholders. The
+    // "C# and a hash behind a word are text" and "a comment keeps its payload as written". The old tests checked the text that the scanner stage emitted, with its placeholders. The
     // placeholders are gone. The tests check the tree instead: where the comment stands and what the text of the scalar is. yaml@2.6.1 reads the scalars in the same way.
     testCase "a hash behind a blank starts a comment, a hash inside a word is text, and the comment keeps its payload" <| fun _ ->
         expectRoot
@@ -544,7 +544,7 @@ let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
         // A quoted scalar goes on in the next line only when that line is deeper than its parent, so the second line ends it with another error.
         Expect.equal (parseErrorOf "a: 'open # c\nb: 1 # d\n") "quoted-indent@2" "The next line is not deeper than the key"
 
-    // Tests.CommentCleanUp "comments inside a multiline flow collection stay in the merged line". yaml@2.6.1: {"a":["x","y"]}. The old reader merged the lines and kept only the comment behind
+    // Tests.CommentCleanUp "comments inside a multiline flow collection stay in the merged line". yaml@2.6.1: {"a":["x","y"]}. The reader before 2.0.0 merged the lines and kept only the comment behind
     // the closer as the comment of the line. The tree keeps every comment in its slot.
     testCase "comments inside a flow collection over several lines each have a slot" <| fun _ ->
         expectRoot

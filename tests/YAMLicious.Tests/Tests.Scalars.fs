@@ -246,7 +246,7 @@ let private escapeTests = testList "Escapes" [
 
 let private plainTests = testList "Plain scalars" [
     // Tests.YamlRead "KeyValue plain continuation folds into one scalar", "Root plain continuation folds into one scalar".
-    // yaml@2.6.1: {"My Key":"My Value1 My Value2"} and "My Value1 My Value2". The old Reader kept "My Value1\nMy Value2" for the writer.
+    // yaml@2.6.1: {"My Key":"My Value1 My Value2"} and "My Value1 My Value2". The reader before 2.0.0 kept "My Value1\nMy Value2" for the writer.
     testCase "a plain continuation folds into one scalar" <| fun _ ->
         expectScalars "\nMy Key: My Value1\n  My Value2\n" [ pl "My Key"; pl "My Value1 My Value2" ]
         expectScalars "\nMy Value1\n  My Value2\n" [ pl "My Value1 My Value2" ]
@@ -457,7 +457,7 @@ let private blockTests = testList "Block scalars" [
             "doc: |\n  Workflow doc line.\n  # This line is doc text, not a YAML comment.\nnext: value"
             [ pl "doc"; lit "Workflow doc line.\n# This line is doc text, not a YAML comment.\n"; pl "next"; pl "value" ]
 
-    // Tests.YamlRead "Hash inside a literal block scalar is content". The old Reader found no comment in the tree.
+    // Tests.YamlRead "Hash inside a literal block scalar is content". The reader before 2.0.0 found no comment in the tree.
     testCase "a hash line inside a literal block scalar is content and no comment lexeme follows" <| fun _ ->
         expectLexemes "s: |\n  line\n  # not a comment\n" [ "plain:s"; ":"; "literal:line\\n# not a comment\\n" ]
 
@@ -809,7 +809,7 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectLexemes "k: [ a,\n# c\n  b ]" [ "plain:k"; ":"; "["; "plain:a"; ","; "#own: c"; "plain:b"; "]" ]
 ]
 
-// The inputs of the old tests that asserted the output of the scanner, with its lines and block ids, or the tree of the old reader. The first column names the old
+// The inputs of the old tests that asserted the output of the scanner, with its lines and block ids, or the tree of the reader before 2.0.0. The first column names the old
 // test. The scanner has no counterpart, so the input stays and the assertion moves to the value that yaml@2.6.1 reads for it. ERROR marks a text that yaml@2.6.1
 // rejects. A lone carriage return is left out of these inputs, because yaml@2.6.1 reads it as a character and the spec as a line break.
 let private oldScalarRows : (string * string * string) list = [

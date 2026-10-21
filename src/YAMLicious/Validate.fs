@@ -3,30 +3,30 @@ namespace YAMLicious
 open System
 open System.Text
 
-/// Paths to the places of a tree, shared by the projection and the validator. A path has two spellings: a
-/// key path in the style of a JSON pointer and a path of slots in the model.
+/// Paths to the places of a tree. A path is a chain of segments, and `materialize` joins them. The validator
+/// spells the slots of a tree with it. The projection of the tests spells a second path, the keys, with the same
+/// functions, so both cut a deep path in the same way.
 module internal NodePath =
 
     /// The place of a node. A node deeper than `fullPathDepth` shows its depth and the last `tailSegments`
     /// segments only, so the size of the output stays linear in the size of the tree.
     type PathInfo =
         { Parent: PathInfo option
-          Pointer: string
-          Slot: string
+          Segment: string
           Depth: int }
 
     let fullPathDepth = 64
     let tailSegments = 8
 
-    /// `head` stands in front of the first segment of a deep path, which does not reach the root: "root"
-    /// for slots and nothing for pointers.
-    let materialize (path: PathInfo) (head: string) (select: PathInfo -> string) : string =
+    /// `head` stands in front of the first segment of a deep path, which does not reach the root. The slots
+    /// use "root". The key path of the projection uses nothing.
+    let materialize (path: PathInfo) (head: string) : string =
         let segments = ResizeArray<string>()
         let mutable current = Some path
         let mutable remaining = if path.Depth <= fullPathDepth then Int32.MaxValue else tailSegments
         while remaining > 0 && current.IsSome do
             let here = current.Value
-            segments.Add(select here)
+            segments.Add(here.Segment)
             remaining <- remaining - 1
             current <- here.Parent
         let sb = StringBuilder()
@@ -36,30 +36,17 @@ module internal NodePath =
             sb.Append(segments.[i]) |> ignore
         sb.ToString()
 
-    let pointerOf (path: PathInfo) = materialize path "" (fun p -> p.Pointer)
-    let slotOf (path: PathInfo) = materialize path "root" (fun p -> p.Slot)
+    let slotOf (path: PathInfo) = materialize path "root"
 
-    let child (parent: PathInfo) (pointer: string) (slot: string) : PathInfo =
+    let child (parent: PathInfo) (segment: string) : PathInfo =
         { Parent = Some parent
-          Pointer = pointer
-          Slot = slot
+          Segment = segment
           Depth = parent.Depth + 1 }
 
     let rootPath: PathInfo =
         { Parent = None
-          Pointer = ""
-          Slot = "root"
+          Segment = "root"
           Depth = 0 }
-
-    /// The path for the slots of a document that are not in the tree: the prelude, the markers, and the
-    /// trivia around the root.
-    let documentPath: PathInfo =
-        { Parent = None
-          Pointer = ""
-          Slot = ""
-          Depth = 0 }
-
-    let escapePointer (text: string) = text.Replace("~", "~0").Replace("/", "~1")
 
 /// Checks of a document or a stream against the invariants of the model and the slot rules R1 to R8 that
 /// the tree alone can show. An empty list means that the tree is valid. Each message starts with the slot
@@ -236,8 +223,8 @@ module Validate =
                     let at = ".entries[" + string i + "]"
                     // The text of the last entry ends with its value, or with its key when no colon follows.
                     let lastEntry = isLastNode && not childInFlow && i = entries.Length - 1
-                    stack.Add((entries.[i].Value, NodePath.child path "" (at + ".Value"), childInFlow, lastEntry && entries.[i].Colon.IsSome))
-                    stack.Add((entries.[i].Key, NodePath.child path "" (at + ".Key"), childInFlow, lastEntry && entries.[i].Colon.IsNone))
+                    stack.Add((entries.[i].Value, NodePath.child path (at + ".Value"), childInFlow, lastEntry && entries.[i].Colon.IsSome))
+                    stack.Add((entries.[i].Key, NodePath.child path (at + ".Key"), childInFlow, lastEntry && entries.[i].Colon.IsNone))
             | YamlNodeKind.Sequence collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -262,7 +249,7 @@ module Validate =
                 let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in items.Length - 1 .. -1 .. 0 do
                     let lastItem = isLastNode && not childInFlow && i = items.Length - 1
-                    stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node"), childInFlow, lastItem))
+                    stack.Add((items.[i].Node, NodePath.child path (".items[" + string i + "].Node"), childInFlow, lastItem))
 
     let private walkDocument (errors: ResizeArray<string>) (prefix: string) (followedByDocument: bool) (document: YamlDocument) =
         let root = document.Root

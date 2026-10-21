@@ -1607,7 +1607,7 @@ type internal Engine(options: WriterOptions) =
 
     member _.Result() : string = out.Text()
 
-/// The writer of the candidate. It turns a stream of documents or a single node into YAML text.
+/// The writer. It turns a stream of documents or a single node into YAML text.
 ///
 /// The writer checks its input with `Validate` first and raises `YamlWriteException` with the messages of the
 /// validator when the tree breaks a rule. It then puts every comment and blank line back in the place that the

@@ -1,7 +1,7 @@
 module Tests.Keys
 
 // The tests of keys that are full nodes: flow collections, quoted scalars, aliases, nodes with properties, and explicit keys that hold block collections or
-// block scalars. The old reader kept scalar keys only and rejected the others. The model keeps every key as a node, so the old tests that expected a
+// block scalars. The reader before 2.0.0 kept scalar keys only and rejected the others. The model keeps every key as a node, so the old tests that expected a
 // rejection expect a tree here. yaml@2.6.1 builds a string from a collection key such as "[ a ]" and reads an alias key as its value, so its value stands in
 // the comments only where it helps. The expected trees come from the model and from the productions [142] to [154] (flow entries) and [189] to [194]
 // (block entries).
@@ -15,7 +15,7 @@ let private expectError (input: string) (expected: string) =
 let private strTag = YamlTag.core "str"
 
 let private flowKeyTests = testList "Flow collections as keys" [
-    // Tests.Tokenizer "a flow collection as the key of an entry is an error that names the line". The old reader rejected `[a]: b` and `{a: 1}: b`. A flow collection
+    // Tests.Tokenizer "a flow collection as the key of an entry is an error that names the line". The reader before 2.0.0 rejected `[a]: b` and `{a: 1}: b`. A flow collection
     // that stands on one line is an implicit key now, with the one-lexeme peek of a quoted scalar and the limits of [154].
     testCase "a flow collection on one line is an implicit key" <| fun _ ->
         expectRoot "[a, b]: c" (YamlNode.mapping [ YamlNode.entry (flowSeq [ sc "a"; sc "b" ]) (sc "c") ])
@@ -45,7 +45,7 @@ let private flowKeyTests = testList "Flow collections as keys" [
         expectRoot "? a\n: [\n  b\n]" (YamlNode.mapping [ explicitEntry (sc "a") (flowSeq [ sc "b" ]) ])
         expectRoot "? [\n  a\n]\n: [\n  b\n]" (YamlNode.mapping [ explicitEntry (flowSeq [ sc "a" ]) (flowSeq [ sc "b" ]) ])
 
-    // The cases N1-F06 to N1-F10 of the N1 task. yaml@2.6.1 reads the key as the text of the collection, such as "[ a ]". The old reader rejected them, and the
+    // The cases N1-F06 to N1-F10. yaml@2.6.1 reads the key as the text of the collection, such as "[ a ]". The reader before 2.0.0 rejected them, and the
     // model keeps the collection as the key node.
     testCase "the N1 cases with a flow collection as an explicit key are trees" <| fun _ ->
         expectRoot "? [a]\n: v" (YamlNode.mapping [ explicitEntry (flowSeq [ sc "a" ]) (sc "v") ])
@@ -99,7 +99,7 @@ let private quotedKeyTests = testList "Quoted scalars as keys" [
 
 let private aliasKeyTests = testList "Aliases as keys" [
     // Tests.YamlRead "An alias as the key of a flow entry is an error" and Tests.Tokenizer "an alias in the place of a key inside a flow collection is an error that names the line". yaml@2.6.1 reads all of these with the alias resolved,
-    // for example `{*a : v}` as {"x":"v"}. The old reader rejected them, because it kept scalar keys only. An alias is a node, so it is a key like any other.
+    // for example `{*a : v}` as {"x":"v"}. The reader before 2.0.0 rejected them, because it kept scalar keys only. An alias is a node, so it is a key like any other.
     testCase "an alias is a key in a flow collection" <| fun _ ->
         let alias = YamlNode.alias "a"
         let anchored = YamlNode.withAnchor "a" (sc "x")

@@ -4,7 +4,7 @@ module Tests.Documents
 // no document. The tests port Tests.ReaderDocuments, Tests.Directives and the multi-document tests of Tests.YamlRead. Their expectations
 // are streams built with the constructors and compared with YamlStream.equalIgnoringSpans. The yaml@2.6.1 value stands above each test.
 //
-// Ruling 1c changes where some trivia go. The old reader put a comment in front of a `---` into the document before it or into a document of its own.
+// Ruling 1c changes where some trivia go. The reader before 2.0.0 put a comment in front of a `---` into the document before it or into a document of its own.
 // The tree puts it into the Prelude of the document that the marker opens. The trivia split of rule R4 applies only in front of a `...` and at the
 // end of the stream.
 
@@ -145,7 +145,7 @@ let private multipleTests = testList "Several documents" [
 let private emptyTests = testList "Documents without a node" [
     // Tests.ReaderDocuments "Empty documents skipped" and "A start marker makes a document without a body". yaml@2.6.1 reads `---` `doc1` `---` `# Just a comment` `---` `doc2` as
     // ["doc1",null,"doc2"], and `---` `...` and `%YAML 1.2` followed by `---` as [null]. A start marker makes a document with a missing root. The comment in front
-    // of the third marker is the prelude of the third document (ruling 1c). The old reader kept it in the document in front.
+    // of the third marker is the prelude of the third document (ruling 1c). The reader before 2.0.0 kept it in the document in front.
     testCase "a start marker makes a document with a missing root" <| fun _ ->
         let missing = explicitDocument nothing
         expectStream
@@ -273,7 +273,7 @@ let private rootTriviaTests = testList "Trivia around the root (rule R3)" [
 ]
 
 let private suffixTests = testList "End markers without a document" [
-    // Spec example 9.3 and the rulings of this milestone. yaml@2.6.1 reads `a`, `...`, `# c`, `...` as the two documents "a" and null. YAML 1.2.2 (9.2) has a document suffix
+    // Spec example 9.3. yaml@2.6.1 reads `a`, `...`, `# c`, `...` as the two documents "a" and null. YAML 1.2.2 (9.2) has a document suffix
     // without a document: l-yaml-stream is l-document-prefix* l-any-document? (l-document-suffix+ l-document-prefix* l-any-document? | l-document-prefix* l-explicit-document?)*,
     // and only a `---` or a bare node makes a document. So the second `...` is a suffix with no document in front of it, and the stream has one document, the comment and an extra end marker.
     testCase "a second end marker with a comment between is an extra end marker and no document" <| fun _ ->
@@ -461,7 +461,7 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
             [ document (closed (plainDocument (sc "a"))); document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "b"))) ]
 ]
 
-// The inputs of the old tests that asserted the lines of the scanner or the elements of the old reader for markers, directives and documents. The first column names
+// The inputs of the old tests that asserted the lines of the scanner or the elements of the reader before 2.0.0 for markers, directives and documents. The first column names
 // the old test. The assertion moves to the value that yaml@2.6.1 reads, and ERROR marks a text that yaml@2.6.1 rejects.
 let private oldDocumentRows : (string * string * string) list = [
     "Tokenizer a document marker ends a block", "a: |\n  x\n---\nb: 'q'\n", "[{\"a\":\"x\\n\"},{\"b\":\"q\"}]"
@@ -511,7 +511,7 @@ let private oldInputTests = testList "Inputs of the old tests" [
 
     // Tests.Tokenizer "a marker makes a document without a body" and "a document that holds only directives is dropped". yaml@2.6.1 reads `a: 1`, `...`, `...` as the documents {"a":1} and null,
     // `%YAML 1.2` alone as no document and `a: 1`, `...`, `%YAML 1.2` as {"a":1}. YAML 1.2.2 lets an end marker follow an end marker without a document ([205] l-document-suffix)
-    // and asks for the start marker of a document with directives ([209] l-directive-document). The candidate follows the spec, so it reads one document for the first text and rejects the others.
+    // and asks for the start marker of a document with directives ([209] l-directive-document). The parser follows the spec, so it reads one document for the first text and rejects the others.
     testCase "the old document counts where the spec and yaml@2.6.1 differ" <| fun _ ->
         Expect.equal (yamlValueOf "a: 1\n...\n...\n") "{\"a\":1}" "An end marker behind an end marker ends no document"
         Expect.equal (yamlValueOf "%YAML 1.2\n") "ERROR" "A directive alone makes no document"

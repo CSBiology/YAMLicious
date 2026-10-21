@@ -308,7 +308,7 @@ let tests_comments = testList "Presentation projection: comments and blank lines
             + """{"kind":"comment","text":" value","line":7,"col":8,"placement":"endOfLine","slot":"root.entries[0].Value.TrailingComment","path":"/a","doc":0}"""
         Expect.equal (triviaOf (single (YamlNode.mapping [ entry ]))) ("\"trivia\":[" + trivia + "]}") "slots of an entry"
 
-    // The reference projection (rework/compare/ref-presentation.js) reports a blank line with its line and a null column.
+    // The reference projection of yaml@2.6.1 reports a blank line with its line and a null column.
     testCase "a blank line with a span shows its line and a null column" <| fun _ ->
         let span: SourceSpan =
             { Start = { Line = 4; Column = 1 }

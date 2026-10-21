@@ -15,7 +15,7 @@ module Tests.Reader
 //   reader returned no document for `%YAML 1.2`.
 // - Decode.read is gone.
 //
-// Old tests that move: "A document without a node round trips through the writer" needs the writer, so it returns in the round trip tests of the writer (M5b).
+// Old tests that move: "A document without a node round trips through the writer" needs the writer, so it is in Tests.Writer.
 
 open Fable.Pyxpecto
 open YAMLicious

@@ -4,11 +4,11 @@ module Tests.RoundTrip
 // the second write has to give the first text again. The contract holds for the indentations 2 and 4 and for the line breaks LF and
 // CRLF. It holds under PreferStored and under RequireStored, because a tree that the parser produced needs no change of style.
 //
-// The block inputs come from the parser tests of the first milestones and from the frozen corpus of rework/m0. The corpus inputs are
+// The block inputs come from the parser tests and from a frozen corpus. The corpus inputs are
 // short ones that show a feature of the model: comments in each slot, block scalars with each header, explicit keys, properties,
 // aliases, directives, several documents and blank lines.
 //
-// The flow inputs go through the flow parser of the candidate like the block inputs, one test for each input.
+// The flow inputs go through the flow parser like the block inputs, one test for each input.
 
 open Fable.Pyxpecto
 open YAMLicious

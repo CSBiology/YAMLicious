@@ -9,7 +9,7 @@ module Tests.Decode
 //   "the flow inputs of the old decode tests" reads the original inputs through the parser.
 // - The model has no Nil. A missing value is an empty plain scalar, so Decode.string reads `k:` as the empty text where the old decoder rejected Nil.
 // - Decode.read is gone. The Reader owns reading, so the tests parse with parseRoot and decode the node.
-// - The ExtensionData of the old overflow tests was a Dictionary of YAMLElement. The getters return the entries in source order now.
+// - The ExtensionData of the old overflow tests was a Dictionary from key to element. The getters return the entries in source order now.
 //
 // Old tests that are dropped: Tests.YamlGenericRead tests the preprocessor (Level, Line, Intendation, the string and comment tables), which the
 // parser replaces. Its decoding-free tests are covered by Tests.Parser and Tests.Comments.

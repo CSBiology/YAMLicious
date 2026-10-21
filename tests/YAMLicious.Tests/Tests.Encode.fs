@@ -4,15 +4,15 @@ module Tests.Encode
 // and every type round trips through its decoder over 1000 generated values. The generator is a seeded Park-Miller loop on floats, which gives the
 // same sequence on .NET, JavaScript and Python (FsCheck is not available on Fable).
 //
-// The old tests of Tests.EncoderDecoder asserted the text that Writer.write made from the element. The text belongs to the writer (M5b), so these tests assert
-// the node and the value that the decoder reads back. The text-level versions return in the round trip tests of the writer and in the ARCtrl migration (M6).
+// The old tests of Tests.EncoderDecoder asserted the text that Writer.write made from the element. The text belongs to the writer, so these tests assert
+// the node and the value that the decoder reads back. The writer tests assert the text.
 //
 // Old tests that changed:
 // - Encode.string, int, int64, float and bool had no style in the old element. The node carries its style now, so the tests compare nodes.
 // - Encode.tryInclude and Encode.choose are gone. Encode.optionalField returns None for a missing value and the caller combines the fields with List.choose.
 // - Encode.map and Encode.dict took a key encoder to string. They take an encoder to a node now, so a key can be any node.
 // - Encode.values writes a block sequence of strings. The old element was a flow sequence only for the writer to pick.
-// - Encode.write is gone with the old writer. The writer of the candidate has its own tests.
+// - Encode.write is gone with the writer before 2.0.0. The writer has its own tests in Tests.Writer.
 
 open Fable.Pyxpecto
 open YAMLicious

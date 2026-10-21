@@ -2,15 +2,22 @@
 
   <PropertyGroup>
     <Authors>Caroline Ott, Kevin Frey</Authors>
-    <Description>The element model and the core schema of the next YAMLicious. A candidate that replaces the Reader pipeline of YAMLicious in 2.0.0.</Description>
+    <Description>A YAML 1.2.2 reader and writer for F#, transpiled by Fable to JavaScript and Python. The node model keeps comments, blank lines, scalar styles and source spans. Decoders and encoders follow the Thoth.Json style.</Description>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
+    <PackageId>YAMLicious</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>f# fsharp fable fable-library fable-javascript fable-python yaml parser</PackageTags>
     <PackageProjectUrl>https://github.com/CSBiology/YAMLicious</PackageProjectUrl>
     <RepositoryUrl>https://github.com/CSBiology/YAMLicious</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="*.fsproj; **\*.fs; **\*.fsi" Exclude="bin\**; obj\**" PackagePath="fable\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
@@ -25,7 +32,6 @@
     <Compile Include="Lexer.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Validate.fs" />
-    <Compile Include="Projection.fs" />
     <Compile Include="Decode.fs" />
     <Compile Include="Encode.fs" />
     <Compile Include="Reader.fs" />
@@ -35,5 +41,11 @@
   <ItemGroup>
     <PackageReference Include="Fable.Core" Version="5.5.0" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <PythonDependencies>
+      <Package Name="fable-library" Version="&gt;= 5.3.0 &lt; 6.0.0" ResolutionStrategy="Max" />
+    </PythonDependencies>
+  </PropertyGroup>
 
 </Project>

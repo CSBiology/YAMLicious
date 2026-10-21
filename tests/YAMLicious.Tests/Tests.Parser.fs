@@ -8,8 +8,7 @@ module Tests.Parser
 // aliases as keys, and holds the folded text of a plain scalar over several lines.
 //
 // The tests with a flow collection, an alias key or a collection key in their input stand in Tests.Flow, Tests.Keys, Tests.Aliases and Tests.Comments.
-// Old tests that are left for the next milestone:
-// - M5: every test that writes, encodes or decodes (Decode.object, Encode.write, Writer.write, round trips).
+// Old tests that write, encode or decode (Decode.object, Encode.write, Writer.write, round trips) are in Tests.Decode, Tests.Encode, Tests.Writer and Tests.RoundTrip.
 
 open Fable.Pyxpecto
 open YAMLicious
@@ -310,7 +309,7 @@ let private explicitKeyTests = testList "Explicit keys" [
         expectRoot "? a" (YamlNode.mapping [ explicitKeyOnly (sc "a") ])
         expectRoot "? a\n? b" (YamlNode.mapping [ explicitKeyOnly (sc "a"); explicitKeyOnly (sc "b") ])
 
-    // Tests.YamlRead "A collection behind a question mark is an error". The old project rejected a collection as a key, because it kept only scalar keys.
+    // Tests.YamlRead "A collection behind a question mark is an error". The library before 2.0.0 rejected a collection as a key, because it kept only scalar keys.
     // yaml@2.6.1 accepts each of these and makes a string key from the collection. The new model keeps the collection as the key node.
     testCase "a collection behind a question mark is the key node" <| fun _ ->
         expectRoot "? - a\n: b" (YamlNode.mapping [ explicitEntry (seqOf [ sc "a" ]) (sc "b") ])
@@ -388,7 +387,7 @@ let private propertyTests = testList "Properties and aliases" [
         expectRoot "- &a:b 1\n- *a:b" (seqOf [ YamlNode.withAnchor "a:b" (sc "1"); YamlNode.alias "a:b" ])
 
     // Tests.YamlRead "An alias as a block key is an error". yaml@2.6.1 reads `x: &a 1` followed by `*a : v` as {"1":"v","x":1}. It resolves the alias to
-    // make the key. The old project rejected the alias, because it kept only scalar keys. The new model keeps the alias as the key node.
+    // make the key. The library before 2.0.0 rejected the alias, because it kept only scalar keys. The new model keeps the alias as the key node.
     testCase "an alias is a valid key and stays symbolic" <| fun _ ->
         let anchored = YamlNode.withAnchor "a" (sc "1")
         expectRoot "x: &a 1\n*a : v" (YamlNode.mapping [ YamlNode.entry (sc "x") anchored; YamlNode.entry (YamlNode.alias "a") (sc "v") ])
@@ -941,7 +940,7 @@ let private performanceTests = testList "Parser performance" [
         expectLinear "The parser on properties and aliases" parseOnly countLineBreaks (accepted propertyInput)
 
     // Tests.BlockScalars "The time grows linearly with a run of comments in front of a flow closer", "The time grows linearly with a run of blank lines" and "The time grows linearly with the
-    // number of scalars and comments", Tests.Tokenizer "the read time grows linearly with the lines of a plain scalar". The old tests timed Preprocessing.read against the scanner. These tests
+    // number of scalars and comments", Tests.Tokenizer "the read time grows linearly with the lines of a plain scalar". The old tests timed the preprocessing against the scanner. These tests
     // time the parser against a pass over the characters.
     testCase "a run of comments in front of a flow closer takes time linear in the length of the input" <| fun _ ->
         expectLinear "The parser on comments in front of a flow closer" parseOnly countLineBreaks (accepted flowCloserCommentInput)
@@ -969,7 +968,7 @@ let rec private hasStructuredKey (node: YamlNode) : bool =
     | YamlNodeKind.Sequence collection -> collection.Items |> List.exists (fun item -> hasStructuredKey item.Node)
     | _ -> false
 
-// The cases of the N1 task, from N1-scratch/cases.jsonl. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection are here too since M4: the rejected ones in the list below, N1-D02, N1-D03 and N1-D27 in the table of Tests.Flow and N1-F06 to N1-F10 in Tests.Keys.
+// The N1 cases. Each input has the yaml@2.6.1 value or error codes in the data. The cases with a flow collection are here too: the rejected ones in the list below, N1-D02, N1-D03 and N1-D27 in the table of Tests.Flow and N1-F06 to N1-F10 in Tests.Keys.
 let private n1Rejected : (string * string) list = [
     "N1-A01", "k: \"q\"\n  x"
     "N1-A03", "k: [a]\n  x"
@@ -1113,7 +1112,7 @@ let private n1Tests = testList "N1 cases" [
         Expect.equal (valueJson (parseRoot "k: |\n  text\nj: >\n  folded")) "{\"k\":\"text\\n\",\"j\":\"folded\"}" "Without a line break at the end"
         Expect.equal (valueJson (parseRoot "k: |\n  text\nj: >\n  folded\n")) "{\"k\":\"text\\n\",\"j\":\"folded\\n\"}" "With a line break at the end"
 
-    // The old project rejected these inputs, because it kept only scalar keys. yaml@2.6.1 resolves an alias to its value or builds a string
+    // The library before 2.0.0 rejected these inputs, because it kept only scalar keys. yaml@2.6.1 resolves an alias to its value or builds a string
     // from a collection to make the key. The new model keeps the alias or the collection as the key node.
     testCase "an alias or a collection as a key is accepted" <| fun _ ->
         for (id, input) in n1Collections do
@@ -1162,7 +1161,7 @@ let private advancedTests = testList "Advanced features" [
 
     // Tests.AdvancedFeatures "5.1.1 Explicit block mapping key", "5.1.4 Explicit key with tag and anchor", "5.1.5 Explicit quoted key preserves style" and "5.1.2 Sequence as
     // mapping key". yaml@2.6.1: {"explicit key":"explicit value"}, {"key":"value"} twice and {"[ Detroit Tigers, Chicago cubs ]":["2001-07-23"]}, where it makes a string key
-    // from the sequence. The old project rejected the sequence key. The new model keeps the sequence as the key node.
+    // from the sequence. The library before 2.0.0 rejected the sequence key. The new model keeps the sequence as the key node.
     testCase "explicit keys with properties, a quoted key and a sequence as the key" <| fun _ ->
         expectRoot "? explicit key\n: explicit value" (YamlNode.mapping [ explicitEntry (sc "explicit key") (sc "explicit value") ])
         let keyed = withLayout [ placement PropertyName.Anchor Separation.Inline; placement PropertyName.Tag Separation.Inline ] (YamlNode.withTag (YamlTag.Named { Prefix = ""; Suffix = "tag:foo" }) (YamlNode.withAnchor "a1" (sc "key")))
@@ -1226,7 +1225,7 @@ let private advancedTests = testList "Advanced features" [
         expectRoot "- &a\n  >-\n    y" (seqOf [ anchorOnOwnLine "a" (blockScalar BlockScalarStyle.Folded ChompingMode.Strip None "y") ])
 
     // Tests.AdvancedFeatures "7.3 Core tags on their own line before a block mapping or sequence add no empty scalar" and "7.11 An anchor or another tag on a collection is an error".
-    // yaml@2.6.1: [{"k":"v"}], {"k":{"a":1}}, [["x"]], {"k":["a"]}, {"base":{"k":"v"}}, {"k":["x"]}, [{"k":"v"}] and {"k":["x"]}. The old project had no field for the
+    // yaml@2.6.1: [{"k":"v"}], {"k":{"a":1}}, [["x"]], {"k":["a"]}, {"base":{"k":"v"}}, {"k":["x"]}, [{"k":"v"}] and {"k":["x"]}. The library before 2.0.0 had no field for the
     // properties of a collection, so it dropped the core tags and rejected the others. The new tree keeps the properties of every collection.
     testCase "properties on a line of their own belong to the block collection behind them" <| fun _ ->
         expectRoot "- !!map\n  k: v" (seqOf [ tagOnOwnLine (YamlTag.core "map") (mapOf [ "k", sc "v" ]) ])
@@ -1560,7 +1559,7 @@ let private oldInputTests = testList "Inputs of the old tests" [
 
     // Tests.Tokenizer "a block collection cannot start on the line of its key". The old test listed `: - a`, `k: -` and `k: - # c` among the valid compact forms, and yaml@2.6.1 reads them as {"":["a"]},
     // {"k":[null]} and {"k":[null]}. In YAML 1.2.2 the node behind the colon of an implicit entry is a block collection only on a later line, and a plain scalar cannot be a lone dash. The
-    // candidate follows the spec and rejects the three texts.
+    // parser follows the spec and rejects the three texts.
     testCase "a block sequence behind the colon of an implicit entry is an error where yaml@2.6.1 reads it" <| fun _ ->
         for input in [ ": - a"; "k: -"; "k: - # c" ] do
             Expect.equal (yamlValueOf input) "ERROR" (sprintf "%A is rejected" input)
@@ -1598,7 +1597,7 @@ let private oldInputTests = testList "Inputs of the old tests" [
             Expect.equal (lineOfKey input key) line (sprintf "The line of %s in %A" key input)
 
     // Tests.Tokenizer "a plain scalar of more than 5000 lines reads as one value" and Tests.BlockScalars "A body of more than 5000 lines reads as one scalar". The old tests guarded the
-    // recursion of the old reader. The parser keeps its state on the heap, and the tests keep the inputs of the old ones. The plain scalar folds its lines, so its value has a space where the
+    // recursion of the reader before 2.0.0. The parser keeps its state on the heap, and the tests keep the inputs of the old ones. The plain scalar folds its lines, so its value has a space where the
     // old value had a line feed.
     testCase "a plain scalar of 5200 lines and a block scalar of 5200 lines read as one value each" <| fun _ ->
         let lines = 5200
