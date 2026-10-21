@@ -69,13 +69,15 @@ module internal NodePath =
 /// The checks, by the place of the rule:
 ///
 /// - A node: an alias has no properties. `PropertyLayout` names each present property once and nothing
-///   else. A block collection and a block scalar have no `TrailingComment` (R8). A missing value and a
-///   node that has properties and no content have none either (R1). `HeaderComment` stands on block
+///   else. A block collection and a block scalar have no `TrailingComment` (R8). A missing value has none
+///   either (R1), and neither has a node that has properties and no content unless it is an item of a flow
+///   sequence or a key or value of a flow mapping entry (R1, R6). `HeaderComment` stands on block
 ///   scalars only, and `OpeningComment` on flow collections only. An empty collection is a flow collection.
 /// - An item: a block item has a dash and a flow item has none.
 /// - A separation behind an indicator (`?`, `:` or `-`) or behind the last property: `Following` is empty
 ///   when a block collection without a property follows or when the content is missing (R2).
-/// - An entry: the gap before the colon of an implicit key in a block mapping is empty (R7).
+/// - An entry: the gap before the colon is empty when no colon follows and for an implicit key in a block
+///   mapping (R7).
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
@@ -112,7 +114,7 @@ module Validate =
         "the trivia belong to the Before of the first entry or item of the block collection behind the line break (R2)"
 
     let private missingText =
-        "the content behind the indicator is missing, so the trivia belong to the Before of the next entry or item, or to BeforeColon behind a question mark (R2)"
+        "the content behind the indicator is missing, so the trivia belong to the Before of the next entry or item, or to BeforeColon behind a question mark when a colon follows (R2)"
 
     /// Reports the trivia behind an indicator when the content behind it is a block collection without a
     /// property or is missing.
@@ -124,11 +126,12 @@ module Validate =
                 report slot missingText
 
     let private walkNode (errors: ResizeArray<string>) (prefix: string) (root: YamlNode) =
-        let stack = ResizeArray<YamlNode * NodePath.PathInfo>()
-        stack.Add((root, NodePath.rootPath))
+        // The flag tells whether the node is an item or a key or value of a flow collection.
+        let stack = ResizeArray<YamlNode * NodePath.PathInfo * bool>()
+        stack.Add((root, NodePath.rootPath, false))
         while stack.Count > 0 do
             let last = stack.Count - 1
-            let (node, path) = stack.[last]
+            let (node, path, inFlow) = stack.[last]
             stack.RemoveAt last
             // The slot of the node is built only for an error, so a tree without errors builds no path.
             let report (suffix: string) (text: string) =
@@ -161,8 +164,8 @@ module Validate =
                         report ".TrailingComment" "a block scalar takes the comment behind its header as HeaderComment (R8)"
                     elif YamlNode.isMissingValue node then
                         report ".TrailingComment" "a missing value has no trailing comment, the comment belongs to the separation behind the indicator (R1)"
-                    elif YamlNode.isPropertyOnly node then
-                        report ".TrailingComment" "a node with properties and no content has no trailing comment, the comment belongs to the After of its last property (R1)"
+                    elif YamlNode.isPropertyOnly node && not inFlow then
+                        report ".TrailingComment" "a node with properties and no content has no trailing comment outside a flow collection, the comment belongs to the After of its last property (R1)"
             | YamlNodeKind.Mapping collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -177,12 +180,15 @@ module Validate =
                     let at = ".entries[" + string i + "]"
                     checkFollowing report (at + ".Question.Following") entry.Question entry.Key
                     checkFollowing report (at + ".Colon.Following") entry.Colon entry.Value
-                    if collection.Style = CollectionStyle.Block && entry.Question.IsNone && not entry.BeforeColon.IsEmpty then
+                    if entry.Colon.IsNone && not entry.BeforeColon.IsEmpty then
+                        report (at + ".BeforeColon") "an entry without a colon has no gap before it, the trivia belong to the Before of the next entry or item (R7)"
+                    elif collection.Style = CollectionStyle.Block && entry.Question.IsNone && not entry.BeforeColon.IsEmpty then
                         report (at + ".BeforeColon") "the key of an entry without a question mark stands on one line with its colon in a block mapping (R7)"
+                let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in entries.Length - 1 .. -1 .. 0 do
                     let at = ".entries[" + string i + "]"
-                    stack.Add((entries.[i].Value, NodePath.child path "" (at + ".Value")))
-                    stack.Add((entries.[i].Key, NodePath.child path "" (at + ".Key")))
+                    stack.Add((entries.[i].Value, NodePath.child path "" (at + ".Value"), childInFlow))
+                    stack.Add((entries.[i].Key, NodePath.child path "" (at + ".Key"), childInFlow))
             | YamlNodeKind.Sequence collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -200,8 +206,9 @@ module Validate =
                     elif collection.Style = CollectionStyle.Flow && item.Dash.IsSome then
                         report (at + ".Dash") "an item of a flow sequence has no dash"
                     checkFollowing report (at + ".Dash.Following") item.Dash item.Node
+                let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in items.Length - 1 .. -1 .. 0 do
-                    stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node")))
+                    stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node"), childInFlow))
 
     let private walkDocument (errors: ResizeArray<string>) (prefix: string) (followedByDocument: bool) (document: YamlDocument) =
         let root = document.Root

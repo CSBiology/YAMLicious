@@ -63,8 +63,8 @@ type Trivia =
 /// `Before` of its first entry or item and `Following` stays empty. The same holds behind the last
 /// property of a block collection. When the content is missing, `Following` stays empty as well, and the
 /// trivia lines go to the `Before` of the next entry or item under rule R4. Behind the `?` of an entry whose
-/// key is missing they go to its `BeforeColon`. The same holds behind the last property of a node that has
-/// no content.
+/// key is missing they go to its `BeforeColon` when a `:` follows, and to the `Before` of the next entry
+/// otherwise. The same holds behind the last property of a node that has no content.
 type LineBreak =
     { Comment: YamlComment option
       Following: Trivia list }
@@ -76,8 +76,9 @@ type LineBreak =
 /// that line. The separation is `NewLine` and its `Comment` holds the comment. A comment behind content on
 /// the same line is the trailing comment of that node (rule R8). A missing value, which is an empty plain
 /// scalar without properties, never has a trailing comment. A node that has properties and no content, as
-/// in `k: !!str # c`, puts the comment on the `After` of its last property, and it never has a trailing
-/// comment either.
+/// in `k: !!str # c`, puts the comment on the `After` of its last property, and it has no trailing comment
+/// either. That ban holds outside flow collections. In a flow collection the comment stands behind the
+/// comma and is the trailing comment of the node (rule R6).
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
@@ -182,7 +183,8 @@ type YamlScalar =
 ///
 /// Rule R6 (flow collection). A comment behind the opener on its line is the `OpeningComment`. A comment on
 /// the same line behind an item or an entry and its comma is the trailing comment of the node of the item,
-/// of the value of the entry, or of the key of an entry whose value is missing. Trivia lines between items
+/// of the value of the entry, or of the key of an entry whose value is missing. That holds for a node that
+/// has properties and no content too, as in `[!!str , # c` followed by `b]`. Trivia lines between items
 /// go to the `Before` of the next item or entry. Trivia lines in front of the closer go to `End`. A comment
 /// behind the closer is the trailing comment of the collection node.
 [<NoEquality; NoComparison>]
@@ -216,9 +218,10 @@ type Collection<'Item> =
 /// Rule R8 (trailing comment). A comment on the same line behind the last token of a node is the
 /// `TrailingComment` of that node. The last token is the text of a scalar or an alias, or the closer of a
 /// flow collection. A block scalar takes the comment behind its header as `HeaderComment` and never has a
-/// `TrailingComment`. A block collection has no closing token and has none either. A missing value and a
-/// node that has properties and no content have none (rule R1). A comment behind a block collection goes to
-/// the `End` of the collection or to the `Before` of the next entry or item.
+/// `TrailingComment`. A block collection has no closing token and has none either. A missing value has none
+/// (rule R1). A node that has properties and no content has none outside a flow collection (rule R1) and
+/// has the comment behind the comma inside one (rule R6). A comment behind a block collection goes to the
+/// `End` of the collection or to the `Before` of the next entry or item.
 [<NoEquality; NoComparison>]
 type YamlNode =
     { Kind: YamlNodeKind
@@ -250,7 +253,9 @@ and [<NoEquality; NoComparison>] MappingEntry =
         Key: YamlNode
         /// Rule R7 (gap before a colon). The trivia between a key and its `:` go here, for an explicit key
         /// and for an implicit key in a flow mapping, as in `{ a`, a comment line and `: b }`. An implicit
-        /// key in a block mapping stands on one line with its colon, so the gap is empty there.
+        /// key in a block mapping stands on one line with its colon, so the gap is empty there. The list holds
+        /// trivia only when a `:` follows. When `Colon` is None the list is empty and the trivia go to the
+        /// `Before` of the next entry or item under rule R4.
         BeforeColon: Trivia list
         /// The separation behind the `:`. None means that the value indicator is omitted, as it is behind
         /// an explicit key without a value and in a flow mapping entry that is a key alone.

@@ -174,14 +174,18 @@ module YamlNode =
         isEmptyPlain node && node.Properties.Tag.IsNone && node.Properties.Anchor.IsNone
 
     /// True when the node has properties and no content, as in `k: !!str`. Its last token is its last
-    /// property, so a comment on the same line stands behind that property (rule R1).
+    /// property, so outside a flow collection a comment on the same line stands behind that property (rule
+    /// R1). Inside a flow collection the comment stands behind the comma and is the trailing comment of the
+    /// node (rule R6).
     let isPropertyOnly (node: YamlNode) =
         isEmptyPlain node && (node.Properties.Tag.IsSome || node.Properties.Anchor.IsSome)
 
     /// The node with the comment behind its last line, as in `k: value # c` (rule R8). A block collection and
     /// a block scalar end in a line that cannot hold a comment of the node, so they reject it. A missing value
-    /// and a node that has properties and no content reject it too, because the comment belongs to the
-    /// separation behind the indicator or behind the last property (rule R1). A comment replaces the earlier
+    /// rejects it too, because the comment belongs to the separation behind the indicator (rule R1). A node
+    /// that has properties and no content accepts it, because the constructor cannot see whether the node
+    /// stands in a flow collection, where the comment behind the comma is its trailing comment (rule R6).
+    /// `Validate` rejects the comment on such a node outside a flow collection. A comment replaces the earlier
     /// one.
     let withTrailingComment (comment: YamlComment) (node: YamlNode) : YamlNode =
         match node.Kind with
@@ -193,8 +197,6 @@ module YamlNode =
             failwith "A block scalar has no place for a trailing comment. Use its header comment."
         | _ when isMissingValue node ->
             failwith "A missing value has no trailing comment. Put the comment on the separation behind the indicator."
-        | _ when isPropertyOnly node ->
-            failwith "A node with properties and no content has no trailing comment. Put the comment on the separation behind its last property."
         | _ -> { node with TrailingComment = Some comment }
 
     /// The node with the comment behind the header of a block scalar, as in `| # c`. Only a block scalar

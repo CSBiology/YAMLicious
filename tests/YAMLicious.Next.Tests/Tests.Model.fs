@@ -316,32 +316,27 @@ let tests_comment_slots = testList "Comment slots" [
         for node in [ YamlNode.plain "a"; YamlNode.scalar ScalarStyle.DoubleQuoted "a"; YamlNode.mapping []; YamlNode.sequence [] ] do
             Expect.equal (YamlNode.withTrailingComment (comment " c") node).TrailingComment (Some (comment " c")) "accepted"
 
-    // yaml@2.6.1 reads `k: # c` as {"k":null} and `k: !!str # c` as {"k":""}. The comment stands behind the indicator or behind
-    // the last property, so the node has no place for a trailing comment.
-    testCase "a trailing comment needs a node with content" <| fun _ ->
+    // yaml@2.6.1 reads `k: # c` as {"k":null} and `k: !!str # c` as {"k":""}. A missing value has no place for a trailing comment.
+    // A node with properties and no content has a trailing comment inside a flow collection, as in `[!!str , # c` followed by `b]`,
+    // and the constructor cannot see the collection, so it accepts the comment. Validate rejects it outside a flow collection.
+    testCase "a trailing comment needs a node that is not a missing value" <| fun _ ->
         Expect.equal
             (errorOf (fun () -> YamlNode.empty |> YamlNode.withTrailingComment (comment " c") |> ignore))
             "A missing value has no trailing comment. Put the comment on the separation behind the indicator."
             "missing value"
-        let message = "A node with properties and no content has no trailing comment. Put the comment on the separation behind its last property."
-        Expect.equal
-            (errorOf (fun () -> YamlNode.empty |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c") |> ignore))
-            message
-            "tag without content"
-        Expect.equal
-            (errorOf (fun () -> YamlNode.empty |> YamlNode.withAnchor "a" |> YamlNode.withTrailingComment (comment " c") |> ignore))
-            message
-            "anchor without content"
         Expect.equal (YamlNode.isMissingValue YamlNode.empty) true "empty is a missing value"
         Expect.equal (YamlNode.isPropertyOnly YamlNode.empty) false "empty has no property"
         let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str")
-        Expect.equal (YamlNode.isMissingValue tagged) false "a node with a property is not missing"
-        Expect.equal (YamlNode.isPropertyOnly tagged) true "a node with a property and no content"
+        let anchored = YamlNode.empty |> YamlNode.withAnchor "a"
+        for node in [ tagged; anchored ] do
+            Expect.equal (YamlNode.isMissingValue node) false "a node with a property is not missing"
+            Expect.equal (YamlNode.isPropertyOnly node) true "a node with a property and no content"
+            Expect.equal (YamlNode.withTrailingComment (comment " c") node).TrailingComment (Some (comment " c")) "accepted"
         for node in [ YamlNode.scalar ScalarStyle.DoubleQuoted "" |> YamlNode.withTag (YamlTag.core "str"); YamlNode.plain "v" |> YamlNode.withAnchor "a" ] do
             Expect.equal (YamlNode.isPropertyOnly node) false "content"
             Expect.equal (YamlNode.withTrailingComment (comment " c") node).TrailingComment (Some (comment " c")) "accepted"
         let afterTag = tagged |> YamlNode.withPropertyComment PropertyName.Tag (comment " c")
-        Expect.equal afterTag.TrailingComment None "The comment stands behind the tag"
+        Expect.equal afterTag.TrailingComment None "The comment behind the tag stands in the layout"
 
     testCase "a header comment needs a block scalar and an opening comment needs a flow collection" <| fun _ ->
         Expect.equal

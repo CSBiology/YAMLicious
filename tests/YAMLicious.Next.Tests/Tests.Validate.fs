@@ -145,13 +145,24 @@ let tests_node_checks = testList "Validate: nodes" [
         let quotedWithTag = YamlNode.scalar ScalarStyle.DoubleQuoted "" |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c")
         expectValid (YamlNode.mapping [ field "k" quotedWithTag ]) "A quoted scalar with a property has content"
 
-    testCase "a node with properties and no content has no trailing comment" <| fun _ ->
+    testCase "a node with properties and no content has a trailing comment only inside a flow collection" <| fun _ ->
         let note = Some (comment " c")
         let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str")
         let anchored = YamlNode.empty |> YamlNode.withAnchor "a"
         let both = tagged |> YamlNode.withAnchor "a"
         for (name, node) in [ "tag", tagged; "anchor", anchored; "tag and anchor", both ] do
-            Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" { node with TrailingComment = note } ])) [ "root.entries[0].Value.TrailingComment" ] name
+            let commented = { node with TrailingComment = note }
+            Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" commented ])) [ "root.entries[0].Value.TrailingComment" ] (name + " as a block value")
+            Expect.equal (slotsOfDocument (YamlNode.mapping [ YamlNode.entry commented (number "v") ])) [ "root.entries[0].Key.TrailingComment" ] (name + " as a block key")
+            Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item commented ])) [ "root.items[0].Node.TrailingComment" ] (name + " as a block item")
+            Expect.equal (slotsOfDocument commented) [ "root.TrailingComment" ] (name + " as the root")
+            expectValid (YamlNode.flowSequence [ YamlNode.item commented ]) (name + " as a flow item")
+            expectValid (YamlNode.flowMapping [ field "k" commented ]) (name + " as a flow value")
+            expectValid (YamlNode.flowMapping [ YamlNode.entry commented YamlNode.empty ]) (name + " as a flow key")
+        let inFlow = YamlNode.flowSequence [ YamlNode.item { tagged with TrailingComment = note } ]
+        expectValid (YamlNode.mapping [ field "k" inFlow ]) "a flow item in a block mapping"
+        let deeper = YamlNode.flowSequence [ YamlNode.item (YamlNode.flowMapping [ field "k" { tagged with TrailingComment = note } ]) ]
+        expectValid deeper "a flow value in a flow sequence"
         let lastProperty = if both.PropertyLayout.IsEmpty then PropertyName.Tag else (List.last both.PropertyLayout).Property
         expectValid (YamlNode.mapping [ field "k" (YamlNode.withPropertyComment lastProperty (comment " c") both) ]) "The comment stands behind the last property"
         expectValid (YamlNode.mapping [ field "k" (YamlNode.withPropertyComment PropertyName.Tag (comment " c") tagged) ]) "The comment stands behind the tag"
@@ -521,7 +532,8 @@ let tests_rules = testList "Slot rules" [
         Expect.equal (scalarValue (YamlNode.entries keep).[0].Value) "text\n\n" "The empty line is part of the value"
 
     // yaml@2.6.1 reads `[ # o`, `a, # c1`, `# t`, `b # c2`, `# e` and `] # z` as ["a","b"], and `{ a: 1, # c`, `# t` and `b # d` and
-    // `}` as {"a":1,"b":null}.
+    // `}` as {"a":1,"b":null}. It reads `[!!str , # c` followed by ` b]` as ["","b"], `{a: !!str, # c` followed by
+    // ` b: 1}` as {"a":"","b":1} and `{ !!str , # c` followed by ` b: 1 }` as {"":null,"b":1}.
     testCase "R6: the comments of a flow collection" <| fun _ ->
         let first = { YamlNode.item (number "a" |> YamlNode.withTrailingComment (comment " c1")) with Dash = None }
         let second = { YamlNode.item (number "b" |> YamlNode.withTrailingComment (comment " c2")) with Before = [ lineComment " t" ]; Dash = None }
@@ -540,8 +552,24 @@ let tests_rules = testList "Slot rules" [
         expectValid mapping "flow mapping"
         let wrong = YamlNode.flowMapping [ { keyOnly with Value = { YamlNode.empty with TrailingComment = Some (comment " d") }; Key = number "b" } ]
         Expect.equal (slotsOfDocument wrong) [ "root.entries[0].Value.TrailingComment" ] "The comment on the missing value is wrong"
+        // A node with properties and no content has the comment behind the comma as its trailing comment.
+        let tagged = YamlNode.empty |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withTrailingComment (comment " c")
+        // [!!str , # c
+        //  b]
+        let propertyItem = { YamlNode.item tagged with Dash = None }
+        expectValid (YamlNode.flowSequence [ propertyItem; { YamlNode.item (number "b") with Dash = None } ]) "property without content as a flow item"
+        // {a: !!str, # c
+        //  b: 1}
+        expectValid (YamlNode.flowMapping [ field "a" tagged; field "b" (number "1") ]) "property without content as a flow value"
+        // { !!str , # c
+        //   b: 1 }
+        let propertyKey = { YamlNode.entry tagged YamlNode.empty with Colon = None }
+        expectValid (YamlNode.flowMapping [ propertyKey; field "b" (number "1") ]) "property without content as a flow key"
+        // k: !!str # c
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" tagged ])) [ "root.entries[0].Value.TrailingComment" ] "The block context has the comment behind the property"
 
-    // yaml@2.6.1 reads `{ a`, `# c`, `: b }` as {"a":"b"} and `? a`, `# c` and `: b` as {"a":"b"}.
+    // yaml@2.6.1 reads `{ a`, `# c`, `: b }` as {"a":"b"}, `? a`, `# c` and `: b` as {"a":"b"}, and `? a`, `# d` and `n: 1` as
+    // {"a":null,"n":1}.
     testCase "R7: the gap before a colon belongs to BeforeColon" <| fun _ ->
         let flow = mappingOf CollectionStyle.Flow [ { field "a" (number "b") with BeforeColon = [ lineComment " c" ] } ]
         expectValid flow "implicit key in a flow mapping"
@@ -549,6 +577,24 @@ let tests_rules = testList "Slot rules" [
         expectValid explicitKey "explicit key"
         let wrong = mappingOf CollectionStyle.Block [ { field "a" (number "b") with BeforeColon = [ lineComment " c" ] } ]
         Expect.equal (slotsOfDocument wrong) [ "root.entries[0].BeforeColon" ] "A block mapping has no gap before the colon of an implicit key"
+        // ? a
+        // # d
+        // n: 1
+        let noColon = { YamlNode.entry (number "a") YamlNode.empty with Question = Some Separation.Inline; Colon = None }
+        let next = { field "n" (number "1") with Before = [ lineComment " d" ] }
+        expectValid (YamlNode.mapping [ noColon; next ]) "explicit key without a colon, trivia in the next entry"
+        Expect.equal
+            (slotsOfDocument (YamlNode.mapping [ { noColon with BeforeColon = [ lineComment " d" ] }; field "n" (number "1") ]))
+            [ "root.entries[0].BeforeColon" ]
+            "The trivia in BeforeColon are wrong when no colon follows"
+        // { ? a
+        // # d
+        // , n: 1 }
+        Expect.equal
+            (slotsOfDocument (mappingOf CollectionStyle.Flow [ { noColon with BeforeColon = [ lineComment " d" ] }; field "n" (number "1") ]))
+            [ "root.entries[0].BeforeColon" ]
+            "A flow mapping entry without a colon has no gap either"
+        expectValid (mappingOf CollectionStyle.Flow [ noColon; next ]) "flow mapping, trivia in the next entry"
 
     // yaml@2.6.1 reads `k: v # c` as {"k":"v"}, `- &a x` and `- *a # c` as ["x","x"], `k: [1] # c` as {"k":[1]} and `k: | # h` followed by
     // `  text` as {"k":"text\n"}.
