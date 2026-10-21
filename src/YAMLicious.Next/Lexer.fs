@@ -17,8 +17,8 @@ open System.Text
 /// forward once through the text. Every routine that succeeds asks for its marks in the order of the text.
 /// Only an error path asks for a mark behind the tracker, which restarts the tracker at the start of the
 /// text once. A scalar is materialized once, with one `StringBuilder` where it needs
-/// folding or escapes, and no routine uses `Substring`, because that costs time proportional to the start
-/// offset in Fable Python.
+/// folding or escapes, and no routine uses `Substring`, because in Fable Python every call costs time
+/// proportional to the length of the whole text.
 ///
 /// Errors. A routine raises `LexFailure` and `next` turns it into `Error`. After an error the cursor is in
 /// no defined state, and the parser stops.

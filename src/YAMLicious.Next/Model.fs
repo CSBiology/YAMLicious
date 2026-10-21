@@ -291,9 +291,8 @@ and [<NoEquality; NoComparison>] SequenceItem =
 type DirectiveKind =
     | YamlVersion of major: int * minor: int
     | TagDirective of handle: string * prefix: string
-    /// A directive with a name that YAML 1.2 does not define. The label is not `name`, because a field with
-    /// that name clashes with a field of the union base class in the Python output of Fable.
-    | ReservedDirective of directiveName: string * arguments: string list
+    /// A directive with a name that YAML 1.2 does not define.
+    | ReservedDirective of name: string * arguments: string list
 
 type YamlDirective =
     { Kind: DirectiveKind

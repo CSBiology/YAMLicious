@@ -9,8 +9,7 @@ open System.Collections.Generic
 
 let private restoreScalarPlaceholderValue (entry: StringMapEntry) =
     match entry.Kind with
-    | QuotedStringKind.SingleQuotedString -> entry.Value
-    // A separate case, because Fable Python loses the first case of a merged pattern over three cases.
+    | QuotedStringKind.SingleQuotedString
     | QuotedStringKind.PlainScalar -> entry.Value
     | QuotedStringKind.DoubleQuotedString ->
         // Double-quoted scalars need escape processing for the decoded value.
