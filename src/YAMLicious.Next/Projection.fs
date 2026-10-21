@@ -5,7 +5,7 @@ open System.Text
 
 /// Projections of a stream into plain JSON, for the comparison of a parse with another parser. They do not
 /// depend on the F# types, so the output of this project, of the old library and of yaml@2.6.1 can be
-/// compared in one tool (see rework/compare/compare.js).
+/// compared as JSON, one line for each input.
 ///
 /// Three contracts, which stay apart on purpose:
 ///
@@ -13,26 +13,17 @@ open System.Text
 ///   cooked text, its explicit tag and its anchor. Aliases stay symbolic.
 /// - `presentation`: scalar styles, collection styles, the layout of the properties, directives and
 ///   markers, and every comment and blank line in source order with the slot of the model that holds it.
-/// - `failure`: the error codes and lines of a rejected input.
+/// - `failure`: the error codes and the lines of a rejected input, as pairs of a code and a 1-based line.
 ///
 /// A walk keeps its own stack on the heap, so a tree of any depth is safe, and each walk visits a node
 /// once. All text goes into one StringBuilder for each list, and a path is built only when an item that
 /// needs it is written.
-///
-/// The error codes of `failure` form a closed list. The lexer and the parser use these codes:
-///
-/// - Lexical: UNCLOSED_QUOTE, BAD_ESCAPE, TEXT_AFTER_QUOTED, MARKER_IN_SCALAR, BAD_BLOCK_HEADER,
-///   BAD_BLOCK_INDENT, TAB_INDENT, BAD_COMMENT_START, BAD_PLAIN_START, BAD_ANCHOR_NAME, BAD_TAG,
-///   UNDEFINED_TAG_HANDLE, BAD_DIRECTIVE, BAD_CHARACTER.
-/// - Structure: BAD_INDENT, UNEXPECTED_TOKEN, MISSING_VALUE, MULTILINE_IMPLICIT_KEY, BLOCK_ON_KEY_LINE,
-///   MIXED_COLLECTION, UNCLOSED_FLOW, MISMATCHED_CLOSER, UNEXPECTED_CLOSER, EMPTY_FLOW_ENTRY,
-///   TEXT_AFTER_NODE, COMMENT_BEFORE_CONTINUATION, KEY_IN_PLAIN_SCALAR, DUPLICATE_PROPERTY,
-///   UNRESOLVED_ALIAS.
-/// - Document: DUPLICATE_DIRECTIVE, DIRECTIVE_WITHOUT_DOCUMENT, MISSING_DOCUMENT_START.
 module Projection =
 
-    /// The result of a parse for the line of a corpus run: a stream, or the errors as pairs of code and
-    /// 1-based line. The type of the errors becomes `YamlError` when the lexer defines it.
+    open NodePath
+
+    /// The result of a parse for the line of a corpus run: a stream, or the errors as pairs of an error code
+    /// and a 1-based line.
     [<RequireQualifiedAccess; NoEquality; NoComparison>]
     type Outcome =
         | Accepted of YamlStream
@@ -134,7 +125,8 @@ module Projection =
     /// An explicit tag of the core namespace fixes the type, whatever the style, but only when the text has
     /// the form of that type. Otherwise the tag stays unresolved and the scalar is a string, as in
     /// yaml@2.6.1 (`!!int abc`, `!!float 5` and `!!bool maybe` are strings). A tag of another namespace, a
-    /// local tag and the non-specific tag `!` make strings. The tags binary, timestamp and set make "other".
+    /// local tag and the non-specific tag `!` make strings. The tags binary and timestamp make "other", and a
+    /// scalar under `!!set` or `!!omap` is a string, because yaml@2.6.1 cannot resolve the tag for a scalar.
     let private scalarType (tag: YamlTag option) (scalar: YamlScalar) : string =
         let text = scalar.Value
         match tag with
@@ -151,7 +143,7 @@ module Projection =
                     (if (CoreSchema.tryParseBool tag scalar).IsSome then "bool" else "str")
                 elif suffix = "null" then
                     (if CoreSchema.isNull tag scalar then "null" else "str")
-                elif suffix = "binary" || suffix = "timestamp" || suffix = "set" then
+                elif suffix = "binary" || suffix = "timestamp" then
                     "other"
                 else
                     "str"
@@ -271,66 +263,11 @@ module Projection =
     // The presentation projection
     // ------------------------------------------------------------------------------------------
 
-    /// The place of a node, as the key path in the style of a JSON pointer and as the path of slots in
-    /// the model. A node deeper than `fullPathDepth` shows its depth and the last `tailSegments`
-    /// segments only, so the size of the output stays linear in the size of the tree.
-    type private PathInfo =
-        { Parent: PathInfo option
-          Pointer: string
-          Slot: string
-          Depth: int }
-
-    let private fullPathDepth = 64
-    let private tailSegments = 8
-
-    /// `head` stands in front of the first segment of a deep path, which does not reach the root: "root"
-    /// for slots and nothing for pointers.
-    let private materialize (path: PathInfo) (head: string) (select: PathInfo -> string) : string =
-        let segments = ResizeArray<string>()
-        let mutable current = Some path
-        let mutable remaining = if path.Depth <= fullPathDepth then Int32.MaxValue else tailSegments
-        while remaining > 0 && current.IsSome do
-            let here = current.Value
-            segments.Add(select here)
-            remaining <- remaining - 1
-            current <- here.Parent
-        let sb = StringBuilder()
-        if path.Depth > fullPathDepth then
-            sb.Append(head).Append("(").Append(string path.Depth).Append(")") |> ignore
-        for i in segments.Count - 1 .. -1 .. 0 do
-            sb.Append(segments.[i]) |> ignore
-        sb.ToString()
-
-    let private pointerOf (path: PathInfo) = materialize path "" (fun p -> p.Pointer)
-    let private slotOf (path: PathInfo) = materialize path "root" (fun p -> p.Slot)
-
-    let private child (parent: PathInfo) (pointer: string) (slot: string) : PathInfo =
-        { Parent = Some parent
-          Pointer = pointer
-          Slot = slot
-          Depth = parent.Depth + 1 }
-
-    let private rootPath: PathInfo =
-        { Parent = None
-          Pointer = ""
-          Slot = "root"
-          Depth = 0 }
-
-    /// The path for the slots of a document that are not in the tree: the prelude, the markers, and the
-    /// trivia around the root.
-    let private documentPath: PathInfo =
-        { Parent = None
-          Pointer = ""
-          Slot = ""
-          Depth = 0 }
-
-    let private escapePointer (text: string) = text.Replace("~", "~0").Replace("/", "~1")
-
     [<RequireQualifiedAccess; NoEquality; NoComparison>]
     type private Step =
         | Visit of node: YamlNode * path: PathInfo * isKey: bool
         | Comment of comment: YamlComment * path: PathInfo * suffix: string * ownLine: bool
-        | Blank of path: PathInfo * suffix: string
+        | Blank of span: SourceSpan option * path: PathInfo * suffix: string
 
     /// The lists of one document.
     type private DocumentLists =
@@ -379,11 +316,17 @@ module Projection =
         appendDocumentField trivia
         sb.Append('}') |> ignore
 
-    let private appendBlank (trivia: TriviaList) (path: PathInfo) (suffix: string) =
+    /// A blank line has the line of its span and no column, because the lines of the reference parser carry
+    /// no column either. A constructed blank line has no line.
+    let private appendBlank (trivia: TriviaList) (span: SourceSpan option) (path: PathInfo) (suffix: string) =
         startItem trivia.Items trivia.Count
         trivia.Count <- trivia.Count + 1
         let sb = trivia.Items
-        sb.Append("{\"kind\":\"blank\",\"text\":null,\"line\":null,\"col\":null,\"placement\":\"ownLine\",\"slot\":") |> ignore
+        sb.Append("{\"kind\":\"blank\",\"text\":null,\"line\":") |> ignore
+        match span with
+        | Some range -> sb.Append(string range.Start.Line) |> ignore
+        | None -> sb.Append("null") |> ignore
+        sb.Append(",\"col\":null,\"placement\":\"ownLine\",\"slot\":") |> ignore
         appendJson sb (slotOf path + suffix)
         sb.Append(",\"path\":") |> ignore
         appendJson sb (pointerOf path)
@@ -398,7 +341,7 @@ module Projection =
             let suffix = prefix + "[" + string k + "]"
             match all.[k] with
             | FullLineComment comment -> stack.Add(Step.Comment(comment, path, suffix, true))
-            | BlankLine -> stack.Add(Step.Blank(path, suffix))
+            | BlankLine span -> stack.Add(Step.Blank(span, path, suffix))
 
     /// Pushes the comment and the following lines of a separation behind an indicator so that they pop in order.
     let private pushSeparation (stack: ResizeArray<Step>) (separation: Separation) (path: PathInfo) (prefix: string) =
@@ -453,15 +396,6 @@ module Projection =
         appendJson sb (pointerOf path)
         sb.Append(",\"role\":\"").Append(if isKey then "key" else "value").Append("\",\"style\":\"").Append(collectionStyleName style).Append("\"}") |> ignore
 
-    /// The placements of the properties of a node. A constructed node has no layout and asks for the
-    /// canonical one, the tag first, so the projection shows that order.
-    let private effectiveLayout (node: YamlNode) : (PropertyName * Separation) list =
-        if not node.PropertyLayout.IsEmpty then
-            node.PropertyLayout |> List.map (fun placement -> placement.Property, placement.After)
-        else
-            [ if node.Properties.Tag.IsSome then PropertyName.Tag, Separation.Inline
-              if node.Properties.Anchor.IsSome then PropertyName.Anchor, Separation.Inline ]
-
     let private appendLayout (lists: DocumentLists) (path: PathInfo) (isKey: bool) (layout: (PropertyName * Separation) list) =
         startItem lists.Layouts lists.LayoutCount
         lists.LayoutCount <- lists.LayoutCount + 1
@@ -493,9 +427,9 @@ module Projection =
             stack.RemoveAt last
             match step with
             | Step.Comment (comment, path, suffix, ownLine) -> appendComment trivia comment path suffix ownLine
-            | Step.Blank (path, suffix) -> appendBlank trivia path suffix
+            | Step.Blank (span, path, suffix) -> appendBlank trivia span path suffix
             | Step.Visit (node, path, isKey) ->
-                let layout = effectiveLayout node
+                let layout = node.PropertyLayout |> List.map (fun placement -> placement.Property, placement.After)
                 if not layout.IsEmpty then appendLayout lists path isKey layout
                 // The comments behind the properties come first, because the properties stand in front of the content.
                 let mutable index = 0
@@ -511,7 +445,7 @@ module Projection =
                             let suffix = prefix + ".Following[" + string k + "]"
                             match line with
                             | FullLineComment comment -> appendComment trivia comment path suffix true
-                            | BlankLine -> appendBlank trivia path suffix
+                            | BlankLine span -> appendBlank trivia span path suffix
                             k <- k + 1
                     | Separation.Inline -> ()
                     index <- index + 1
@@ -572,7 +506,7 @@ module Projection =
             stack.RemoveAt last
             match step with
             | Step.Comment (comment, p, suffix, ownLine) -> appendComment trivia comment p suffix ownLine
-            | Step.Blank (p, suffix) -> appendBlank trivia p suffix
+            | Step.Blank (span, p, suffix) -> appendBlank trivia span p suffix
             | Step.Visit _ -> ()
 
     let private appendDirectives (sb: StringBuilder) (prelude: PreludeItem list) =
@@ -623,13 +557,14 @@ module Projection =
     /// P is the key path in the style of a JSON pointer, with `~` and `/` escaped and a non-scalar key written as `?i`.
     ///
     /// ITEM is a comment `{"kind":"comment","text":T,"line":L|null,"col":C|null,"placement":"ownLine"|"endOfLine",
-    /// "slot":S,"path":P,"doc":I|null}` or a blank line with `"kind":"blank"` and null text, line and column. The
+    /// "slot":S,"path":P,"doc":I|null}` or a blank line with `"kind":"blank"` and null text and column. The
     /// items are in source order. `slot` names the field of the model that holds the item, for example
     /// `root.entries[2].Before[0]`, `root.TrailingComment` or `root.entries[0].Colon.Comment`. The slots outside the
     /// tree are `Prelude[i]`, `Prelude[i].TrailingComment`, `StartMarker.TrailingComment`, `BeforeRoot[i]`,
     /// `AfterRoot[i]`, `EndMarker.TrailingComment`, `Parts[i]` and `Parts[i].TrailingComment`. `doc` is the index
     /// of the document, or null for a part of the stream. A path of a node deeper than 64 levels shows `(N)`
-    /// and its last 8 segments. The line and the column come from the span of the comment. A blank line has no span.
+    /// and its last 8 segments. The line and the column come from the span of the comment. A blank line has
+    /// the line of its span, or a null line when a program constructed it.
     let presentation (stream: YamlStream) : string =
         let documents = StringBuilder()
         let trivia =
@@ -655,7 +590,7 @@ module Projection =
                         let suffix = "Prelude[" + string index + "]"
                         match line with
                         | FullLineComment comment -> appendComment trivia comment documentPath suffix true
-                        | BlankLine -> appendBlank trivia documentPath suffix
+                        | BlankLine span -> appendBlank trivia span documentPath suffix
                     index <- index + 1
                 match document.StartMarker with
                 | Some marker ->
@@ -682,7 +617,7 @@ module Projection =
                 let suffix = "Parts[" + string partIndex + "]"
                 match line with
                 | FullLineComment comment -> appendComment trivia comment documentPath suffix true
-                | BlankLine -> appendBlank trivia documentPath suffix
+                | BlankLine span -> appendBlank trivia span documentPath suffix
             | StreamPart.ExtraEndMarker marker ->
                 match marker.TrailingComment with
                 | Some comment -> appendComment trivia comment documentPath ("Parts[" + string partIndex + "].TrailingComment") false
@@ -708,8 +643,8 @@ module Projection =
         sb.ToString()
 
     /// The failure projection: `{"ok":false,"errors":[{"code":C,"line":L},...]}` with 1-based lines. A line
-    /// of 0 stands for an error that names no line. The pairs come from the YamlError of the parse:
-    /// its Code and Span.Start.Line.
+    /// of 0 stands for an error that names no line. The parser decides the codes, and this projection writes
+    /// them as it gets them.
     let failure (errors: (string * int) list) : string = "{" + failureFields errors + "}"
 
     /// One line of a corpus run, in the format of the files in m0/ref and m0/old, without a line break:

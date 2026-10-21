@@ -172,8 +172,9 @@ module CoreSchema =
         if matches decimalPattern text then text + ".0" else text
 
     /// The scalar of a string. Text that a core schema reader takes for null, a bool, an int or a float is
-    /// double-quoted, so that it reads back as the string. Every other text is plain, and the writer quotes
-    /// it when the text cannot stand plain for another reason.
+    /// double-quoted, so that it reads back as the string. Every other text is plain. A constructed scalar has
+    /// no span, so its plain style is a preference (see `ScalarStyle`), and the writer quotes a text that
+    /// cannot stand plain, for example one that starts with an indicator or holds `: ` or ` #`.
     let stringContent (text: string) : YamlScalar =
         let style = if resolvesToNonString text then ScalarStyle.DoubleQuoted else ScalarStyle.Plain
         { Value = text

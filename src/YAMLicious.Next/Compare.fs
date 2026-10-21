@@ -13,7 +13,7 @@ open System.Text
 /// Source spans are ignored in the comparison and absent from the printout. The comparison does not
 /// ignore comments, trivia, styles, properties or the layout of the properties. A comment in another slot
 /// makes two trees different.
-module NodeComparison =
+module internal NodeComparison =
 
     let private commentsEqual (a: YamlComment option) (b: YamlComment option) =
         match a, b with
@@ -24,7 +24,7 @@ module NodeComparison =
     let private triviaEqual (a: Trivia) (b: Trivia) =
         match a, b with
         | FullLineComment x, FullLineComment y -> x.Text = y.Text
-        | BlankLine, BlankLine -> true
+        | BlankLine _, BlankLine _ -> true
         | _ -> false
 
     let private triviaListEqual (a: Trivia list) (b: Trivia list) =
@@ -149,6 +149,17 @@ module NodeComparison =
         && markerEqual left.EndMarker right.EndMarker
         && nodesEqualIgnoringSpans left.Root right.Root
 
+    let private partEqual (a: StreamPart) (b: StreamPart) =
+        match a, b with
+        | StreamPart.Document x, StreamPart.Document y -> documentsEqualIgnoringSpans x y
+        | StreamPart.Trivia x, StreamPart.Trivia y -> triviaEqual x y
+        | StreamPart.ExtraEndMarker x, StreamPart.ExtraEndMarker y -> markerEqual (Some x) (Some y)
+        | _ -> false
+
+    /// True when both streams hold equal parts in the same order, except for their source spans.
+    let streamsEqualIgnoringSpans (left: YamlStream) (right: YamlStream) : bool =
+        List.length left.Parts = List.length right.Parts && List.forall2 partEqual left.Parts right.Parts
+
     // The printer indents two spaces for each level up to this depth. A deeper line keeps the indentation of
     // this depth and names its depth in brackets, so that the printout of a tree stays linear in its size.
     let private maxIndentedDepth = 24
@@ -169,7 +180,7 @@ module NodeComparison =
     let private showTrivia (trivia: Trivia) =
         match trivia with
         | FullLineComment comment -> showComment comment
-        | BlankLine -> "blank"
+        | BlankLine _ -> "blank"
 
     let private showTriviaList (items: Trivia list) =
         "[" + String.Join("; ", items |> List.map showTrivia) + "]"
@@ -187,7 +198,7 @@ module NodeComparison =
     let private showTag (tag: YamlTag) =
         match tag with
         | YamlTag.NonSpecific -> "!"
-        | YamlTag.Named _ -> YamlTag.identifier tag
+        | YamlTag.Named _ -> escape (YamlTag.identifier tag)
 
     let private showStyle (style: ScalarStyle) =
         match style with
@@ -232,12 +243,12 @@ module NodeComparison =
         | YamlNodeKind.Sequence collection ->
             sb.Append("sequence ").Append(showCollectionStyle collection.Style) |> ignore
         | YamlNodeKind.Alias name ->
-            sb.Append("alias *").Append(name) |> ignore
+            sb.Append("alias *").Append(escape name) |> ignore
         match node.Properties.Tag with
         | Some tag -> sb.Append(" tag=").Append(showTag tag) |> ignore
         | None -> ()
         match node.Properties.Anchor with
-        | Some anchor -> sb.Append(" anchor=&").Append(anchor) |> ignore
+        | Some anchor -> sb.Append(" anchor=&").Append(escape anchor) |> ignore
         | None -> ()
         if not node.PropertyLayout.IsEmpty then
             sb.Append(" layout=[").Append(String.Join("; ", node.PropertyLayout |> List.map showLayout)).Append(']') |> ignore
@@ -340,27 +351,44 @@ module NodeComparison =
         | Some comment -> kind + " comment=" + showComment comment
         | None -> kind
 
-    let private showMarker (name: string) (marker: DocumentMarker option) =
+    let private appendMarker (output: StringBuilder) (indentation: string) (name: string) (marker: DocumentMarker option) =
         match marker with
-        | None -> ""
+        | None -> ()
         | Some m ->
+            output.Append(indentation).Append(name) |> ignore
             match m.TrailingComment with
-            | Some comment -> "  " + name + " comment=" + showComment comment + "\n"
-            | None -> "  " + name + "\n"
+            | Some comment -> output.Append(" comment=").Append(showComment comment) |> ignore
+            | None -> ()
+            output.Append('\n') |> ignore
 
-    /// A readable printout of the document, without spans.
-    let showDocument (document: YamlDocument) : string =
-        let output = StringBuilder()
+    let private appendDocument (output: StringBuilder) (document: YamlDocument) =
         output.Append("document\n") |> ignore
         for item in document.Prelude do
             match item with
             | Directive directive -> output.Append("  prelude: directive ").Append(showDirective directive).Append('\n') |> ignore
             | PreludeTrivia trivia -> output.Append("  prelude: ").Append(showTrivia trivia).Append('\n') |> ignore
-        output.Append(showMarker "start-marker" document.StartMarker) |> ignore
+        appendMarker output "  " "start-marker" document.StartMarker
         if not document.BeforeRoot.IsEmpty then
             output.Append("  before-root=").Append(showTriviaList document.BeforeRoot).Append('\n') |> ignore
         render output 1 "root" document.Root
         if not document.AfterRoot.IsEmpty then
             output.Append("  after-root=").Append(showTriviaList document.AfterRoot).Append('\n') |> ignore
-        output.Append(showMarker "end-marker" document.EndMarker) |> ignore
+        appendMarker output "  " "end-marker" document.EndMarker
+
+    /// A readable printout of the document, without spans.
+    let showDocument (document: YamlDocument) : string =
+        let output = StringBuilder()
+        appendDocument output document
+        output.ToString()
+
+    /// A readable printout of the stream, without spans: the line `stream`, then the printout of each
+    /// document, and one line for each piece of trivia and each extra end marker, in order.
+    let showStream (stream: YamlStream) : string =
+        let output = StringBuilder()
+        output.Append("stream\n") |> ignore
+        for part in stream.Parts do
+            match part with
+            | StreamPart.Document document -> appendDocument output document
+            | StreamPart.Trivia trivia -> output.Append("trivia: ").Append(showTrivia trivia).Append('\n') |> ignore
+            | StreamPart.ExtraEndMarker marker -> appendMarker output "" "extra-end-marker" (Some marker)
         output.ToString()

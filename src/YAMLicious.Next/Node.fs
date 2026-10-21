@@ -2,9 +2,10 @@ namespace YAMLicious
 
 /// Constructors, accessors and test helpers for nodes.
 ///
-/// A constructed node has no span, no comment, no property and an empty `PropertyLayout`, which asks the
-/// writer for the canonical order of the properties, the tag first. The `with` functions add one piece of
-/// presentation each and reject a combination that the invariants of `YamlNode` forbid.
+/// A constructed node has no span, no comment, no property and an empty `PropertyLayout`. The `with`
+/// functions add one piece of presentation each and reject a combination that the invariants of `YamlNode`
+/// or the slot rules forbid. `withTag` and `withAnchor` keep the layout complete, so a node with properties
+/// always has one placement for each of them.
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module YamlNode =
 
@@ -37,8 +38,44 @@ module YamlNode =
     /// A scalar with omitted content, as in `k:` or in a lone `-`. It is a plain scalar with the text "".
     let empty: YamlNode = plain ""
 
-    /// An alias of the anchor `name`. The name has no `*` in front.
-    let alias (name: string) : YamlNode = create (YamlNodeKind.Alias name)
+    // ns-anchor-char of the YAML 1.2 specification: a printable character other than a white space, a line
+    // break, the byte order mark and the flow indicators. A .NET or JavaScript string holds a character
+    // beyond the BMP as a pair of surrogates, which stand outside these ranges and are checked apart. A
+    // Python string holds such a character as one code point, which the last range covers.
+    let private isAnchorChar (c: char) =
+        let code = int c
+        let printable =
+            (code >= 0x21 && code <= 0x7E)
+            || code = 0x85
+            || (code >= 0xA0 && code <= 0xD7FF)
+            || (code >= 0xE000 && code <= 0xFFFD && code <> 0xFEFF)
+            || (code >= 0x10000 && code <= 0x10FFFF)
+        printable && c <> ',' && c <> '[' && c <> ']' && c <> '{' && c <> '}'
+
+    let private isHighSurrogate (c: char) = int c >= 0xD800 && int c <= 0xDBFF
+    let private isLowSurrogate (c: char) = int c >= 0xDC00 && int c <= 0xDFFF
+
+    // `what` is "alias" or "anchor" and names the owner of the name in the message.
+    let private checkName (what: string) (name: string) =
+        if name.Length = 0 then
+            failwith ("The " + what + " name must not be empty.")
+        let mutable valid = true
+        let mutable i = 0
+        while valid && i < name.Length do
+            if isHighSurrogate name.[i] && i + 1 < name.Length && isLowSurrogate name.[i + 1] then
+                i <- i + 2
+            elif isAnchorChar name.[i] then
+                i <- i + 1
+            else
+                valid <- false
+        if not valid then
+            failwith ("The " + what + " name " + name + " holds a character that a name cannot hold.")
+
+    /// An alias of the anchor `name`. The name has no `*` in front. It must not be empty and must not hold a
+    /// white space, a line break, a flow indicator or a control character.
+    let alias (name: string) : YamlNode =
+        checkName "alias" name
+        create (YamlNodeKind.Alias name)
 
     /// A mapping with the entries in their order. An empty mapping is the flow mapping `{}`, and any other
     /// mapping is a block mapping.
@@ -51,10 +88,12 @@ module YamlNode =
         create (YamlNodeKind.Mapping (collection CollectionStyle.Flow entries))
 
     /// A sequence with the items in their order. An empty sequence is the flow sequence `[]`, and any other
-    /// sequence is a block sequence.
+    /// sequence is a block sequence. A block item has a dash, so an item without one gets an inline dash.
     let sequence (items: SequenceItem list) : YamlNode =
         let style = if items.IsEmpty then CollectionStyle.Flow else CollectionStyle.Block
-        create (YamlNodeKind.Sequence (collection style items))
+        let withDash (item: SequenceItem) : SequenceItem =
+            if item.Dash.IsNone then { item with Dash = Some Separation.Inline } else item
+        create (YamlNodeKind.Sequence (collection style (List.map withDash items)))
 
     /// A flow sequence, as in `[1, 2]`. A flow item has no dash, so the dash of each item is dropped.
     let flowSequence (items: SequenceItem list) : YamlNode =
@@ -78,14 +117,6 @@ module YamlNode =
           Node = node
           Span = None }
 
-    let private canonicalLayout (properties: NodeProperties) : PropertyPlacement list =
-        let placement (property: PropertyName) : PropertyPlacement =
-            { Property = property
-              After = Separation.Inline
-              Span = None }
-        [ if properties.Tag.IsSome then placement PropertyName.Tag
-          if properties.Anchor.IsSome then placement PropertyName.Anchor ]
-
     let private describe (node: YamlNode) =
         match node.Kind with
         | YamlNodeKind.Scalar _ -> "a scalar"
@@ -93,21 +124,19 @@ module YamlNode =
         | YamlNodeKind.Sequence _ -> "a sequence"
         | YamlNodeKind.Alias _ -> "an alias"
 
-    // A layout that already exists must name the new property too. The tag goes first and the anchor last,
-    // which is the canonical order.
+    // The layout names each property of the node once. The canonical order puts the tag first and the anchor
+    // last, so a new tag goes to the front and a new anchor to the end.
     let private addPlacement (property: PropertyName) (node: YamlNode) : PropertyPlacement list =
-        if node.PropertyLayout.IsEmpty then
-            []
-        else
-            let added: PropertyPlacement =
-                { Property = property
-                  After = Separation.Inline
-                  Span = None }
-            match property with
-            | PropertyName.Tag -> added :: node.PropertyLayout
-            | PropertyName.Anchor -> node.PropertyLayout @ [ added ]
+        let added: PropertyPlacement =
+            { Property = property
+              After = Separation.Inline
+              Span = None }
+        match property with
+        | PropertyName.Tag -> added :: node.PropertyLayout
+        | PropertyName.Anchor -> node.PropertyLayout @ [ added ]
 
-    /// The node with an explicit tag. An alias takes no tag, and a node that has a tag already takes no second one.
+    /// The node with an explicit tag and its placement in front of the content. An alias takes no tag, and
+    /// a node that has a tag already takes no second one.
     let withTag (tag: YamlTag) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Alias name -> failwith ("The alias *" + name + " cannot have a tag.")
@@ -117,12 +146,14 @@ module YamlNode =
                 Properties = { node.Properties with Tag = Some tag }
                 PropertyLayout = addPlacement PropertyName.Tag node }
 
-    /// The node with an anchor. An alias takes no anchor, and a node that has an anchor already takes no second one.
+    /// The node with an anchor and its placement in front of the content. An alias takes no anchor, a node
+    /// that has an anchor already takes no second one, and the name follows the rules of the name of an alias.
     let withAnchor (name: string) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Alias target -> failwith ("The alias *" + target + " cannot have an anchor.")
         | _ when node.Properties.Anchor.IsSome -> failwith "A node cannot have two anchors."
         | _ ->
+            checkName "anchor" name
             { node with
                 Properties = { node.Properties with Anchor = Some name }
                 PropertyLayout = addPlacement PropertyName.Anchor node }
@@ -132,8 +163,21 @@ module YamlNode =
         | ScalarStyle.Block _ -> true
         | _ -> false
 
-    /// The node with the comment behind its last line, as in `k: value # c`. A block collection and a block
-    /// scalar end in a line that cannot hold a comment of the node, so they reject it. A comment replaces the earlier one.
+    /// True when the node is a missing value: an empty plain scalar without properties, as in `k:` or in a
+    /// lone `-`. A scalar with a property is not missing, because the property is a token on the line.
+    let isMissingValue (node: YamlNode) =
+        match node.Kind with
+        | YamlNodeKind.Scalar content ->
+            content.Value.Length = 0
+            && content.Style = ScalarStyle.Plain
+            && node.Properties.Tag.IsNone
+            && node.Properties.Anchor.IsNone
+        | _ -> false
+
+    /// The node with the comment behind its last line, as in `k: value # c` (rule R8). A block collection and
+    /// a block scalar end in a line that cannot hold a comment of the node, so they reject it. A missing value
+    /// rejects it too, because the comment belongs to the separation behind the indicator (rule R1). A comment
+    /// replaces the earlier one.
     let withTrailingComment (comment: YamlComment) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Mapping content when content.Style = CollectionStyle.Block ->
@@ -142,6 +186,8 @@ module YamlNode =
             failwith "A block sequence has no closing token for a trailing comment. Put the comment on an item or the end of the collection."
         | YamlNodeKind.Scalar content when isBlockScalar content ->
             failwith "A block scalar has no place for a trailing comment. Use its header comment."
+        | _ when isMissingValue node ->
+            failwith "A missing value has no trailing comment. Put the comment on the separation behind the indicator."
         | _ -> { node with TrailingComment = Some comment }
 
     /// The node with the comment behind the header of a block scalar, as in `| # c`. Only a block scalar
@@ -163,17 +209,12 @@ module YamlNode =
         | _ -> failwith ("Only a flow collection has an opening comment, not " + describe node + ".")
 
     /// The node with the comment behind one of its properties, which puts the next token on a later line,
-    /// as in `&a # c` on a line of its own. The node must have the property. A comment replaces the earlier one.
+    /// as in `&a # c` on a line of its own (rule R1). The node must have the property. A comment replaces the
+    /// earlier one.
     let withPropertyComment (property: PropertyName) (comment: YamlComment) (node: YamlNode) : YamlNode =
-        let present =
-            match property with
-            | PropertyName.Tag -> node.Properties.Tag.IsSome
-            | PropertyName.Anchor -> node.Properties.Anchor.IsSome
-        if not present then
+        if not (node.PropertyLayout |> List.exists (fun placement -> placement.Property = property)) then
             failwith "The node does not have the property that the comment belongs to."
         else
-            let layout =
-                if node.PropertyLayout.IsEmpty then canonicalLayout node.Properties else node.PropertyLayout
             let commented (placement: PropertyPlacement) : PropertyPlacement =
                 if placement.Property <> property then
                     placement
@@ -187,7 +228,7 @@ module YamlNode =
                             Separation.NewLine
                                 { Comment = Some comment
                                   Following = following } }
-            { node with PropertyLayout = List.map commented layout }
+            { node with PropertyLayout = List.map commented node.PropertyLayout }
 
     /// The scalar of a scalar node.
     let tryScalar (node: YamlNode) : YamlScalar option =
@@ -252,3 +293,14 @@ module YamlDocument =
 
     /// A readable printout of the document, without spans.
     let show (document: YamlDocument) : string = NodeComparison.showDocument document
+
+/// Test helpers for streams.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module YamlStream =
+
+    /// True when both streams hold the same parts in the same order, equal except for their source spans.
+    let equalIgnoringSpans (left: YamlStream) (right: YamlStream) : bool =
+        NodeComparison.streamsEqualIgnoringSpans left right
+
+    /// A readable printout of the stream, without spans.
+    let show (stream: YamlStream) : string = NodeComparison.showStream stream

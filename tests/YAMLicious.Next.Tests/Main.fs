@@ -6,6 +6,7 @@ let all =
         [ Tests.Model.Main
           Tests.CoreSchema.Main
           Tests.Compare.Main
+          Tests.Validate.Main
           Tests.Projection.Main ]
 
 [<EntryPoint>]

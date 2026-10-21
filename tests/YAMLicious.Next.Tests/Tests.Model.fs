@@ -185,10 +185,31 @@ let tests_properties = testList "Properties" [
         Expect.equal (errorOf (fun () -> YamlTag.core "" |> ignore)) "A tag needs a name behind its handle." "empty core tag"
         Expect.notEqual (YamlTag.identifier YamlTag.NonSpecific) (YamlTag.identifier (YamlTag.local "x")) "The non-specific tag has its own identifier"
 
-    testCase "an empty layout stays empty and asks for the canonical order" <| fun _ ->
+    testCase "withTag and withAnchor add one placement each, the tag first, with an inline separation" <| fun _ ->
         let node = YamlNode.plain "a" |> YamlNode.withAnchor "x" |> YamlNode.withTag (YamlTag.local "t")
-        Expect.equal node.PropertyLayout [] "The layout stays empty"
+        Expect.equal node.PropertyLayout [ placement PropertyName.Tag Separation.Inline; placement PropertyName.Anchor Separation.Inline ] "Tag first"
         Expect.equal (YamlNode.properties node) { Tag = Some (YamlTag.local "t"); Anchor = Some "x" } "Both properties are set"
+        Expect.equal (YamlNode.plain "a" |> YamlNode.withAnchor "x").PropertyLayout [ placement PropertyName.Anchor Separation.Inline ] "Anchor alone"
+        Expect.equal (YamlNode.plain "a").PropertyLayout [] "A node without properties has no layout"
+
+    // yaml@2.6.1 reads `&a x`, `&a.b x`, `&a:b x` and a name with a non-ASCII letter with the whole name as the
+    // anchor. It rejects `& x` with BAD_ALIAS (an anchor cannot be an empty string), and a flow indicator
+    // ends a name, so `- &a,b x` and `- &a[b] x` are errors (MISSING_CHAR).
+    testCase "alias and withAnchor reject an empty name and a character outside ns-anchor-char" <| fun _ ->
+        for name in [ "a"; "a.b"; "a:b"; "-1"; "\u00e9"; "\U0001F600" ] do
+            Expect.equal (YamlNode.withAnchor name (YamlNode.plain "x")).Properties.Anchor (Some name) $"anchor {name}"
+            Expect.equal (aliasName (YamlNode.alias name)) (Some name) $"alias {name}"
+        Expect.equal (errorOf (fun () -> YamlNode.alias "" |> ignore)) "The alias name must not be empty." "empty alias"
+        Expect.equal (errorOf (fun () -> YamlNode.withAnchor "" (YamlNode.plain "x") |> ignore)) "The anchor name must not be empty." "empty anchor"
+        for (index, name) in List.indexed [ "a b"; "a\tb"; "a\nb"; "a,b"; "a[b"; "a]b"; "a{b"; "a}b"; "a\u0001b"; "\uFEFF"; "a" + string (char 0xD83D) ] do
+            Expect.equal
+                (errorOf (fun () -> YamlNode.alias name |> ignore))
+                ("The alias name " + name + " holds a character that a name cannot hold.")
+                $"alias {index}"
+            Expect.equal
+                (errorOf (fun () -> YamlNode.withAnchor name (YamlNode.plain "x") |> ignore))
+                ("The anchor name " + name + " holds a character that a name cannot hold.")
+                $"anchor {index}"
 
     testCase "a second tag and a second anchor are errors" <| fun _ ->
         let tagged = YamlNode.plain "a" |> YamlNode.withTag (YamlTag.core "str")
@@ -228,54 +249,8 @@ let tests_properties = testList "Properties" [
 ]
 
 let tests_comment_slots = testList "Comment slots" [
-    // One test for each row of the table of comment slots. The comment has a unique text, and the test finds it
-    // in exactly the field that the table names.
-
-    testCase "a comment in front of an entry goes to its Before field" <| fun _ ->
-        let made = { field "k" (YamlNode.plain "v") with Before = [ FullLineComment (comment " note"); BlankLine ] }
-        let mapping = YamlNode.mapping [ made ]
-        Expect.equal (onlyEntry mapping).Before [ FullLineComment (comment " note"); BlankLine ] "Before"
-
-    testCase "a comment in front of an item goes to its Before field" <| fun _ ->
-        let made = { YamlNode.item (YamlNode.plain "v") with Before = [ FullLineComment (comment " note") ] }
-        Expect.equal (onlyItem (YamlNode.sequence [ made ])).Before [ FullLineComment (comment " note") ] "Before"
-
-    testCase "a comment behind the last entry goes to the End of the collection" <| fun _ ->
-        let content = (YamlNode.tryMapping (YamlNode.mapping [ field "k" (YamlNode.plain "v") ])).Value
-        let node = YamlNode.mapping [ field "k" (YamlNode.plain "v") ]
-        let ended = { node with Kind = YamlNodeKind.Mapping { content with End = [ FullLineComment (comment " last") ] } }
-        Expect.equal (YamlNode.tryMapping ended).Value.End [ FullLineComment (comment " last") ] "End"
-        Expect.equal ended.TrailingComment None "The node has no trailing comment"
-
-    // yaml@2.6.1 puts the comment of `k: value # c` on the value.
-    testCase "k: value # c goes to the TrailingComment of the value" <| fun _ ->
-        let value = YamlNode.plain "value" |> YamlNode.withTrailingComment (comment " c")
-        let mapping = YamlNode.mapping [ field "k" value ]
-        Expect.equal (onlyEntry mapping).Value.TrailingComment (Some (comment " c")) "value"
-        Expect.equal (onlyEntry mapping).Key.TrailingComment None "The key has none"
-
-    testCase "k: # c followed by a value goes to the Colon of the entry" <| fun _ ->
-        let made = { field "k" (YamlNode.plain "v") with Colon = Some (lineBreak " c") }
-        let mapping = YamlNode.mapping [ made ]
-        Expect.equal (onlyEntry mapping).Colon (Some (lineBreak " c")) "Colon"
-        Expect.equal (onlyEntry mapping).Value.TrailingComment None "The value has none"
-
-    testCase "- # c followed by a node goes to the Dash of the item" <| fun _ ->
-        let made = { YamlNode.item (YamlNode.plain "v") with Dash = Some (lineBreak " c") }
-        Expect.equal (onlyItem (YamlNode.sequence [ made ])).Dash (Some (lineBreak " c")) "Dash"
-
-    // yaml@2.6.1 puts the comment of `? key # c` on the key.
-    testCase "? key # c goes to the TrailingComment of the key" <| fun _ ->
-        let key = YamlNode.plain "key" |> YamlNode.withTrailingComment (comment " c")
-        let made = { YamlNode.entry key (YamlNode.plain "v") with Question = Some Separation.Inline; BeforeColon = [ BlankLine ] }
-        let mapping = YamlNode.mapping [ made ]
-        Expect.equal (onlyEntry mapping).Key.TrailingComment (Some (comment " c")) "key"
-        Expect.equal (onlyEntry mapping).Question (Some Separation.Inline) "question mark"
-        Expect.equal (onlyEntry mapping).BeforeColon [ BlankLine ] "trivia in front of the colon"
-
-    testCase "a comment behind an explicit key marker goes to its Question" <| fun _ ->
-        let made = { field "key" (YamlNode.plain "v") with Question = Some (lineBreak " q") }
-        Expect.equal (onlyEntry (YamlNode.mapping [ made ])).Question (Some (lineBreak " q")) "Question"
+    // The tests here check what the constructors do with a comment. The slot rules R1 to R8 are in
+    // Tests.Validate.fs, where each rule builds its tree and validates it.
 
     testCase "&a # c on a line of its own goes to the After of the anchor placement" <| fun _ ->
         let node = YamlNode.plain "v" |> YamlNode.withAnchor "a" |> YamlNode.withPropertyComment PropertyName.Anchor (comment " c")
@@ -385,7 +360,7 @@ let tests_documents = testList "Documents and streams" [
             { Parts =
                 [ StreamPart.Document (YamlDocument.create (YamlNode.plain "a"))
                   StreamPart.ExtraEndMarker marker
-                  StreamPart.Trivia BlankLine
+                  StreamPart.Trivia (BlankLine None)
                   StreamPart.Document (YamlDocument.create (YamlNode.plain "b")) ] }
         let names =
             stream.Parts

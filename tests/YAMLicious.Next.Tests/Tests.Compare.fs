@@ -116,7 +116,7 @@ let private templateWith (text: string) (spans: bool) (slot: string) : YamlNode 
         else
             Separation.Inline
     let secondEntry: MappingEntry =
-        { Before = if slot = "blank" then [ BlankLine ] else []
+        { Before = if slot = "blank" then [ BlankLine span ] else []
           Question = None
           Key = plainNode "k2" None
           BeforeColon = []
@@ -216,8 +216,9 @@ let tests_other_fields = testList "Equality sees the other fields" [
         let anchored = YamlNode.withAnchor "x" bare
         let onOwnLine = YamlNode.withPropertyComment PropertyName.Anchor (comment " c") anchored
         Expect.nodeNotEqual anchored onOwnLine "comment behind the anchor"
-        let layoutOnly = { anchored with PropertyLayout = [ { Property = PropertyName.Anchor; After = Separation.Inline; Span = None } ] }
-        Expect.nodeNotEqual anchored layoutOnly "explicit layout against the canonical empty layout"
+        let both = YamlNode.withTag (YamlTag.core "str") anchored
+        let anchorFirst = { both with PropertyLayout = List.rev both.PropertyLayout }
+        Expect.nodeNotEqual both anchorFirst "order of the placements"
 
     // A %TAG directive can bind the same identifier through another handle. The tree compares the identifier.
     testCase "a tag is the same tag whatever the split of its identifier" <| fun _ ->
@@ -257,8 +258,16 @@ let tests_other_fields = testList "Equality sees the other fields" [
         let explicitKey = { plainEntry with Question = Some Separation.Inline }
         Expect.nodeNotEqual (YamlNode.mapping [ plainEntry ]) (YamlNode.mapping [ explicitKey ]) "explicit key"
         let plainItem = YamlNode.item (YamlNode.plain "1")
+        let blockSequenceOf (item: SequenceItem) =
+            { YamlNode.sequence [ plainItem ] with
+                Kind =
+                    YamlNodeKind.Sequence
+                        { Style = CollectionStyle.Block
+                          OpeningComment = None
+                          Items = [ item ]
+                          End = [] } }
         let noDash = { plainItem with Dash = None }
-        Expect.nodeNotEqual (YamlNode.sequence [ plainItem ]) (YamlNode.sequence [ noDash ]) "no dash"
+        Expect.nodeNotEqual (blockSequenceOf plainItem) (blockSequenceOf noDash) "no dash"
 
     testCase "a difference deep in the tree is found" <| fun _ ->
         let build (leaf: string) =
@@ -289,7 +298,7 @@ let tests_documents = testList "Document equality" [
               "tag directive", { bare with Prelude = [ Directive { Kind = TagDirective ("!e!", "tag:example.com,2000:"); TrailingComment = None; Span = None } ] }
               "reserved directive", { bare with Prelude = [ Directive { Kind = ReservedDirective ("FOO", [ "bar" ]); TrailingComment = None; Span = None } ] }
               "prelude comment", { bare with Prelude = [ PreludeTrivia (FullLineComment (comment " c")) ] }
-              "prelude blank line", { bare with Prelude = [ PreludeTrivia BlankLine ] }
+              "prelude blank line", { bare with Prelude = [ PreludeTrivia (BlankLine None) ] }
               "start marker", { bare with StartMarker = marker None None }
               "start marker comment", { bare with StartMarker = marker (Some (comment " c")) None }
               "before root", { bare with BeforeRoot = [ FullLineComment (comment " c") ] }
@@ -340,7 +349,7 @@ let tests_show = testList "show" [
             "root: mapping block\n"
             + "  entry\n"
             + "    key: scalar plain \"k\"\n"
-            + "    value: scalar plain \"v\" tag=tag:yaml.org,2002:str anchor=&a comment=#\" c\"\n"
+            + "    value: scalar plain \"v\" tag=tag:yaml.org,2002:str anchor=&a layout=[tag:inline; anchor:inline] comment=#\" c\"\n"
         Expect.equal (YamlNode.show (YamlNode.mapping [ field "k" value ])) expected "mapping"
 
     testCase "a sequence shows its items" <| fun _ ->
@@ -356,7 +365,7 @@ let tests_show = testList "show" [
     testCase "a flow collection shows its opening comment and its end trivia" <| fun _ ->
         let flow = YamlNode.flowSequence [ YamlNode.item (YamlNode.plain "1") ] |> YamlNode.withOpeningComment (comment " o")
         let content = (YamlNode.trySequence flow).Value
-        let ended = { flow with Kind = YamlNodeKind.Sequence { content with End = [ BlankLine; FullLineComment (comment " z") ] } }
+        let ended = { flow with Kind = YamlNodeKind.Sequence { content with End = [ BlankLine None; FullLineComment (comment " z") ] } }
         let expected =
             "root: sequence flow opening=#\" o\"\n"
             + "  item\n"
@@ -375,12 +384,12 @@ let tests_show = testList "show" [
         Expect.equal (YamlNode.show folded) "root: scalar block(>-) \"a\"\n" "folded"
 
     testCase "an entry shows its question mark, its trivia and its colon" <| fun _ ->
-        let lineBreak = Separation.NewLine { Comment = Some (comment " c"); Following = [ BlankLine ] }
+        let lineBreak = Separation.NewLine { Comment = Some (comment " c"); Following = [ BlankLine None ] }
         let made =
             { field "k" (YamlNode.plain "v") with
                 Before = [ FullLineComment (comment " b") ]
                 Question = Some Separation.Inline
-                BeforeColon = [ BlankLine ]
+                BeforeColon = [ BlankLine None ]
                 Colon = Some lineBreak }
         let expected =
             "root: mapping block\n"
@@ -401,7 +410,7 @@ let tests_show = testList "show" [
         let document: YamlDocument =
             { Prelude = [ versionDirective (Some (comment " d")) None; PreludeTrivia (FullLineComment (comment " p")) ]
               StartMarker = marker None None
-              BeforeRoot = [ BlankLine ]
+              BeforeRoot = [ BlankLine None ]
               Root = YamlNode.plain "a"
               AfterRoot = [ FullLineComment (comment " z") ]
               EndMarker = marker (Some (comment " e")) None
@@ -416,6 +425,13 @@ let tests_show = testList "show" [
             + "  after-root=[#\" z\"]\n"
             + "  end-marker comment=#\" e\"\n"
         Expect.equal (YamlDocument.show document) expected "document"
+
+    testCase "anchor, alias and tag names are escaped like the text of a scalar" <| fun _ ->
+        Expect.equal (YamlNode.show (YamlNode.alias "a\"b\\c")) "root: alias *a\\\"b\\\\c\n" "alias"
+        let anchored = YamlNode.plain "v" |> YamlNode.withAnchor "a\"b"
+        Expect.equal (YamlNode.show anchored) "root: scalar plain \"v\" anchor=&a\\\"b layout=[anchor:inline]\n" "anchor"
+        let tagged = YamlNode.plain "v" |> YamlNode.withTag (YamlTag.local "t\"x")
+        Expect.equal (YamlNode.show tagged) "root: scalar plain \"v\" tag=!t\\\"x layout=[tag:inline]\n" "tag"
 
     testCase "the failure message of nodeEqual names both trees" <| fun _ ->
         let message = errorOf (fun () -> Expect.nodeEqual (YamlNode.plain "a") (YamlNode.plain "b") "differ")
@@ -512,11 +528,71 @@ let tests_depth = testList "Deep trees" [
         Expect.nodeNotEqual (build "x") (build "y") "The last value differs"
 ]
 
+let private markerOf (comment: YamlComment option) (span: SourceSpan option) : DocumentMarker =
+    { TrailingComment = comment
+      Span = span }
+
+let tests_streams = testList "Stream equality and show" [
+    testCase "streams differ in the kind, the order and the number of their parts" <| fun _ ->
+        let document (text: string) = StreamPart.Document (YamlDocument.create (YamlNode.plain text))
+        let parts: (string * StreamPart list) list =
+            [ "none", []
+              "one document", [ document "a" ]
+              "other document", [ document "b" ]
+              "two documents", [ document "a"; document "a" ]
+              "trivia", [ StreamPart.Trivia (BlankLine None) ]
+              "comment", [ StreamPart.Trivia (FullLineComment (comment " c")) ]
+              "other comment", [ StreamPart.Trivia (FullLineComment (comment " d")) ]
+              "extra end marker", [ StreamPart.ExtraEndMarker (markerOf None None) ]
+              "extra end marker with comment", [ StreamPart.ExtraEndMarker (markerOf (Some (comment " c")) None) ]
+              "document then trivia", [ document "a"; StreamPart.Trivia (BlankLine None) ]
+              "trivia then document", [ StreamPart.Trivia (BlankLine None); document "a" ] ]
+        for (nameA, a) in parts do
+            for (nameB, b) in parts do
+                let same = YamlStream.equalIgnoringSpans { Parts = a } { Parts = b }
+                Expect.equal same (nameA = nameB) $"{nameA} against {nameB}"
+
+    testCase "the spans of the parts are ignored" <| fun _ ->
+        let build (span: SourceSpan option) : YamlStream =
+            { Parts =
+                [ StreamPart.Document { YamlDocument.create (YamlNode.plain "a") with Span = span }
+                  StreamPart.Trivia (BlankLine span)
+                  StreamPart.Trivia (FullLineComment { Text = " c"; Span = span })
+                  StreamPart.ExtraEndMarker (markerOf None span) ] }
+        Expect.isTrue (YamlStream.equalIgnoringSpans (build (Some someSpan)) (build None)) "with and without spans"
+        Expect.isTrue (YamlStream.equalIgnoringSpans (build (Some someSpan)) (build (Some otherSpan))) "other spans"
+
+    testCase "a stream with many parts compares and prints" <| fun _ ->
+        let build (last: string) : YamlStream =
+            { Parts = [ for i in 1 .. 2000 -> StreamPart.Document (YamlDocument.create (YamlNode.plain (if i = 2000 then last else "v"))) ] }
+        Expect.isTrue (YamlStream.equalIgnoringSpans (build "x") (build "x")) "equal"
+        Expect.isFalse (YamlStream.equalIgnoringSpans (build "x") (build "y")) "The last document differs"
+        Expect.equal (countLines (YamlStream.show (build "x"))) (1 + 2 * 2000) "line count"
+
+    testCase "show prints the parts in order" <| fun _ ->
+        let stream: YamlStream =
+            { Parts =
+                [ StreamPart.Document (YamlDocument.create (YamlNode.plain "a"))
+                  StreamPart.ExtraEndMarker (markerOf (Some (comment " e")) None)
+                  StreamPart.Trivia (BlankLine None)
+                  StreamPart.Trivia (FullLineComment (comment " t")) ] }
+        let expected =
+            "stream\n"
+            + "document\n"
+            + "  root: scalar plain \"a\"\n"
+            + "extra-end-marker comment=#\" e\"\n"
+            + "trivia: blank\n"
+            + "trivia: #\" t\"\n"
+        Expect.equal (YamlStream.show stream) expected "stream"
+        Expect.equal (YamlStream.show { Parts = [] }) "stream\n" "An empty stream"
+]
+
 let Main = testList "Compare" [
     tests_spans
     tests_slots
     tests_other_fields
     tests_documents
+    tests_streams
     tests_show
     tests_depth
 ]

@@ -2,14 +2,23 @@ namespace YAMLicious
 
 // The element model of the next YAMLicious. It describes the serialization tree of a YAML stream: values,
 // properties, scalar and collection styles, the place of every comment, directives and document boundaries.
-// It keeps no original spacing, no quote escapes and no line wrapping of scalars.
+// It keeps none of the original spacing, quote escapes, line wrapping of scalars or indentation of
+// collections.
+//
+// Two pairs of spellings read the same, and the writer picks one form of each. A flow pair such as
+// `[a: b]` and the one-entry flow mapping `[{a: b}]` give the same tree. So do an indentless block
+// sequence (`k:` followed by `- a` at the column of the key) and an indented one.
 //
 // Several invariants cannot be stated in the types. Each type names the ones that concern it. The
-// constructors in YamlNode, the parser and the writer enforce them.
+// constructors in YamlNode, the parser and the writer enforce them, and `Validate` checks every one that
+// the tree alone shows. Eight slot rules, R1 to R8, say which field holds a comment or a blank line when
+// the text allows more than one. R1 is on `Separation`, R2 on `LineBreak`, R3 on `YamlDocument` and
+// `YamlStream`, R4 and R6 on `Collection`, R5 on `ScalarStyle`, R7 on `MappingEntry` and R8 on `YamlNode`.
 //
 // Records that hold nodes carry NoEquality and NoComparison, because the generic structural equality,
 // the hash and the %A printer recurse through the whole tree and overflow the stack on a deep one. Use
-// YamlNode.equalIgnoringSpans, YamlDocument.equalIgnoringSpans and YamlNode.show instead.
+// YamlNode.equalIgnoringSpans, YamlDocument.equalIgnoringSpans, YamlStream.equalIgnoringSpans and the show
+// functions of the three modules instead.
 
 /// A position in the input text.
 ///
@@ -36,20 +45,34 @@ type YamlComment =
     { Text: string
       Span: SourceSpan option }
 
-/// What stands on a line of its own between two nodes.
+/// What stands on a line of its own between two nodes. The rules R2 to R4 and R6 say which field holds a
+/// run of trivia.
 type Trivia =
     /// A line that holds only a comment.
     | FullLineComment of YamlComment
-    /// A line that holds nothing.
-    | BlankLine
+    /// A line that holds nothing. The span covers the line without its line break and is None on a
+    /// constructed line. A blank line inside a scalar is part of the value and never trivia.
+    | BlankLine of SourceSpan option
 
 /// A line break behind an indicator, with the comment that stands before the break and the trivia lines
 /// that follow it.
+///
+/// Rule R2 (trivia behind the line break of an indicator). `Following` holds the trivia lines between the
+/// line of the indicator and the first token of the node, which is a property, a scalar, an alias or a
+/// flow opener. A block collection without a property has no token of its own, so these trivia go to the
+/// `Before` of its first entry or item and `Following` stays empty. The same holds behind the last
+/// property of a block collection.
 type LineBreak =
     { Comment: YamlComment option
       Following: Trivia list }
 
 /// How the next token follows the previous one.
+///
+/// Rule R1 (comment behind an indicator without content). A comment on the same line behind `:`, `-`, `?`
+/// or a property goes to the separation of that indicator when the content of the node does not start on
+/// that line. The separation is `NewLine` and its `Comment` holds the comment. A comment behind content on
+/// the same line is the trailing comment of that node (rule R8). A missing value, which is an empty plain
+/// scalar without properties, never has a trailing comment.
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
@@ -69,6 +92,14 @@ type ChompingMode =
 /// The spelling of a scalar. `Block` holds the style, the chomping and the explicit indentation indicator
 /// of the header. The value of a block scalar is the cooked text, so the indicator is a presentation hint
 /// that the writer may recompute.
+///
+/// A plain scalar that the parser produced can stand plain in its context. A plain scalar that a program
+/// constructed (it has no span) states a preference, and the writer quotes a text that cannot stand plain,
+/// for example one that starts with an indicator or holds `: ` or ` #`.
+///
+/// Rule R5 (blank lines behind a block scalar). A blank line behind the body of a block scalar with the
+/// chomping Clip or Strip is trivia under rule R4. With the chomping Keep it is content of the scalar and
+/// part of its value.
 [<RequireQualifiedAccess>]
 type ScalarStyle =
     | Plain
@@ -89,7 +120,9 @@ type TagName =
     { Prefix: string
       Suffix: string }
 
-/// An explicit tag.
+/// An explicit tag. The non-specific tag `!` is always `NonSpecific`. A `Named` tag never has an empty
+/// suffix: the parser does not produce `Named { Prefix = "!"; Suffix = "" }`, and `YamlTag.local` and
+/// `YamlTag.core` reject an empty suffix. Two tags are the same tag exactly when their identifiers are equal.
 [<RequireQualifiedAccess>]
 type YamlTag =
     /// The non-specific tag `!`.
@@ -113,6 +146,7 @@ type PropertyName =
 type PropertyPlacement =
     { Property: PropertyName
       /// What separates this property from the next token, which is the next property or the content.
+      /// Rules R1 and R2 apply to it as they apply to the separation behind an indicator.
       After: Separation
       Span: SourceSpan option }
 
@@ -128,19 +162,30 @@ type YamlScalar =
       /// The comment behind the header of a block scalar, as in `| # c`. It is None for every other style.
       HeaderComment: YamlComment option }
 
-/// The shared part of a mapping and a sequence.
+/// The shared part of a mapping and a sequence. An empty collection is always a flow collection.
 ///
-/// A block collection has no closing token, so its `End` trivia hold the comments and blank lines that
-/// follow its last item at the depth of the collection. A flow collection has `[` or `{` and a closer. Its
-/// `OpeningComment` is the comment behind the opener, and `End` holds the trivia in front of the closer. An
-/// empty collection is always a flow collection.
+/// Rule R4 (trivia in a block collection). A run of trivia between two nodes belongs to the `Before` of the
+/// next entry or item that follows it, at whatever level that entry or item stands and whatever the columns
+/// of the comments are. A run of trivia behind the last node of a document is split by column. Each comment
+/// goes to the `End` of the deepest open block collection whose entries stand at a column less than or
+/// equal to the column of the comment, and to the `End` of the root collection when no deeper collection
+/// qualifies. A blank line goes with the comment that follows it. A blank line behind the last comment goes
+/// to the same `End` as that comment, or to the `End` of the root collection when no comment follows. A block
+/// collection has no closing token, so `End` is the only place for the trivia behind it.
+///
+/// Rule R6 (flow collection). A comment behind the opener on its line is the `OpeningComment`. A comment on
+/// the same line behind an item or an entry and its comma is the trailing comment of the node of the item,
+/// of the value of the entry, or of the key of an entry whose value is missing. Trivia lines between items
+/// go to the `Before` of the next item or entry. Trivia lines in front of the closer go to `End`. A comment
+/// behind the closer is the trailing comment of the collection node.
 [<NoEquality; NoComparison>]
 type Collection<'Item> =
     { Style: CollectionStyle
       /// The comment behind `[` or `{`. It is None for a block collection.
       OpeningComment: YamlComment option
       Items: 'Item list
-      /// The trivia behind the last item, in front of the closer or the end of the block.
+      /// The trivia behind the last item, in front of the closer of a flow collection or at the end of a
+      /// block collection (rules R4 and R6).
       End: Trivia list }
 
 /// A node of the tree.
@@ -150,16 +195,23 @@ type Collection<'Item> =
 /// - A node has at most one tag and one anchor. An alias has neither. An alias names an anchor that stands
 ///   earlier in its document, and an anchor name can be used again. The parser registers the anchor of a
 ///   collection before it reads the children, so a collection may contain an alias of itself.
-/// - `PropertyLayout` of a parsed node names each present property exactly once, in the order of the
-///   text. The layout of a constructed node is empty and asks for the canonical order, tag first.
-/// - Each comment occupies exactly one field. A comment behind the completed value of an entry belongs to
-///   that value, and no second field of the entry competes for it.
-/// - A block collection has no closing token to hang a trailing comment on. Its comments go to an entry
-///   header, a property line or the `End` trivia of the collection instead.
+/// - `PropertyLayout` names each present property exactly once, in the order of the text, and nothing
+///   else. A node without properties has an empty layout. `YamlNode.withTag` and `YamlNode.withAnchor` add
+///   the placement of a constructed node, the tag first, each with an inline separation.
+/// - Each comment occupies exactly one field. The rules R1 to R8 pick that field when the text allows
+///   more than one. A comment behind the completed value of an entry belongs to that value, and no second
+///   field of the entry competes for it.
 /// - A block scalar header comment is a block scalar field and an opening comment is a flow collection
 ///   field. No other node uses them.
 /// - A parsed node has a span. A constructed node may have none. A missing value is a real node with a
 ///   zero-width span.
+///
+/// Rule R8 (trailing comment). A comment on the same line behind the last token of a node is the
+/// `TrailingComment` of that node. The last token is the text of a scalar or an alias, or the closer of a
+/// flow collection. A block scalar takes the comment behind its header as `HeaderComment` and never has a
+/// `TrailingComment`. A block collection has no closing token and has none either. A missing value has none
+/// (rule R1). A comment behind a block collection goes to the `End` of the collection or to the `Before` of
+/// the next entry or item.
 [<NoEquality; NoComparison>]
 type YamlNode =
     { Kind: YamlNodeKind
@@ -183,15 +235,18 @@ and [<RequireQualifiedAccess; NoEquality; NoComparison>] YamlNodeKind =
 /// them. A decoder that builds a map rejects the duplicates.
 and [<NoEquality; NoComparison>] MappingEntry =
     {
-        /// The trivia lines in front of the entry. A comment in the gap in front of an entry belongs to it.
+        /// The trivia lines in front of the entry. A comment in the gap in front of an entry belongs to it
+        /// (rule R4).
         Before: Trivia list
         /// Some when an explicit `?` stands in front of the key. The separation is the one behind the `?`.
         Question: Separation option
         Key: YamlNode
-        /// The trivia between an explicit key and its `:`.
+        /// Rule R7 (gap before a colon). The trivia between a key and its `:` go here, for an explicit key
+        /// and for an implicit key in a flow mapping, as in `{ a`, a comment line and `: b }`. An implicit
+        /// key in a block mapping stands on one line with its colon, so the gap is empty there.
         BeforeColon: Trivia list
         /// The separation behind the `:`. None means that the value indicator is omitted, as it is behind
-        /// an explicit key without a value.
+        /// an explicit key without a value and in a flow mapping entry that is a key alone.
         Colon: Separation option
         Value: YamlNode
         Span: SourceSpan option
@@ -200,7 +255,7 @@ and [<NoEquality; NoComparison>] MappingEntry =
 /// An item of a sequence.
 and [<NoEquality; NoComparison>] SequenceItem =
     {
-        /// The trivia lines in front of the item.
+        /// The trivia lines in front of the item (rules R4 and R6).
         Before: Trivia list
         /// The separation behind the dash. Some for a block item, None for a flow item.
         Dash: Separation option
@@ -236,6 +291,14 @@ type DocumentMarker =
 /// A `%TAG` binding and the anchors of a document hold for that document only. A marker-like line in the
 /// content of a scalar splits no document. A document without a node has a root that is an empty plain
 /// scalar with a zero-width span.
+///
+/// Rule R3 (trivia around the root). Trivia in front of a `---` and between directives go to `Prelude` as
+/// `PreludeTrivia`, in the order of the text. That holds also for trivia that stand behind the root of the
+/// document before. Trivia behind the `---`, or at the top of a document without `---`, and in front of the
+/// root go to `BeforeRoot`. When the root is a block collection without a property, they go to the `Before`
+/// of its first entry or item instead, and `BeforeRoot` stays empty. A document whose root is missing keeps
+/// all its trivia in `BeforeRoot`. `AfterRoot` holds trivia behind the root only when the root is not a
+/// block collection, because the trivia behind a block collection go to its `End` (rule R4).
 [<NoEquality; NoComparison>]
 type YamlDocument =
     { Prelude: PreludeItem list
@@ -250,12 +313,18 @@ type YamlDocument =
 [<RequireQualifiedAccess; NoEquality; NoComparison>]
 type StreamPart =
     | Document of YamlDocument
+    /// Trivia that belong to no document (rule R3 on `YamlStream`).
     | Trivia of Trivia
     /// A `...` that closes no document of its own, as the extra one between the two documents of the
     /// example 9.3 of the YAML specification. The stream keeps it without inventing a document.
     | ExtraEndMarker of DocumentMarker
 
 /// A stream of documents. It may hold no document.
+///
+/// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds the trivia behind the end marker
+/// of the last document, or the whole input when it has no document at all. Trivia behind a `...` and in
+/// front of a following document go to that document, to its `Prelude` when it has directives or a `---`
+/// and otherwise by the rule on `YamlDocument`.
 [<NoEquality; NoComparison>]
 type YamlStream =
     { Parts: StreamPart list }

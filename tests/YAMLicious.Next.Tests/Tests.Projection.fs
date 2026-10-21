@@ -90,7 +90,9 @@ let tests_data = testList "Data projection" [
                 Expect.equal (typeOf None style text) "str" ("the type of '" + text + "'")
 
     // yaml@2.6.1 resolves an explicit tag only when the text has the form of the type: `!!int "2"` is 2,
-    // `!!int abc`, `!!float 5` and `!!bool maybe` are the strings, and `!!null ""` is null.
+    // `!!int abc`, `!!float 5` and `!!bool maybe` are the strings, and `!!null ""` is null. It reads `!!set a` and
+    // `!!omap a` as the string a with the warning TAG_RESOLVE_FAILED, and `!!binary abc` and `!!timestamp 2001-01-01`
+    // as a Buffer and a Date.
     testCase "an explicit core tag fixes the type when the text has its form" <| fun _ ->
         let cases =
             [ "int", ScalarStyle.DoubleQuoted, "2", "int"; "int", ScalarStyle.Plain, "0x1F", "int"; "int", ScalarStyle.Plain, "abc", "str"
@@ -100,7 +102,7 @@ let tests_data = testList "Data projection" [
               "bool", ScalarStyle.DoubleQuoted, "true", "bool"; "bool", ScalarStyle.Plain, "maybe", "str"
               "null", ScalarStyle.DoubleQuoted, "", "null"; "null", ScalarStyle.Plain, "null", "null"; "null", ScalarStyle.Plain, "x", "str"
               "str", ScalarStyle.Plain, "5", "str"; "str", ScalarStyle.Plain, "true", "str"; "str", ScalarStyle.Plain, "", "str"
-              "binary", ScalarStyle.Plain, "abc", "other"; "timestamp", ScalarStyle.Plain, "2001-01-01", "other"; "set", ScalarStyle.Plain, "", "other"
+              "binary", ScalarStyle.Plain, "abc", "other"; "timestamp", ScalarStyle.Plain, "2001-01-01", "other"; "set", ScalarStyle.Plain, "a", "str"; "omap", ScalarStyle.Plain, "a", "str"
               "seq", ScalarStyle.Plain, "x", "str" ]
         for (suffix, style, text, expected) in cases do
             Expect.equal (typeOf (Some (YamlTag.core suffix)) style text) expected ("the type of !!" + suffix + " '" + text + "'")
@@ -246,7 +248,7 @@ let tests_presentation = testList "Presentation projection: styles, collections 
         let collections = """{"path":"","role":"value","style":"block"},{"path":"/?2","role":"key","style":"flow"}"""
         Expect.equal (Projection.presentation (single tree)) (presentationOf styles collections "" "") "paths"
 
-    testCase "the properties of a constructed node have the canonical layout" <| fun _ ->
+    testCase "withTag and withAnchor give a node one layout entry for each property, the tag first" <| fun _ ->
         let node = YamlNode.plain "x" |> YamlNode.withTag (YamlTag.core "str") |> YamlNode.withAnchor "a"
         let layouts = """{"path":"","role":"value","layout":[{"property":"tag","after":"inline"},{"property":"anchor","after":"inline"}]}"""
         Expect.equal
@@ -258,7 +260,7 @@ let tests_presentation = testList "Presentation projection: styles, collections 
         let after =
             Separation.NewLine
                 { Comment = Some (comment " c")
-                  Following = [ BlankLine; FullLineComment (comment " d") ] }
+                  Following = [ BlankLine None; FullLineComment (comment " d") ] }
         let node =
             { YamlNode.plain "x" with
                 Properties = { Tag = Some (YamlTag.core "str"); Anchor = Some "a" }
@@ -290,10 +292,10 @@ let tests_comments = testList "Presentation projection: comments and blank lines
         let value = { YamlNode.plain "1" with TrailingComment = Some (located " value" 7 8) }
         let entry =
             { YamlNode.entry key value with
-                Before = [ FullLineComment (located " before" 1 1); BlankLine ]
+                Before = [ FullLineComment (located " before" 1 1); BlankLine None ]
                 Question = Some (Separation.NewLine { Comment = Some (located " question" 2 3); Following = [ FullLineComment (located " follow" 2 1) ] })
                 BeforeColon = [ FullLineComment (comment " colon") ]
-                Colon = Some (Separation.NewLine { Comment = Some (comment " c"); Following = [ BlankLine ] }) }
+                Colon = Some (Separation.NewLine { Comment = Some (comment " c"); Following = [ BlankLine None ] }) }
         let trivia =
             """{"kind":"comment","text":" before","line":1,"col":1,"placement":"ownLine","slot":"root.entries[0].Before[0]","path":"","doc":0},"""
             + """{"kind":"blank","text":null,"line":null,"col":null,"placement":"ownLine","slot":"root.entries[0].Before[1]","path":"","doc":0},"""
@@ -306,6 +308,17 @@ let tests_comments = testList "Presentation projection: comments and blank lines
             + """{"kind":"comment","text":" value","line":7,"col":8,"placement":"endOfLine","slot":"root.entries[0].Value.TrailingComment","path":"/a","doc":0}"""
         Expect.equal (triviaOf (single (YamlNode.mapping [ entry ]))) ("\"trivia\":[" + trivia + "]}") "slots of an entry"
 
+    // The reference projection (rework/compare/ref-presentation.js) reports a blank line with its line and a null column.
+    testCase "a blank line with a span shows its line and a null column" <| fun _ ->
+        let span: SourceSpan =
+            { Start = { Line = 4; Column = 1 }
+              Finish = { Line = 4; Column = 1 } }
+        let entry = { field "a" (YamlNode.plain "1") with Before = [ BlankLine (Some span); BlankLine None ] }
+        let trivia =
+            """{"kind":"blank","text":null,"line":4,"col":null,"placement":"ownLine","slot":"root.entries[0].Before[0]","path":"","doc":0},"""
+            + """{"kind":"blank","text":null,"line":null,"col":null,"placement":"ownLine","slot":"root.entries[0].Before[1]","path":"","doc":0}"""
+        Expect.equal (triviaOf (single (YamlNode.mapping [ entry ]))) ("\"trivia\":[" + trivia + "]}") "blank lines"
+
     testCase "the slots of a sequence item and of a flow sequence" <| fun _ ->
         let inner =
             YamlNode.flowSequence [ { YamlNode.item (YamlNode.plain "x") with Before = [ FullLineComment (comment " in") ] } ]
@@ -314,8 +327,8 @@ let tests_comments = testList "Presentation projection: comments and blank lines
             |> YamlNode.withTrailingComment (comment " close")
         let item =
             { YamlNode.item inner with
-                Before = [ BlankLine; FullLineComment (comment " b") ]
-                Dash = Some (Separation.NewLine { Comment = Some (comment " dash"); Following = [ BlankLine ] }) }
+                Before = [ BlankLine None; FullLineComment (comment " b") ]
+                Dash = Some (Separation.NewLine { Comment = Some (comment " dash"); Following = [ BlankLine None ] }) }
         let trivia =
             """{"kind":"blank","text":null,"line":null,"col":null,"placement":"ownLine","slot":"root.items[0].Before[0]","path":"","doc":0},"""
             + """{"kind":"comment","text":" b","line":null,"col":null,"placement":"ownLine","slot":"root.items[0].Before[1]","path":"","doc":0},"""
@@ -328,7 +341,7 @@ let tests_comments = testList "Presentation projection: comments and blank lines
         Expect.equal (triviaOf (single (YamlNode.sequence [ item ]))) ("\"trivia\":[" + trivia + "]}") "slots of an item"
 
     testCase "the end trivia of a block mapping and the header comment of a block scalar" <| fun _ ->
-        let mapping = YamlNode.mapping [ field "k" literalScalar ] |> withEnd [ BlankLine; FullLineComment (located " tail" 9 1) ]
+        let mapping = YamlNode.mapping [ field "k" literalScalar ] |> withEnd [ BlankLine None; FullLineComment (located " tail" 9 1) ]
         let withHeader = YamlNode.mapping [ field "k" (YamlNode.withHeaderComment (comment " h") literalScalar) ]
         let trivia =
             """{"kind":"blank","text":null,"line":null,"col":null,"placement":"ownLine","slot":"root.End[0]","path":"","doc":0},"""
@@ -347,12 +360,12 @@ let tests_comments = testList "Presentation projection: comments and blank lines
                 [ directive (YamlVersion (1, 2)) (Some (comment " v"))
                   directive (TagDirective ("!e!", "tag:example.com,2000:")) None
                   PreludeTrivia (FullLineComment (comment " p"))
-                  PreludeTrivia BlankLine
+                  PreludeTrivia (BlankLine None)
                   directive (ReservedDirective ("FOO", [ "a"; "b" ])) None ]
               StartMarker = marker " s"
               BeforeRoot = [ FullLineComment (comment " br") ]
               Root = root
-              AfterRoot = [ BlankLine; FullLineComment (comment " ar") ]
+              AfterRoot = [ BlankLine None; FullLineComment (comment " ar") ]
               EndMarker = marker " e"
               Span = None }
         let text = Projection.presentation (streamOf [ StreamPart.Document doc ])
@@ -380,7 +393,7 @@ let tests_comments = testList "Presentation projection: comments and blank lines
             streamOf
                 [ StreamPart.Trivia (FullLineComment (comment " first"))
                   document first
-                  StreamPart.Trivia BlankLine
+                  StreamPart.Trivia (BlankLine None)
                   StreamPart.ExtraEndMarker extra
                   document second ]
         let trivia =

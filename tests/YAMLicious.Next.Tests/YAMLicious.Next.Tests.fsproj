@@ -8,6 +8,7 @@
     <Compile Include="Tests.Model.fs" />
     <Compile Include="Tests.CoreSchema.fs" />
     <Compile Include="Tests.Compare.fs" />
+    <Compile Include="Tests.Validate.fs" />
     <Compile Include="Tests.Projection.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
