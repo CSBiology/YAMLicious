@@ -77,8 +77,9 @@ type LineBreak =
 /// the same line is the trailing comment of that node (rule R8). A missing value, which is an empty plain
 /// scalar without properties, never has a trailing comment. A node that has properties and no content, as
 /// in `k: !!str # c`, puts the comment on the `After` of its last property, and it has no trailing comment
-/// either. That ban holds outside flow collections. In a flow collection the comment stands behind the
-/// comma and is the trailing comment of the node (rule R6).
+/// either. That ban holds outside flow collections. In a flow collection a comment behind the comma is the
+/// trailing comment of the node (rule R6), and a comment behind the property with the comma on a later line
+/// goes to the `After` of the last property.
 [<RequireQualifiedAccess>]
 type Separation =
     /// On the same line.
