@@ -19,6 +19,8 @@
     <Compile Include="Tests.Decode.fs" />
     <Compile Include="Tests.Encode.fs" />
     <Compile Include="Tests.Reader.fs" />
+    <Compile Include="Tests.Writer.fs" />
+    <Compile Include="Tests.RoundTrip.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

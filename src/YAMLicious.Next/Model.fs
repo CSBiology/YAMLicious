@@ -211,7 +211,9 @@ type Collection<'Item> =
 ///   collection before it reads the children, so a collection may contain an alias of itself.
 /// - `PropertyLayout` names each present property exactly once, in the order of the text, and nothing
 ///   else. A node without properties has an empty layout. `YamlNode.withTag` and `YamlNode.withAnchor` add
-///   the placement of a constructed node, the tag first, each with an inline separation.
+///   the placement of a constructed node, the tag first, each with an inline separation. On a block
+///   collection with items the last placement has a line break behind it instead, because the first entry
+///   or item starts on a later line.
 /// - Each comment occupies exactly one field. The rules R1 to R8 pick that field when the text allows
 ///   more than one. A comment behind the completed value of an entry belongs to that value, and no second
 ///   field of the entry competes for it.
@@ -263,7 +265,9 @@ and [<NoEquality; NoComparison>] MappingEntry =
         /// `Before` of the next entry or item under rule R4.
         BeforeColon: Trivia list
         /// The separation behind the `:`. None means that the value indicator is omitted, as it is behind
-        /// an explicit key without a value and in a flow mapping entry that is a key alone.
+        /// an explicit key without a value and in a flow mapping entry that is a key alone. Behind the colon of
+        /// an implicit entry, a block collection with items starts on a later line. Without properties it
+        /// makes the separation a line break, and with properties the line break stands behind the last one.
         Colon: Separation option
         Value: YamlNode
         Span: SourceSpan option

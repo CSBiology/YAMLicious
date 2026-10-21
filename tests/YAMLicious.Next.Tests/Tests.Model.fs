@@ -128,6 +128,22 @@ let tests_collections = testList "Collection constructors" [
         Expect.equal made.Colon (Some Separation.Inline) "inline colon"
         Expect.equal made.Span None "no span"
 
+    // yaml@2.6.1 reads `k:` followed by `  - a` and `k:` followed by `  a: 1` as {"k":["a"]} and {"k":{"a":1}}. The parser gives these entries a
+    // line break behind the colon, because a block collection cannot start on the line of an implicit key.
+    testCase "entry puts a line break behind the colon when the value is a block collection without properties" <| fun _ ->
+        let plainBreak = Some (Separation.NewLine { Comment = None; Following = [] })
+        Expect.equal (field "k" (YamlNode.sequence [ YamlNode.item (YamlNode.plain "a") ])).Colon plainBreak "sequence"
+        Expect.equal (field "k" (YamlNode.mapping [ field "a" (YamlNode.plain "1") ])).Colon plainBreak "mapping"
+        // The other values stay on the line of the colon: a scalar, an alias, a missing value, a flow collection and an empty collection.
+        for value in [ YamlNode.plain "v"; YamlNode.alias "x"; YamlNode.empty; YamlNode.flowSequence [ YamlNode.item (YamlNode.plain "a") ]
+                       YamlNode.flowMapping [ field "a" (YamlNode.plain "1") ]; YamlNode.sequence []; YamlNode.mapping [] ] do
+            Expect.equal (field "k" value).Colon (Some Separation.Inline) "inline colon"
+        // The line break behind the last property of a block collection takes the place of the line break behind the colon.
+        let tagged = YamlNode.sequence [ YamlNode.item (YamlNode.plain "a") ] |> YamlNode.withTag (YamlTag.core "seq")
+        Expect.equal (field "k" tagged).Colon (Some Separation.Inline) "tagged sequence"
+        // An item and an explicit entry may continue the line, as in `- - a`, `- a: 1` and `? - a`.
+        Expect.equal (YamlNode.item (YamlNode.sequence [ YamlNode.item (YamlNode.plain "a") ])).Dash (Some Separation.Inline) "item"
+
     testCase "item has an inline dash" <| fun _ ->
         let made = YamlNode.item (YamlNode.plain "v")
         Expect.equal made.Before [] "no trivia in front"
@@ -191,6 +207,24 @@ let tests_properties = testList "Properties" [
         Expect.equal (YamlNode.properties node) { Tag = Some (YamlTag.local "t"); Anchor = Some "x" } "Both properties are set"
         Expect.equal (YamlNode.plain "a" |> YamlNode.withAnchor "x").PropertyLayout [ placement PropertyName.Anchor Separation.Inline ] "Anchor alone"
         Expect.equal (YamlNode.plain "a").PropertyLayout [] "A node without properties has no layout"
+
+    // yaml@2.6.1 reads `!!seq &a` followed by `- x` as the sequence with the tag and the anchor. A block collection starts on a later line than
+    // its last property, so that placement has a line break behind it, as the parser gives it.
+    testCase "withTag and withAnchor put the line break behind the last property of a block collection" <| fun _ ->
+        let plainBreak = Separation.NewLine { Comment = None; Following = [] }
+        let sequence = YamlNode.sequence [ YamlNode.item (YamlNode.plain "x") ]
+        let mapping = YamlNode.mapping [ field "k" (YamlNode.plain "v") ]
+        Expect.equal (sequence |> YamlNode.withTag (YamlTag.core "seq")).PropertyLayout [ placement PropertyName.Tag plainBreak ] "Tag alone"
+        Expect.equal (mapping |> YamlNode.withAnchor "a").PropertyLayout [ placement PropertyName.Anchor plainBreak ] "Anchor alone"
+        let both = [ placement PropertyName.Tag Separation.Inline; placement PropertyName.Anchor plainBreak ]
+        Expect.equal (sequence |> YamlNode.withAnchor "a" |> YamlNode.withTag (YamlTag.core "seq")).PropertyLayout both "Anchor, then tag"
+        Expect.equal (sequence |> YamlNode.withTag (YamlTag.core "seq") |> YamlNode.withAnchor "a").PropertyLayout both "Tag, then anchor"
+        // A comment on the placement stays when another property follows.
+        let commented = sequence |> YamlNode.withTag (YamlTag.core "seq") |> YamlNode.withPropertyComment PropertyName.Tag (comment " c") |> YamlNode.withAnchor "a"
+        Expect.equal commented.PropertyLayout [ placement PropertyName.Tag (newLine (Some " c") []); placement PropertyName.Anchor plainBreak ] "The comment stays"
+        // A flow collection, an empty collection and a scalar keep the inline separation.
+        for node in [ YamlNode.flowSequence [ YamlNode.item (YamlNode.plain "x") ]; YamlNode.sequence []; YamlNode.plain "x" ] do
+            Expect.equal (node |> YamlNode.withTag (YamlTag.core "seq")).PropertyLayout [ placement PropertyName.Tag Separation.Inline ] "Inline"
 
     // yaml@2.6.1 reads `&a x`, `&a.b x`, `&a:b x` and a name with a non-ASCII letter with the whole name as the
     // anchor. It rejects `& x` with BAD_ALIAS (an anchor cannot be an empty string), and a flow indicator

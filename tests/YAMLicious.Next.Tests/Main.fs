@@ -15,7 +15,9 @@ let all =
           Tests.Documents.Main
           Tests.Decode.Main
           Tests.Encode.Main
-          Tests.Reader.Main ]
+          Tests.Reader.Main
+          Tests.Writer.Main
+          Tests.RoundTrip.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

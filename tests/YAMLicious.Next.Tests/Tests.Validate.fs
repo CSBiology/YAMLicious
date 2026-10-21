@@ -213,7 +213,7 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         let wrong = { tagged with PropertyLayout = [ placement PropertyName.Tag (broken [ lineComment " d" ]) ] }
         Expect.equal (slotsOfDocument wrong) [ "root.PropertyLayout[0].After.Following" ] "after the last property"
         let both = tagged |> YamlNode.withAnchor "a"
-        let betweenProperties = { both with PropertyLayout = [ placement PropertyName.Tag (broken [ lineComment " d" ]); placement PropertyName.Anchor Separation.Inline ] }
+        let betweenProperties = { both with PropertyLayout = [ placement PropertyName.Tag (broken [ lineComment " d" ]); placement PropertyName.Anchor (broken []) ] }
         expectValid betweenProperties "trivia between two properties"
         let scalar = YamlNode.plain "v" |> YamlNode.withTag (YamlTag.core "str")
         expectValid { scalar with PropertyLayout = [ placement PropertyName.Tag (broken [ lineComment " d" ]) ] } "trivia in front of a scalar"
@@ -616,8 +616,111 @@ let tests_rules = testList "Slot rules" [
         Expect.equal (slotsOfDocument { YamlNode.mapping [ field "k" (number "v") ] with TrailingComment = Some note }) [ "root.TrailingComment" ] "block mapping"
 ]
 
+/// The stream of two documents, the first one with the given root and end marker.
+let private twoDocuments (root: YamlNode) (endMarker: DocumentMarker option) : YamlStream =
+    { Parts =
+        [ StreamPart.Document { documentOf root with EndMarker = endMarker }
+          StreamPart.Document (documentOf (number "b")) ] }
+
+let tests_end_rule = testList "Slot rules: the End of a block collection" [
+    // yaml@2.6.1 reads `a:`, `  b: 1`, `  # c` as {"a":{"b":1}}. A comment run between two nodes goes to the Before of the next node, so
+    // only the collections on the path to the last node of the document can have an End.
+    testCase "R4: the End of a block collection stands on the path to the last node" <| fun _ ->
+        let inner = YamlNode.mapping [ field "b" (number "1") ] |> withEnd [ lineComment " c" ]
+        expectValid (YamlNode.mapping [ field "x" (number "0"); field "a" inner ]) "the value of the last entry"
+        expectValid (withEnd [ lineComment " c" ] (YamlNode.mapping [ field "a" (number "1") ])) "the root"
+        expectValid (YamlNode.sequence [ YamlNode.item (number "0"); YamlNode.item inner ]) "the node of the last item"
+        let outer = YamlNode.mapping [ field "a" inner ] |> withEnd [ lineComment " d" ]
+        expectValid outer "two collections on the path"
+
+    testCase "R4: the End of a collection in front of another entry or item is wrong" <| fun _ ->
+        let inner = YamlNode.mapping [ field "b" (number "1") ] |> withEnd [ lineComment " c" ]
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" inner; field "x" (number "0") ])) [ "root.entries[0].Value.End" ] "an entry follows"
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item inner; YamlNode.item (number "0") ])) [ "root.items[0].Node.End" ] "an item follows"
+        let deep = YamlNode.mapping [ field "a" (YamlNode.mapping [ field "b" inner; field "c" (number "0") ]) ]
+        Expect.equal (slotsOfDocument deep) [ "root.entries[0].Value.entries[0].Value.End" ] "a nested entry follows"
+
+    // yaml@2.6.1 reads `? - x`, `# c`, `: v` as {"x":"v"}, and the comment stands between the key and the colon (rule R7).
+    testCase "R4: the End of an explicit key is wrong when a colon follows" <| fun _ ->
+        let key = YamlNode.sequence [ YamlNode.item (number "x") ] |> withEnd [ lineComment " c" ]
+        let withColon = YamlNode.mapping [ { YamlNode.entry key (number "v") with Question = Some Separation.Inline } ]
+        Expect.equal (slotsOfDocument withColon) [ "root.entries[0].Key.End" ] "A colon follows the key"
+        let withoutColon = YamlNode.mapping [ { YamlNode.entry key YamlNode.empty with Question = Some Separation.Inline; Colon = None } ]
+        expectValid withoutColon "The key ends the text"
+
+    // yaml@2.6.1 reads `a: 1`, `# c`, `---` and `b` as two documents, and the comment stands in front of the second document. With a `...`
+    // between the documents the trivia stay behind the first one.
+    testCase "R4: the End of the root is wrong in front of a document without an end marker" <| fun _ ->
+        let root = YamlNode.mapping [ field "a" (number "1") ] |> withEnd [ lineComment " c" ]
+        Expect.equal (Validate.stream (twoDocuments root None)) [ "Parts[0].root.End: the trivia behind a block collection belong to its End only when the collection is the last node of its document, and otherwise to the Before of the next entry or item (R4)" ] "no end marker"
+        Expect.equal (Validate.stream (twoDocuments root (Some { TrailingComment = None; Span = None }))) [] "an end marker"
+]
+
+let tests_line_break_rule = testList "Slot rules: a block collection starts on a later line" [
+    // yaml@2.6.1 reads `k:` followed by `  - a` as {"k":["a"]} and rejects `k: - a` and `k: a: 1` (a block collection cannot start behind an
+    // implicit key on its line).
+    testCase "R1: the colon of an implicit entry has a line break in front of a block collection without a property" <| fun _ ->
+        let sequence = YamlNode.sequence [ YamlNode.item (number "a") ]
+        let mapping = YamlNode.mapping [ field "a" (number "1") ]
+        let onColonLine (value: YamlNode) = { field "k" YamlNode.empty with Value = value }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ onColonLine sequence ])) [ "root.entries[0].Colon" ] "sequence"
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ onColonLine mapping ])) [ "root.entries[0].Colon" ] "mapping"
+        expectValid (YamlNode.mapping [ field "k" sequence; field "j" mapping ]) "entries that the constructor builds"
+        // A flow collection, a scalar and a missing value stay on the line of the colon.
+        expectValid (YamlNode.mapping [ onColonLine (YamlNode.flowSequence [ YamlNode.item (number "a") ]); onColonLine (number "v"); onColonLine YamlNode.empty ]) "inline values"
+
+    // yaml@2.6.1 reads `- - a`, `- a: 1`, `? - a` followed by `: v` and `? a` followed by `: - b` without an error.
+    testCase "R1: an item and an explicit entry may continue the line with a block collection" <| fun _ ->
+        let sequence = YamlNode.sequence [ YamlNode.item (number "a") ]
+        expectValid (YamlNode.sequence [ YamlNode.item sequence; YamlNode.item (YamlNode.mapping [ field "a" (number "1") ]) ]) "items"
+        let explicitKey = { field "k" (number "v") with Question = Some Separation.Inline; Key = sequence }
+        expectValid (YamlNode.mapping [ explicitKey ]) "explicit key"
+        let explicitValue = { field "k" sequence with Question = Some Separation.Inline; Colon = Some Separation.Inline }
+        expectValid (YamlNode.mapping [ explicitValue ]) "explicit value"
+
+    // yaml@2.6.1 reads `k: !!seq` followed by `  - a` as {"k":["a"]} and rejects `k: !!seq - a`.
+    testCase "R1: a line break follows the last property of a block collection" <| fun _ ->
+        let sequence = YamlNode.sequence [ YamlNode.item (number "a") ]
+        let tagged = sequence |> YamlNode.withTag (YamlTag.core "seq")
+        expectValid (YamlNode.mapping [ field "k" tagged ]) "the constructors give the line break"
+        expectValid (YamlNode.sequence [ YamlNode.item tagged ]) "an item"
+        expectValid tagged "the root"
+        let wrong = { tagged with PropertyLayout = [ placement PropertyName.Tag Separation.Inline ] }
+        Expect.equal (slotsOfDocument wrong) [ "root.PropertyLayout[0].After" ] "the root"
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "k" wrong ])) [ "root.entries[0].Value.PropertyLayout[0].After" ] "an entry"
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item wrong ])) [ "root.items[0].Node.PropertyLayout[0].After" ] "an item"
+        // With two properties the line break stands behind the last one only.
+        let both = tagged |> YamlNode.withAnchor "a"
+        expectValid both "tag, then anchor"
+        let swapped = { both with PropertyLayout = [ placement PropertyName.Tag (broken []); placement PropertyName.Anchor Separation.Inline ] }
+        Expect.equal (slotsOfDocument swapped) [ "root.PropertyLayout[1].After" ] "the last property has no line break"
+        // A flow collection, an empty collection and a scalar need no line break.
+        expectValid (YamlNode.flowSequence [ YamlNode.item (number "a") ] |> YamlNode.withTag (YamlTag.core "seq")) "flow sequence"
+        expectValid (YamlNode.sequence [] |> YamlNode.withTag (YamlTag.core "seq")) "empty sequence"
+
+    // yaml@2.6.1 reads `- # c` followed by `  - a` as [["a"]] with the comment on the dash, and `- - a` as [["a"]]. A comment line in front of
+    // the dash of the inner collection is trivia of the outer item, so the inner collection cannot hold it in front of its first item.
+    testCase "R2: a block collection that continues the line of an indicator has no trivia in front of its first entry or item" <| fun _ ->
+        let withComment = YamlNode.sequence [ { YamlNode.item (number "a") with Before = [ lineComment " c" ] } ]
+        let mappingWithComment = YamlNode.mapping [ { field "a" (number "1") with Before = [ lineComment " c" ] } ]
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item withComment ])) [ "root.items[0].Node.items[0].Before" ] "sequence behind a dash"
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item mappingWithComment ])) [ "root.items[0].Node.entries[0].Before" ] "mapping behind a dash"
+        let explicitKey = { field "k" (number "v") with Question = Some Separation.Inline; Key = withComment }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ explicitKey ])) [ "root.entries[0].Key.items[0].Before" ] "behind a question mark"
+        let explicitValue = { field "k" withComment with Question = Some Separation.Inline; Colon = Some Separation.Inline }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ explicitValue ])) [ "root.entries[0].Value.items[0].Before" ] "behind an explicit colon"
+        // A line break behind the indicator, a property in front of the collection and the colon of an implicit entry hold the trivia.
+        expectValid (YamlNode.sequence [ { YamlNode.item withComment with Dash = Some (broken []) } ]) "dash with a line break"
+        expectValid (YamlNode.mapping [ { explicitKey with Question = Some (broken []) } ]) "question mark with a line break"
+        expectValid (YamlNode.mapping [ { explicitValue with Colon = Some (broken []) } ]) "explicit colon with a line break"
+        expectValid (YamlNode.sequence [ YamlNode.item (withComment |> YamlNode.withTag (YamlTag.core "seq")) ]) "a property in front of the collection"
+        expectValid (YamlNode.mapping [ field "k" withComment ]) "the value of an implicit entry"
+]
+
 let Main = testList "Validate" [
     tests_node_checks
     tests_rule_checks
     tests_rules
+    tests_end_rule
+    tests_line_break_rule
 ]

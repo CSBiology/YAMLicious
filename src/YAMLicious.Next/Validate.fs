@@ -75,9 +75,16 @@ module internal NodePath =
 ///   scalars only, and `OpeningComment` on flow collections only. An empty collection is a flow collection.
 /// - An item: a block item has a dash and a flow item has none.
 /// - A separation behind an indicator (`?`, `:` or `-`) or behind the last property: `Following` is empty
-///   when a block collection without a property follows or when the content is missing (R2).
+///   when a block collection without a property follows or when the content is missing (R2). A block
+///   collection starts on a later line than its last property, so that property has a line break behind it,
+///   and the colon of an implicit entry has one when a block collection without a property is the value (R1).
+///   Behind a dash, a question mark or an explicit colon with an inline separation such a collection continues
+///   the line, and then no trivia stand in front of its first entry or item (R2, R4).
 /// - An entry: the gap before the colon is empty when no colon follows and for an implicit key in a block
 ///   mapping (R7).
+/// - A block collection: `End` is empty unless the collection is the last node of the text of its document
+///   (R4). A trivia run between two nodes goes to the `Before` of the next one, and the run in front of a
+///   following document without a `...` goes to its `Prelude`, so no other collection has an `End`.
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
@@ -116,6 +123,33 @@ module Validate =
     let private missingText =
         "the content behind the indicator is missing, so the trivia belong to the Before of the next entry or item, or to BeforeColon behind a question mark when a colon follows (R2)"
 
+    let private endText =
+        "the trivia behind a block collection belong to its End only when the collection is the last node of its document, and otherwise to the Before of the next entry or item (R4)"
+
+    let private startsLaterText =
+        "a block collection starts on a later line than its last property, so a line break follows that property (R1)"
+
+    let private colonText =
+        "a block collection without a property starts on a later line than the colon of an implicit entry, so a line break follows the colon (R1)"
+
+    let private compactText =
+        "a block collection that continues the line of an indicator has no trivia in front of its first entry or item, because they would stand in front of the indicator (R2, R4)"
+
+    /// Reports the trivia in front of the first entry or item of a block collection without a property that continues
+    /// the line of its indicator, as in `- - a`, `- a: 1` and `? - a`.
+    let private checkCompact (report: string -> string -> unit) (slot: string) (content: YamlNode) =
+        if isBareBlockCollection content then
+            match content.Kind with
+            | YamlNodeKind.Mapping collection ->
+                match collection.Items with
+                | first :: _ when not first.Before.IsEmpty -> report (slot + ".entries[0].Before") compactText
+                | _ -> ()
+            | YamlNodeKind.Sequence collection ->
+                match collection.Items with
+                | first :: _ when not first.Before.IsEmpty -> report (slot + ".items[0].Before") compactText
+                | _ -> ()
+            | _ -> ()
+
     /// Reports the trivia behind an indicator when the content behind it is a block collection without a
     /// property or is missing.
     let private checkFollowing (report: string -> string -> unit) (slot: string) (separation: Separation option) (content: YamlNode) =
@@ -125,13 +159,14 @@ module Validate =
             elif YamlNode.isMissingValue content then
                 report slot missingText
 
-    let private walkNode (errors: ResizeArray<string>) (prefix: string) (root: YamlNode) =
-        // The flag tells whether the node is an item or a key or value of a flow collection.
-        let stack = ResizeArray<YamlNode * NodePath.PathInfo * bool>()
-        stack.Add((root, NodePath.rootPath, false))
+    let private walkNode (errors: ResizeArray<string>) (prefix: string) (canEnd: bool) (root: YamlNode) =
+        // The first flag tells whether the node is an item or a key or value of a flow collection. The second tells
+        // whether the node is the last node of the text of its document, where the trivia behind it can go to its End.
+        let stack = ResizeArray<YamlNode * NodePath.PathInfo * bool * bool>()
+        stack.Add((root, NodePath.rootPath, false, canEnd))
         while stack.Count > 0 do
             let last = stack.Count - 1
-            let (node, path, inFlow) = stack.[last]
+            let (node, path, inFlow, isLastNode) = stack.[last]
             stack.RemoveAt last
             // The slot of the node is built only for an error, so a tree without errors builds no path.
             let report (suffix: string) (text: string) =
@@ -151,6 +186,8 @@ module Validate =
                     report
                         (".PropertyLayout[" + string lastIndex + "].After.Following")
                         (if isBlockCollection node then followingText else missingText)
+                if isBlockCollection node && placements.[lastIndex].After = Separation.Inline then
+                    report (".PropertyLayout[" + string lastIndex + "].After") startsLaterText
 
             match node.Kind with
             | YamlNodeKind.Alias _ ->
@@ -174,12 +211,20 @@ module Validate =
                         report ".OpeningComment" "only a flow collection has an opening comment"
                     if collection.Items.IsEmpty then
                         report "" "an empty collection is a flow collection"
+                    if not collection.End.IsEmpty && not isLastNode then
+                        report ".End" endText
                 let entries = List.toArray collection.Items
                 for i in 0 .. entries.Length - 1 do
                     let entry = entries.[i]
                     let at = ".entries[" + string i + "]"
                     checkFollowing report (at + ".Question.Following") entry.Question entry.Key
                     checkFollowing report (at + ".Colon.Following") entry.Colon entry.Value
+                    if collection.Style = CollectionStyle.Block && entry.Question.IsNone && entry.Colon = Some Separation.Inline && isBareBlockCollection entry.Value then
+                        report (at + ".Colon") colonText
+                    if collection.Style = CollectionStyle.Block && entry.Question = Some Separation.Inline then
+                        checkCompact report (at + ".Key") entry.Key
+                    if collection.Style = CollectionStyle.Block && entry.Question.IsSome && entry.Colon = Some Separation.Inline then
+                        checkCompact report (at + ".Value") entry.Value
                     if entry.Colon.IsNone && not entry.BeforeColon.IsEmpty then
                         report (at + ".BeforeColon") "an entry without a colon has no gap before it, the trivia belong to the Before of the next entry or item (R7)"
                     elif collection.Style = CollectionStyle.Block && entry.Question.IsNone && not entry.BeforeColon.IsEmpty then
@@ -187,8 +232,10 @@ module Validate =
                 let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in entries.Length - 1 .. -1 .. 0 do
                     let at = ".entries[" + string i + "]"
-                    stack.Add((entries.[i].Value, NodePath.child path "" (at + ".Value"), childInFlow))
-                    stack.Add((entries.[i].Key, NodePath.child path "" (at + ".Key"), childInFlow))
+                    // The text of the last entry ends with its value, or with its key when no colon follows.
+                    let lastEntry = isLastNode && not childInFlow && i = entries.Length - 1
+                    stack.Add((entries.[i].Value, NodePath.child path "" (at + ".Value"), childInFlow, lastEntry && entries.[i].Colon.IsSome))
+                    stack.Add((entries.[i].Key, NodePath.child path "" (at + ".Key"), childInFlow, lastEntry && entries.[i].Colon.IsNone))
             | YamlNodeKind.Sequence collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -197,6 +244,8 @@ module Validate =
                         report ".OpeningComment" "only a flow collection has an opening comment"
                     if collection.Items.IsEmpty then
                         report "" "an empty collection is a flow collection"
+                    if not collection.End.IsEmpty && not isLastNode then
+                        report ".End" endText
                 let items = List.toArray collection.Items
                 for i in 0 .. items.Length - 1 do
                     let item = items.[i]
@@ -206,15 +255,19 @@ module Validate =
                     elif collection.Style = CollectionStyle.Flow && item.Dash.IsSome then
                         report (at + ".Dash") "an item of a flow sequence has no dash"
                     checkFollowing report (at + ".Dash.Following") item.Dash item.Node
+                    if collection.Style = CollectionStyle.Block && item.Dash = Some Separation.Inline then
+                        checkCompact report (at + ".Node") item.Node
                 let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in items.Length - 1 .. -1 .. 0 do
-                    stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node"), childInFlow))
+                    let lastItem = isLastNode && not childInFlow && i = items.Length - 1
+                    stack.Add((items.[i].Node, NodePath.child path "" (".items[" + string i + "].Node"), childInFlow, lastItem))
 
     let private walkDocument (errors: ResizeArray<string>) (prefix: string) (followedByDocument: bool) (document: YamlDocument) =
         let root = document.Root
         if not document.BeforeRoot.IsEmpty && isBareBlockCollection root then
             errors.Add(prefix + "BeforeRoot: the trivia belong to the Before of the first entry or item of the root collection (R3)")
-        walkNode errors prefix root
+        // The trivia behind the last node of a document go to the Prelude of the next document when no `...` stands between.
+        walkNode errors prefix (not (followedByDocument && document.EndMarker.IsNone)) root
         if not document.AfterRoot.IsEmpty then
             if isBlockCollection root then
                 errors.Add(prefix + "AfterRoot: the trivia behind a block collection belong to its End (R3)")

@@ -329,21 +329,9 @@ let blockScalar (style: BlockScalarStyle) (chomping: ChompingMode) (indicator: i
 /// A missing value.
 let nothing: YamlNode = YamlNode.empty
 
-/// An entry of a block mapping as the parser reads `key: value`. A block collection without a property
-/// cannot start on the line of its key, so its separation behind the colon is a line break.
-let blockEntry (key: YamlNode) (value: YamlNode) : MappingEntry =
-    let entry = YamlNode.entry key value
-    let bareBlock =
-        value.Properties.Tag.IsNone
-        && value.Properties.Anchor.IsNone
-        && (match value.Kind with
-            | YamlNodeKind.Mapping collection -> collection.Style = CollectionStyle.Block
-            | YamlNodeKind.Sequence collection -> collection.Style = CollectionStyle.Block
-            | _ -> false)
-    if bareBlock then
-        { entry with Colon = Some(Separation.NewLine { Comment = None; Following = [] }) }
-    else
-        entry
+/// An entry of a block mapping as the parser reads `key: value`. The constructor gives a block collection
+/// without a property a line break behind the colon, because it cannot start on the line of its key.
+let blockEntry (key: YamlNode) (value: YamlNode) : MappingEntry = YamlNode.entry key value
 
 /// A block mapping with plain keys.
 let mapOf (pairs: (string * YamlNode) list) : YamlNode =
@@ -474,9 +462,12 @@ let entryOnNewLine (key: string) (value: YamlNode) : MappingEntry =
 let itemOnNewLine (node: YamlNode) : SequenceItem =
     { YamlNode.item node with Dash = Some(newLine None []) }
 
-/// An explicit entry: `? key` and `: value`, each indicator followed by its content on the same line.
+/// An explicit entry: `? key` and `: value`, each indicator followed by its content on the same line. A block
+/// collection continues the line of the colon, as in `: - b`.
 let explicitEntry (key: YamlNode) (value: YamlNode) : MappingEntry =
-    { YamlNode.entry key value with Question = Some Separation.Inline }
+    { YamlNode.entry key value with
+        Question = Some Separation.Inline
+        Colon = Some Separation.Inline }
 
 /// An explicit key without the value indicator.
 let explicitKeyOnly (key: YamlNode) : MappingEntry =

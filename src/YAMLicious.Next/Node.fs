@@ -100,13 +100,29 @@ module YamlNode =
         let withoutDash (item: SequenceItem) : SequenceItem = { item with Dash = None }
         create (YamlNodeKind.Sequence (collection CollectionStyle.Flow (List.map withoutDash items)))
 
-    /// An entry with an inline colon, no explicit `?` and no comment.
+    // A block collection with items has no token on the line of its indicator or its last property, so its
+    // first entry or item starts on a later line.
+    let private isBlockCollectionWithItems (node: YamlNode) =
+        match node.Kind with
+        | YamlNodeKind.Mapping content -> content.Style = CollectionStyle.Block && not content.Items.IsEmpty
+        | YamlNodeKind.Sequence content -> content.Style = CollectionStyle.Block && not content.Items.IsEmpty
+        | _ -> false
+
+    // A line break without a comment and without trivia.
+    let private plainLineBreak: Separation = Separation.NewLine { Comment = None; Following = [] }
+
+    /// An entry without an explicit `?` and without a comment. The colon is inline, except behind a key whose
+    /// value is a block collection with items and without properties: that collection starts on a later line,
+    /// so the colon is followed by a line break. A block collection with properties starts behind its last
+    /// property, which `withTag` and `withAnchor` follow with a line break.
     let entry (key: YamlNode) (value: YamlNode) : MappingEntry =
+        let startsOnLaterLine =
+            isBlockCollectionWithItems value && value.Properties.Tag.IsNone && value.Properties.Anchor.IsNone
         { Before = []
           Question = None
           Key = key
           BeforeColon = []
-          Colon = Some Separation.Inline
+          Colon = Some (if startsOnLaterLine then plainLineBreak else Separation.Inline)
           Value = value
           Span = None }
 
@@ -125,18 +141,34 @@ module YamlNode =
         | YamlNodeKind.Alias _ -> "an alias"
 
     // The layout names each property of the node once. The canonical order puts the tag first and the anchor
-    // last, so a new tag goes to the front and a new anchor to the end.
+    // last, so a new tag goes to the front and a new anchor to the end. The properties of a block collection
+    // with items stand in front of its first entry or item, which starts on a later line, so the last
+    // placement has a line break behind it and the others have a blank.
     let private addPlacement (property: PropertyName) (node: YamlNode) : PropertyPlacement list =
-        let added: PropertyPlacement =
-            { Property = property
-              After = Separation.Inline
-              Span = None }
+        let onLaterLine = isBlockCollectionWithItems node
+        let layout = node.PropertyLayout
         match property with
-        | PropertyName.Tag -> added :: node.PropertyLayout
-        | PropertyName.Anchor -> node.PropertyLayout @ [ added ]
+        | PropertyName.Tag ->
+            let added: PropertyPlacement =
+                { Property = PropertyName.Tag
+                  After = (if onLaterLine && layout.IsEmpty then plainLineBreak else Separation.Inline)
+                  Span = None }
+            added :: layout
+        | PropertyName.Anchor ->
+            let added: PropertyPlacement =
+                { Property = PropertyName.Anchor
+                  After = (if onLaterLine then plainLineBreak else Separation.Inline)
+                  Span = None }
+            // The placement that was the last one gives up its plain line break, which the new one takes over.
+            let relaxed (placement: PropertyPlacement) : PropertyPlacement =
+                match placement.After with
+                | Separation.NewLine { Comment = None; Following = [] } when onLaterLine -> { placement with After = Separation.Inline }
+                | _ -> placement
+            List.map relaxed layout @ [ added ]
 
     /// The node with an explicit tag and its placement in front of the content. An alias takes no tag, and
-    /// a node that has a tag already takes no second one.
+    /// a node that has a tag already takes no second one. On a block collection with items the placement of the
+    /// last property has a line break behind it.
     let withTag (tag: YamlTag) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Alias name -> failwith ("The alias *" + name + " cannot have a tag.")
@@ -148,6 +180,7 @@ module YamlNode =
 
     /// The node with an anchor and its placement in front of the content. An alias takes no anchor, a node
     /// that has an anchor already takes no second one, and the name follows the rules of the name of an alias.
+    /// On a block collection with items the placement of the last property has a line break behind it.
     let withAnchor (name: string) (node: YamlNode) : YamlNode =
         match node.Kind with
         | YamlNodeKind.Alias target -> failwith ("The alias *" + target + " cannot have an anchor.")
