@@ -177,10 +177,11 @@ let option (decoder: YAMLElement -> 'a) (value: YAMLElement) : 'a option =
     match withoutComments value with
     | YAMLElement.Value v | YAMLElement.Object [YAMLElement.Value v] ->
         if Encode.CoreSchema.isNull v then None else Some (decoder value)
-    // An empty node is null. `k:` gives Nil and an empty sequence item `- ` gives Object [].
-    | YAMLElement.Nil
-    | YAMLElement.Object [] -> None
-    | anyElse -> Helper.raiseInvalidArg "value" "Expected an option" anyElse
+    // An empty node is null. `k:` and an empty sequence item `-` both give Nil. Object [] is the empty
+    // flow mapping `{}`, which is not null.
+    | YAMLElement.Nil -> None
+    // A sequence or a mapping is not null either, so the decoder reads it, as in Thoth.Json.
+    | _ -> Some (decoder value)
 
 let string (value: YAMLElement) : string =
     match withoutComments value with
@@ -371,8 +372,9 @@ type Getter(ele: YAMLElement) =
                         | YAMLElement.Mapping (k, _) -> k.Value = fieldName
                         | _ -> false
                     )
-                    |> Option.map (function 
-                        | YAMLElement.Mapping (_, v) -> dec v
+                    // A field with a null value is as absent as a missing field, the same null as in `option`.
+                    |> Option.bind (function
+                        | YAMLElement.Mapping (_, v) -> option dec v
                         | _ -> Helper.raiseInvalidArg "value" "Expected a mapping" ele
                     )
                 | anyElse -> Helper.raiseInvalidArg "value" "Expected an object" anyElse

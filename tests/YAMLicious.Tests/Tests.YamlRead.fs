@@ -1922,26 +1922,28 @@ trailing: ignored"""
         let actual = Reader.read yaml
         Expect.equal actual expected "Reader.read should parse inline content after --- as the document root"
 
+    // yaml@2.6.1 reads `-` followed by `- value` as [null,"value"].
     testCase "Bare dash sequence element" <| fun _ ->
-        let yaml = """- 
+        let yaml = """-
 - value"""
         let expected = YAMLElement.Object [
             YAMLElement.Sequence [
-                YAMLElement.Object []
+                YAMLElement.Nil
                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("value"))]
             ]
         ]
         let actual = Reader.read yaml
         Expect.equal actual expected "Bare dash with no value should not crash"
 
+    // yaml@2.6.1 reads two bare dashes followed by `- end` as [null,null,"end"].
     testCase "Multiple bare dash sequence elements" <| fun _ ->
-        let yaml = """- 
-- 
+        let yaml = """-
+-
 - end"""
         let expected = YAMLElement.Object [
             YAMLElement.Sequence [
-                YAMLElement.Object []
-                YAMLElement.Object []
+                YAMLElement.Nil
+                YAMLElement.Nil
                 YAMLElement.Object [YAMLElement.Value(YAMLContent.create("end"))]
             ]
         ]
@@ -2699,5 +2701,179 @@ expression: >
             let written = (Encode.write 2 element).Replace("\r\n", "\n")
             Expect.isTrue (written.Contains("k:\n") || written.Contains("k: # c\n")) $"The key of {text} is written without a value"
             Expect.equal (Reader.read written) element $"The text of {text} reads back as the same element"
+
+    // yaml@2.6.1 reads each of these as {"before":1,"tags":["x","y"],"after":{"c":1},"last":2}. At the depths 2 and 3
+    // the mapping stands in {"k0":...} and {"k0":{"k1":...}}, and the key up follows at the root as {"up":9}.
+    testCase "An indentless sequence between sibling keys reads the same at depth 1, 2 and 3" <| fun _ ->
+        let body = [ "before: 1"; "tags:"; "- x"; "- y"; "after:"; "  c: 1"; "last: 2" ]
+        let members =
+            [ entry "before" (scalarNode "1")
+              entry "tags" (sequenceNode [ scalarNode "x"; scalarNode "y" ])
+              entry "after" (YAMLElement.Object [ entry "c" (scalarNode "1") ])
+              entry "last" (scalarNode "2") ]
+        for depth in [ 1; 2; 3 ] do
+            let keys = [ for level in 0 .. depth - 2 -> String.replicate level "  " + $"k{level}:" ]
+            let lines = body |> List.map (fun line -> String.replicate (depth - 1) "  " + line)
+            let up = if depth > 1 then [ "up: 9" ] else []
+            let rec wrap (level: int) =
+                if level = depth - 1 then members
+                else [ entry $"k{level}" (YAMLElement.Object (wrap (level + 1))) ]
+            let expectedUp = if depth > 1 then [ entry "up" (scalarNode "9") ] else []
+            Expect.equal
+                (Reader.read (String.concat "\n" (keys @ lines @ up)))
+                (YAMLElement.Object (wrap 0 @ expectedUp))
+                $"The sequence reads the same at depth {depth}"
+
+    // yaml@2.6.1 reads this as {"p":{"parameters":[{"name":"id","in":"path"},{"name":"b","in":"q"}],"responses":{"x":1}}}.
+    testCase "An indentless sequence of mappings keeps its items and the key behind it" <| fun _ ->
+        let yaml = "p:\n  parameters:\n  - name: id\n    in: path\n  - name: b\n    in: q\n  responses:\n    x: 1"
+        let item (name: string) (place: string) =
+            YAMLElement.Object [ entry "name" (scalarNode name); entry "in" (scalarNode place) ]
+        let expected =
+            YAMLElement.Object [
+                entry "p" (YAMLElement.Object [
+                    entry "parameters" (sequenceNode [ item "id" "path"; item "b" "q" ])
+                    entry "responses" (YAMLElement.Object [ entry "x" (scalarNode "1") ])
+                ])
+            ]
+        Expect.equal (Reader.read yaml) expected "The items and the key behind the sequence"
+
+    // yaml@2.6.1 reads this as {"a":{"items":["x","y"],"after":1}}. The reader keeps the comments in the sequence.
+    testCase "Comments between the items of an indentless sequence stay in the sequence" <| fun _ ->
+        let yaml = "a:\n  items:\n  # first\n  - x\n  # between\n  - y\n  after: 1"
+        let expected =
+            YAMLElement.Object [
+                entry "a" (YAMLElement.Object [
+                    entry "items" (YAMLElement.Object [
+                        YAMLElement.Comment " first"
+                        YAMLElement.Sequence [ scalarNode "x"; YAMLElement.Comment " between"; scalarNode "y" ]
+                    ])
+                    entry "after" (scalarNode "1")
+                ])
+            ]
+        Expect.equal (Reader.read yaml) expected "The comments stay where they stand"
+        let items = Decode.read yaml |> Decode.object (fun get -> get.Required.Field "a" (Decode.object (fun a -> a.Required.Field "items" (Decode.list Decode.string))))
+        Expect.equal items [ "x"; "y" ] "Decode skips the comments"
+
+    // yaml@2.6.1 reads this OpenAPI head as {"openapi":"3.0.1","servers":[{"url":"https://reference.example-site.com/reference-library/api/"},
+    // {"url":"http://localhost:4400/reference-library/api/"}],"tags":[{"name":"documents","description":"Some details on the sections
+    // offered by the service"}],"paths":{"/participants.json":{"get":{"tags":["participants"],"summary":"List all Participants",
+    // "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"request went through"}}}}}}.
+    testCase "Decode reads the shape of an OpenAPI file with indentless sequences" <| fun _ ->
+        let yaml =
+            String.concat "\n" [
+                "openapi: 3.0.1"
+                "servers:"
+                "- url: https://reference.example-site.com/reference-library/api/"
+                "- url: http://localhost:4400/reference-library/api/"
+                ""
+                "tags:"
+                "- name: documents"
+                "  description: Some details on the sections offered by the service"
+                "paths:"
+                "  /participants.json:"
+                "    get:"
+                "      tags:"
+                "      - participants"
+                "      summary: List all Participants"
+                "      parameters:"
+                "      - name: id"
+                "        in: path"
+                "        required: true"
+                "        schema:"
+                "          type: string"
+                "      responses:"
+                "        200:"
+                "          description: request went through"
+            ]
+        let decodeParameter = Decode.object (fun p -> p.Required.Field "name" Decode.string, p.Required.Field "in" Decode.string)
+        let decodeGet =
+            Decode.object (fun get ->
+                get.Required.Field "tags" (Decode.list Decode.string),
+                get.Required.Field "summary" Decode.string,
+                get.Required.Field "parameters" (Decode.list decodeParameter),
+                get.Required.Field "responses" (Decode.object (fun r -> r.Required.Field "200" (Decode.object (fun ok -> ok.Required.Field "description" Decode.string)))))
+        let decoded =
+            Decode.read yaml
+            |> Decode.object (fun root ->
+                root.Required.Field "servers" (Decode.list (Decode.object (fun s -> s.Required.Field "url" Decode.string))),
+                root.Required.Field "tags" (Decode.list (Decode.object (fun t -> t.Required.Field "name" Decode.string))),
+                root.Required.Field "paths" (Decode.object (fun paths ->
+                    paths.Required.Field "/participants.json" (Decode.object (fun path -> path.Required.Field "get" decodeGet)))))
+        let servers, tagNames, (getTags, summary, parameters, description) = decoded
+        Expect.equal servers [ "https://reference.example-site.com/reference-library/api/"; "http://localhost:4400/reference-library/api/" ] "The servers"
+        Expect.equal tagNames [ "documents" ] "The tags at the root"
+        Expect.equal getTags [ "participants" ] "The indentless tags of the operation"
+        Expect.equal summary "List all Participants" "The sibling behind the tags"
+        Expect.equal parameters [ ("id", "path") ] "The indentless parameters"
+        Expect.equal description "request went through" "The responses behind the parameters"
+
+    // yaml@2.6.1 reads `? a # c` followed by `: b` as {"a":"b"}, and `? # c` followed by `a` and `: b` as {"a":"b"}. It
+    // reads spec Example 8.17 as {"explicit key":null,"block key\n":["one","two"]}.
+    testCase "A comment behind an explicit key belongs to the key" <| fun _ ->
+        let keyA = YAMLContent.create("a", comment=" c")
+        let expected = YAMLElement.Object [ YAMLElement.Mapping(keyA, scalarNode "b") ]
+        Expect.equal (Reader.read "? a # c\n: b") expected "A plain key"
+        Expect.equal (Reader.read "? # c\n  a\n: b") expected "The comment stands on the line of the question mark"
+        Expect.equal
+            (Reader.read "? \"q\" # c\n: v")
+            (YAMLElement.Object [ YAMLElement.Mapping(YAMLContent.create("q", comment=" c", style=ScalarStyle.DoubleQuoted), scalarNode "v") ])
+            "A quoted key"
+        let spec =
+            "? explicit key # Empty value\n? |\n  block key\n: - one # Explicit compact\n  - two # block value\n"
+        let item (text: string) (comment: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create(text, comment=comment)) ]
+        Expect.equal
+            (Reader.read spec)
+            (YAMLElement.Object [
+                YAMLElement.Mapping(YAMLContent.create("explicit key", comment=" Empty value"), YAMLElement.Nil)
+                YAMLElement.Mapping(
+                    YAMLContent.create("block key\n", style=ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)),
+                    YAMLElement.Object [ YAMLElement.Sequence [ item "one" " Explicit compact"; item "two" " block value" ] ]
+                )
+            ])
+            "Spec Example 8.17"
+
+    // yaml@2.6.1 reads these as [null,"x"], ["x",null], [null], {"k":[null,"x",null],"j":1}, [[null,"x"],[null]], [null,"x"]
+    // for the dash with a comment and [{},"x"].
+    testCase "An empty sequence item reads as Nil and the empty flow mapping stays an empty object" <| fun _ ->
+        let x = scalarNode "x"
+        let root (items: YAMLElement list) = YAMLElement.Object [ YAMLElement.Sequence items ]
+        Expect.equal (Reader.read "-\n- x") (root [ YAMLElement.Nil; x ]) "Followed by an item"
+        Expect.equal (Reader.read "- x\n-") (root [ x; YAMLElement.Nil ]) "At the end"
+        Expect.equal (Reader.read "-") (root [ YAMLElement.Nil ]) "Alone"
+        Expect.equal
+            (Reader.read "k:\n-\n- x\n-\nj: 1")
+            (YAMLElement.Object [ entry "k" (sequenceNode [ YAMLElement.Nil; x; YAMLElement.Nil ]); entry "j" (scalarNode "1") ])
+            "Behind a key, with a sibling"
+        Expect.equal
+            (Reader.read "- -\n  - x\n- -")
+            (root [ sequenceNode [ YAMLElement.Nil; x ]; sequenceNode [ YAMLElement.Nil ] ])
+            "Nested"
+        Expect.equal (Reader.read "- # c\n- x") (root [ YAMLElement.Nil; YAMLElement.Comment " c"; x ]) "With a comment, which stays behind the item"
+        Expect.equal (Reader.read "- {}\n- x") (root [ YAMLElement.Object []; x ]) "The empty flow mapping is not an empty item"
+
+    // yaml@2.6.1 reads `? a` followed by `:` as {"a":null}, and the same with a comment behind the colon. `? a` followed
+    // by `: {}` is {"a":{}}.
+    testCase "An explicit key with an empty value maps to Nil" <| fun _ ->
+        let key = YAMLContent.create "a"
+        Expect.equal (Reader.read "? a\n:") (YAMLElement.Object [ YAMLElement.Mapping(key, YAMLElement.Nil) ]) "A colon alone"
+        Expect.equal
+            (Reader.read "? a\n: # c")
+            (YAMLElement.Object [ YAMLElement.Mapping(key, YAMLElement.Nil); YAMLElement.Comment " c" ])
+            "A colon with a comment, which stays behind the entry"
+        Expect.equal
+            (Reader.read "? a\n: {}")
+            (YAMLElement.Object [ YAMLElement.Mapping(key, YAMLElement.Object []) ])
+            "The empty flow mapping is not an empty value"
+
+    // yaml@2.6.1 reads `- a`, `-` and `- {}` as ["a",null,{}] and writes of those texts read back the same.
+    testCase "An empty sequence item writes as a bare dash" <| fun _ ->
+        let text = "- a\n-\n- {}\n"
+        let element = Reader.read text
+        let written = (Encode.write 2 element).Replace("\r\n", "\n")
+        Expect.equal written text "The empty item has nothing behind its dash and the empty mapping stays {}"
+        Expect.equal (Reader.read written) element "The text reads back as the same element"
+        let nested = Reader.read "k:\n  -\n  - x\n"
+        Expect.equal (Reader.read ((Encode.write 2 nested).Replace("\r\n", "\n"))) nested "A nested empty item reads back as Nil"
 ]
 

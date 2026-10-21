@@ -34,21 +34,6 @@ let private isBlankLineElement = function
     | PreprocessorElement.Line line when line.Trim() = "" -> true
     | _ -> false
 
-let rec private skipBlankLineElements (eles: PreprocessorElement list) =
-    match eles with
-    | line :: rest when isBlankLineElement line -> skipBlankLineElements rest
-    | _ -> eles
-
-/// `- value` followed by blank lines and then an indented block continues the same item.
-let private splitLeadingSequenceItemContinuation (eles: PreprocessorElement list) =
-    match eles with
-    | line :: _ when isBlankLineElement line ->
-        match skipBlankLineElements eles with
-        | Intendation yamlAstList :: tail -> Some (yamlAstList, tail)
-        | _ -> None
-    | _ ->
-        None
-
 /// Puts the value written after a sequence dash in front of the block that follows it. A block
 /// scalar header keeps that block as one Intendation because the body is a single unit.
 /// Flattening it would turn each body line into a node of its own.
@@ -71,24 +56,18 @@ let rec collectSequenceElements (eles: PreprocessorElement list) : PreprocessorE
             yield! collectSequenceElements rest            
         ]
     | SequenceMinusOpener v::rest ->
-        match splitLeadingSequenceItemContinuation rest with
-        | Some (continuation, tail) ->
-            [
-                [
-                    if v.Value.IsSome then
-                        PreprocessorElement.Line v.Value.Value
-                    yield! continuation
-                ]
-                yield! collectSequenceElements tail
-            ]
-        | _ ->
-            [
-                if v.Value.IsSome then
-                    [PreprocessorElement.Line v.Value.Value]
-                else
-                    []
-                yield! collectSequenceElements rest
-            ]
+        [
+            match v.Value with
+            | Some comment when Placeholder.isCommentOnlyLine comment ->
+                // A dash with nothing but a comment is an empty item, and the comment stays behind it.
+                yield []
+                yield [PreprocessorElement.Line comment]
+            | Some value ->
+                yield [PreprocessorElement.Line value]
+            | None ->
+                yield []
+            yield! collectSequenceElements rest
+        ]
     | YamlComment _ as v::rest ->
         [
             [v]
@@ -173,6 +152,14 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 | None -> shorthand
             else shorthand
 
+    /// A node has at most one tag and one anchor, whether they stand on one line or on the lines in
+    /// front of the node.
+    let singleProperty (own: string option) (other: string option) (name: string) =
+        match own, other with
+        | Some _, Some _ -> failwithf "A node cannot have two %ss." name
+        | Some _, None -> own
+        | None, _ -> other
+
     let extractProperties (handles: Map<string, string>) (v: string) =
         let mutable current = v.Trim()
         let mutable tag = None
@@ -183,20 +170,20 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             changed <- false
             let mTag = Regex.Match(current, VerbatimTagPattern)
             if mTag.Success then
-                tag <- Some mTag.Groups.["tag"].Value
+                tag <- singleProperty tag (Some mTag.Groups.["tag"].Value) "tag"
                 current <- current.Substring(mTag.Length).Trim()
                 changed <- true
             else
                 let mShort = Regex.Match(current, "^(!\S*)")
                 if mShort.Success then
                     let raw = mShort.Groups.[1].Value
-                    tag <- Some (resolveTagShorthand handles raw)
+                    tag <- singleProperty tag (Some (resolveTagShorthand handles raw)) "tag"
                     current <- current.Substring(mShort.Length).Trim()
                     changed <- true
             
             let mAnchor = Regex.Match(current, AnchorPattern)
             if mAnchor.Success && current.StartsWith("&") then
-                anchor <- Some mAnchor.Groups.["anchor"].Value
+                anchor <- singleProperty anchor (Some mAnchor.Groups.["anchor"].Value) "anchor"
                 current <- current.Substring(mAnchor.Length).Trim()
                 changed <- true
 
@@ -414,17 +401,23 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
 
         (List.rev elements) @ acc
 
+    let mapTag = "tag:yaml.org,2002:map"
+    let seqTag = "tag:yaml.org,2002:seq"
+
+    /// A mapping or a sequence has no field for properties. The core tag of the collection (`!!map` on a
+    /// mapping, `!!seq` on a sequence) only says what the collection is, so dropping it loses nothing. Any
+    /// other tag and every anchor would be lost, so they raise an error.
+    let rejectCollectionProperties (props: {| Value: string; Tag: string option; Anchor: string option |}) (coreTag: string option) =
+        let keptTag = props.Tag |> Option.filter (fun tag -> Some tag <> coreTag)
+        if keptTag.IsSome || props.Anchor.IsSome then
+            let lost = (Option.toList keptTag @ (props.Anchor |> Option.map (fun anchor -> "&" + anchor) |> Option.toList)) |> String.concat " "
+            failwithf "YAMLicious does not keep properties on collections, so %s on a mapping or a sequence would be lost." lost
+
     /// The elements that a node gets when a line of properties stands in front of it. A scalar takes the
     /// tag and the anchor, and the comment of the line goes in front of it. Nothing behind the line gives an
-    /// empty scalar that carries them. A block mapping or sequence has no field for properties, so they are
-    /// dropped and only the comment stays.
+    /// empty scalar that carries them. A block mapping or sequence keeps only the comment, and
+    /// `rejectCollectionProperties` decides which properties it may drop.
     let attachProperties (props: {| Value: string; Tag: string option; Anchor: string option |}) (comment: string option) (node: YAMLElement) =
-        let oneOf (own: string option) (outer: string option) (name: string) =
-            match own, outer with
-            | Some _, Some _ -> failwithf "A node cannot have two %ss." name
-            | Some _, None -> own
-            | None, _ -> outer
-
         let items = match node with YAMLElement.Object items -> items | other -> [other]
         let leading = comment |> Option.map YAMLElement.Comment |> Option.toList
         let isValue = function YAMLElement.Value _ -> true | _ -> false
@@ -435,10 +428,33 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         | [ item ] when isValue item ->
             leading @ (items |> List.map (function
                 | YAMLElement.Value content ->
-                    YAMLElement.Value { content with Tag = oneOf content.Tag props.Tag "tag"; Anchor = oneOf content.Anchor props.Anchor "anchor" }
+                    YAMLElement.Value { content with Tag = singleProperty content.Tag props.Tag "tag"; Anchor = singleProperty content.Anchor props.Anchor "anchor" }
                 | other -> other))
-        | _ ->
+        | collection ->
+            let coreTag =
+                collection |> List.tryPick (function
+                    | YAMLElement.Mapping _ -> Some mapTag
+                    | YAMLElement.Sequence _ -> Some seqTag
+                    | _ -> None)
+            rejectCollectionProperties props coreTag
             leading @ items
+
+    /// The source that the flow parser reads and the core tag for a flow collection that fits on one line.
+    let tryOneLineFlowCollection (value: string) =
+        match PreprocessorElement.Line value with
+        | InlineSequence flow -> Some ("[" + flow.Value + "]", seqTag)
+        | InlineJSON flow -> Some ("{" + flow.Value + "}", mapTag)
+        | _ -> None
+
+    /// The properties and the comment id of a value that holds properties and nothing else, as `!!seq` does
+    /// in `k: !!seq`. Every property starts with `!` or `&`, which spares the other values the property scan.
+    let tryPropertiesOnly (value: string) =
+        if value.StartsWith("!") || value.StartsWith("&") then
+            let text, commentId = Placeholder.splitTrailingComment value
+            let props = extractProperties handles text
+            if props.Value = "" then Some (props, commentId) else None
+        else
+            None
 
     /// A plain scalar cannot start with `[`, `]`, `{`, `}` or `,`, so a value that does belongs to a flow
     /// collection. The layouts of a flow collection that the Reader supports are matched before a value gets
@@ -455,13 +471,21 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     failwithf "A flow collection over several lines in this layout is not supported yet: %s" (restoreStringReplace stringDict value)
             | _ -> ()
 
-    let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
-        // Comments between items go into the sequence list as Comment elements.
-        let readSequenceItem (element: PreprocessorElement list) =
-            match element with
-            | [YamlComment comment] -> YAMLElement.Comment commentDict.[comment.Comment]
-            | _ -> loopRead handles element []
+    /// A comment between the items goes into the sequence list as a Comment element. An empty item is Nil.
+    /// `read` reads the lines of any other item. It is a parameter so that `loopRead` stays the one function
+    /// of its own recursion, which Fable turns into a loop for the long runs of comments and keys.
+    let readSequenceItem (read: PreprocessorElement list -> YAMLElement) (element: PreprocessorElement list) =
+        match element with
+        | [] -> YAMLElement.Nil
+        | [YamlComment comment] -> YAMLElement.Comment commentDict.[comment.Comment]
+        | _ -> read element
 
+    /// Reads the block sequence that starts at the first element and returns it with the elements behind it.
+    let readBlockSequence (read: PreprocessorElement list -> YAMLElement) (elements: PreprocessorElement list) =
+        let items, rest = splitSequenceItems elements
+        YAMLElement.Sequence (items |> List.map (readSequenceItem read)), rest
+
+    let rec loopRead (handles: Map<string, string>) (restlist: PreprocessorElement list) (acc: YAMLElement list) : YAMLElement =
         match restlist with
         | AliasNode alias::rest ->
             loopRead handles rest (YAMLElement.Alias alias::acc)
@@ -486,28 +510,11 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                 YAMLElement.Sequence [
                     firstItem
                     for i in sequenceElements do
-                        readSequenceItem i
+                        readSequenceItem (fun item -> loopRead handles item []) i
                 ]
             loopRead handles rest (current::acc)
-        | SequenceMinusOpener v::rest0 -> //create/appendSequenceElement
-            let initialObjectList =
-                if v.Value.IsSome then
-                    [PreprocessorElement.Line v.Value.Value]
-                else
-                    []
-            let objectList, sequenceSource =
-                match splitLeadingSequenceItemContinuation rest0 with
-                | Some (continuation, tail) ->
-                    initialObjectList @ continuation, tail
-                | None ->
-                    initialObjectList, rest0
-            let sequenceElements, rest = splitSequenceItems sequenceSource
-            let current =
-                YAMLElement.Sequence [
-                    loopRead handles objectList []
-                    for i in sequenceElements do
-                        readSequenceItem i
-                ]
+        | SequenceMinusOpener _::_ -> //create/appendSequenceElement
+            let current, rest = readBlockSequence (fun item -> loopRead handles item []) restlist
             loopRead handles rest (current::acc)
         // [test1, test2, test] <c f=1/>
         | InlineSequence v::rest -> // create sequence
@@ -576,33 +583,53 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         // ? key
         // : value
         | ExplicitKey k::rest ->
+            // The comment behind the `?` belongs to the key and is not part of its text.
+            let keyText, markCommentId =
+                match k with
+                | Some s -> Placeholder.splitTrailingComment s
+                | None -> "", None
+
             // A key is one scalar, so the lines of a key that spans several lines become one text. A
-            // complex key such as a sequence is flattened to its text the same way.
-            let keyContent, afterKey =
-                match k, rest with
-                | Some header, Intendation body::afterBody when BlockScalar.isHeaderValue header ->
-                    readBlockScalarContent header None body, afterBody
-                | _, Intendation keyBody::afterBody ->
-                    createScalarContent (String.concat "\n" (Option.toList k @ collectContentLines keyBody)) None, afterBody
-                | Some s, _ ->
-                    createScalarContent s None, rest
-                | None, _ ->
-                    YAMLContent.create(""), rest
+            // complex key such as a sequence is flattened to its text the same way. A comment behind the
+            // last line of such a key goes to the key, and a comment behind the `?` then stands in front
+            // of the entry.
+            let keyContent, commentsBefore, afterKey =
+                match rest with
+                | Intendation body::afterBody when BlockScalar.isHeaderValue keyText ->
+                    readBlockScalarContent keyText markCommentId body, [], afterBody
+                | Intendation keyBody::afterBody ->
+                    let lines = (if keyText = "" then [] else [keyText]) @ collectContentLines keyBody
+                    let text, lastLineCommentId = Placeholder.splitTrailingComment (String.concat "\n" lines)
+                    let keyCommentId, beforeCommentId =
+                        match lastLineCommentId with
+                        | Some _ -> lastLineCommentId, markCommentId
+                        | None -> markCommentId, None
+                    let before = restoreCommentReplace commentDict beforeCommentId |> Option.map YAMLElement.Comment |> Option.toList
+                    createScalarContent text (restoreCommentReplace commentDict keyCommentId), before, afterBody
+                | _ ->
+                    createScalarContent keyText (restoreCommentReplace commentDict markCommentId), [], rest
+            let acc = commentsBefore @ acc
 
             // The lines behind the colon read as the lines behind a key do. A flow collection that
-            // continues on the indented lines joins them into one line first.
+            // continues on the indented lines joins them into one line first. A colon with nothing behind
+            // it, or with a comment alone, gives an empty value, and the comment stays behind the entry.
             let readExplicitValue (value: string) (block: PreprocessorElement list) =
                 if not block.IsEmpty && (value.StartsWith("[") || value.StartsWith("{")) then
-                    loopRead handles [PreprocessorElement.Line (String.concat " " (value :: flattenFlowContent block))] []
+                    loopRead handles [PreprocessorElement.Line (String.concat " " (value :: flattenFlowContent block))] [], []
                 else
                     let inlineValue = if value = "" then None else Some value
-                    loopRead handles (joinSequenceItemValue inlineValue block) []
+                    match joinSequenceItemValue inlineValue block with
+                    | [] -> YAMLElement.Nil, []
+                    | [YamlComment comment] -> YAMLElement.Nil, [YAMLElement.Comment commentDict.[comment.Comment]]
+                    | lines -> loopRead handles lines [], []
 
             match afterKey with
             | ExplicitValue v::Intendation iList::tail ->
-                loopRead handles tail (YAMLElement.Mapping(keyContent, readExplicitValue v iList)::acc)
+                let value, commentsAfter = readExplicitValue v iList
+                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::acc)
             | ExplicitValue v::tail ->
-                loopRead handles tail (YAMLElement.Mapping(keyContent, readExplicitValue v [])::acc)
+                let value, commentsAfter = readExplicitValue v []
+                loopRead handles tail (commentsAfter @ YAMLElement.Mapping(keyContent, value)::acc)
             | _ ->
                 // Without a value the key maps to nothing.
                 loopRead handles afterKey (YAMLElement.Mapping(keyContent, YAMLElement.Nil)::acc)
@@ -612,55 +639,22 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
             let current = YAMLElement.Mapping (keyContent, loopRead handles yamlAstList [])
             loopRead handles rest (current::acc)
         | Key v::rest0 ->
+            let c = restoreCommentReplace commentDict v.Comment
+            let keyContent = createScalarContent v.Key c
             let leadingComments, afterComments = takeLeadingComments rest0
             match afterComments with
-            | SequenceMinusOpener w::Intendation yamlAstList::tail ->
-                let c = restoreCommentReplace commentDict v.Comment
-                let keyContent = createScalarContent v.Key c
-                let objectList = joinSequenceItemValue w.Value yamlAstList
-                let sequenceElements, rest = splitSequenceItems tail
-                let seq =
-                    YAMLElement.Sequence [
-                        loopRead handles objectList []
-                        for element in sequenceElements do
-                            readSequenceItem element
-                    ]
+            // The items of a sequence stand at the indentation of the key that owns it.
+            | SequenceMinusOpener _::_ ->
+                let sequence, rest = readBlockSequence (fun item -> loopRead handles item []) afterComments
                 let current =
                     YAMLElement.Mapping(
                         keyContent,
-                        YAMLElement.Object ((commentTokensToYaml leadingComments) @ [seq])
-                    )
-                loopRead handles rest (current::acc)
-            | SequenceMinusOpener w::tail ->
-                let c = restoreCommentReplace commentDict v.Comment
-                let keyContent = createScalarContent v.Key c
-                let initialObjectList =
-                    match w.Value with
-                    | Some value -> [PreprocessorElement.Line value]
-                    | None -> []
-                let objectList, sequenceSource =
-                    match splitLeadingSequenceItemContinuation tail with
-                    | Some (continuation, remaining) ->
-                        initialObjectList @ continuation, remaining
-                    | None ->
-                        initialObjectList, tail
-                let sequenceElements, rest = splitSequenceItems sequenceSource
-                let seq =
-                    YAMLElement.Sequence [
-                        loopRead handles objectList []
-                        for element in sequenceElements do
-                            readSequenceItem element
-                    ]
-                let current =
-                    YAMLElement.Mapping(
-                        keyContent,
-                        YAMLElement.Object ((commentTokensToYaml leadingComments) @ [seq])
+                        YAMLElement.Object ((commentTokensToYaml leadingComments) @ [sequence])
                     )
                 loopRead handles rest (current::acc)
             | _ ->
                 // A key with no value and no indented block maps to nothing, like an explicit key without `:`.
-                let c = restoreCommentReplace commentDict v.Comment
-                let current = YAMLElement.Mapping(createScalarContent v.Key c, YAMLElement.Nil)
+                let current = YAMLElement.Mapping(keyContent, YAMLElement.Nil)
                 loopRead handles rest0 (current::acc)
         // doc: |2\n  <block>
         | KeyValue v::Intendation block::rest when BlockScalar.isHeaderValue v.Value ->
@@ -674,13 +668,29 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
         // My Key: [My Value, Test2]
         | KeyValue v::rest -> // createKeyValue
             let keyContent = createScalarContent v.Key None
-            let current = 
-                YAMLElement.Mapping (
-                    keyContent,
-                    //reuse default parsing into SequenceElements
-                    loopRead handles [PreprocessorElement.Line v.Value] []
-                )
-            loopRead handles rest (current::acc)
+            // Properties alone behind the key leave the node to the lines that follow. When a sequence follows
+            // at the indentation of the key, as in `k: !!seq` and then `- entry`, the key owns that sequence.
+            let ownedSequence =
+                match tryPropertiesOnly v.Value with
+                | Some (props, commentId) ->
+                    match takeLeadingComments rest with
+                    | leadingComments, (SequenceMinusOpener _::_ as sequenceSource) -> Some (props, commentId, leadingComments, sequenceSource)
+                    | _ -> None
+                | None -> None
+            match ownedSequence with
+            | Some (props, commentId, leadingComments, sequenceSource) ->
+                let sequence, afterSequence = readBlockSequence (fun item -> loopRead handles item []) sequenceSource
+                let node = YAMLElement.Object ((commentTokensToYaml leadingComments) @ [sequence])
+                let value = YAMLElement.Object (attachProperties props (restoreCommentReplace commentDict commentId) node)
+                loopRead handles afterSequence (YAMLElement.Mapping(keyContent, value)::acc)
+            | None ->
+                let current =
+                    YAMLElement.Mapping (
+                        keyContent,
+                        //reuse default parsing into SequenceElements
+                        loopRead handles [PreprocessorElement.Line v.Value] []
+                    )
+                loopRead handles rest (current::acc)
         // <c f=1/>
         | YamlComment v::rest -> // createComment
             let c = commentDict.[v.Comment]
@@ -707,13 +717,19 @@ let private tokenize (yamlList: PreprocessorElement list) (stringDict: Dictionar
                     | _ -> loopRead handles rest [], []
                 loopRead handles afterNode (List.rev (attachProperties props c node) @ acc)
             else
-                failOnFlowFragment props.Value
-                let finalValue, finalStyle = restoreScalarWithStyle props.Value
-                let current =
-                    YAMLElement.Value (
-                        YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
-                    )
-                loopRead handles rest (current::acc)
+                match tryOneLineFlowCollection props.Value with
+                | Some (source, coreTag) ->
+                    // A flow collection behind properties reads as a collection.
+                    rejectCollectionProperties props (Some coreTag)
+                    loopRead handles rest (prependRootFlow c (parseFlowSource source) acc)
+                | None ->
+                    failOnFlowFragment props.Value
+                    let finalValue, finalStyle = restoreScalarWithStyle props.Value
+                    let current =
+                        YAMLElement.Value (
+                            YAMLContent.create(finalValue, ?comment=c, ?anchor=props.Anchor, ?tag=props.Tag, ?style=finalStyle)
+                        )
+                    loopRead handles rest (current::acc)
         | [] ->
             acc
             |> List.rev

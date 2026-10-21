@@ -377,8 +377,9 @@ rbi:
             "The anchor stands behind a dash"
 
     // yaml@2.6.1 reads these inputs as [{"k":"v"}], {"k":{"a":1}}, [["x"]] and {"k":["a"]}. The element model has no
-    // field for the properties of a mapping or a sequence, so the reader drops them. It adds no empty scalar.
-    testCase "7.3 Properties on their own line before a block mapping or sequence add no empty scalar" <| fun _ ->
+    // field for the properties of a mapping or a sequence. The core tags !!map and !!seq only name the kind of the
+    // collection, so the reader drops them. It adds no empty scalar.
+    testCase "7.3 Core tags on their own line before a block mapping or sequence add no empty scalar" <| fun _ ->
         let value (text: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create text) ]
         let entry (key: string) (node: YAMLElement) = YAMLElement.Mapping(YAMLContent.create key, node)
         Expect.equal
@@ -390,13 +391,13 @@ rbi:
             (YAMLElement.Object [ entry "k" (YAMLElement.Object [ entry "a" (value "1") ]) ])
             "A tagged mapping behind a key"
         Expect.equal
-            (Reader.read "- &a\n  - x")
+            (Reader.read "- !!seq\n  - x")
             (YAMLElement.Object [ YAMLElement.Sequence [ YAMLElement.Object [ YAMLElement.Sequence [ value "x" ] ] ] ])
-            "An anchored sequence behind a dash"
+            "A tagged sequence behind a dash"
         Expect.equal
-            (Reader.read "k: &x\n  - a")
+            (Reader.read "k: !!seq\n  - a")
             (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Sequence [ value "a" ] ]) ])
-            "An anchored sequence behind a key"
+            "A tagged sequence behind a key"
 
     // yaml@2.6.1 reads `k: !!str # c` followed by `a` as {"k":"a"}. The comment stands in front of the scalar.
     testCase "7.4 A comment behind properties on their own line stays a comment" <| fun _ ->
@@ -418,7 +419,7 @@ rbi:
         Expect.throws (fun _ -> Reader.read "k: !!str\n  !!int a" |> ignore) "Two tags"
         Expect.throws (fun _ -> Reader.read "k: &x\n  &y a" |> ignore) "Two anchors"
 
-    // yaml@2.6.1 reads `k: !!str` followed by a blank line and `a` as {"k":"a"}, and `k: &x` followed by a blank
+    // yaml@2.6.1 reads `k: !!str` followed by a blank line and `a` as {"k":"a"}, and `k: !!map` followed by a blank
     // line and `a: 1` as {"k":{"a":1}}.
     testCase "7.6 A blank line between properties and the node behind them is part of the node" <| fun _ ->
         Expect.equal
@@ -426,7 +427,7 @@ rbi:
             (Reader.read "k: !!str\n  a")
             "The scalar reads as without the blank line"
         Expect.equal
-            (Reader.read "k: &x\n\n  a: 1")
+            (Reader.read "k: !!map\n\n  a: 1")
             (Reader.read "k:\n  a: 1")
             "The mapping reads as without the blank line"
 
@@ -446,4 +447,59 @@ rbi:
                     | _ -> []
                 collect element
             Expect.equal (contents reread) (contents (Reader.read text)) $"The values, tags and anchors of {text} survive"
+
+    // yaml@2.6.1 reads spec Example 8.22 as {"sequence":["entry",["nested"]],"mapping":{"foo":"bar"}}, and the other
+    // inputs as {"k":["x"]}, {"a":{"k":["x","y"],"m":1}} and {"k":["x"]}.
+    testCase "7.8 A key with a core tag alone owns the sequence at the indentation of the key" <| fun _ ->
+        let value (text: string) = YAMLElement.Object [ YAMLElement.Value(YAMLContent.create text) ]
+        let entry (key: string) (node: YAMLElement) = YAMLElement.Mapping(YAMLContent.create key, node)
+        Expect.equal
+            (Reader.read "sequence: !!seq\n- entry\n- !!seq\n - nested\nmapping: !!map\n foo: bar")
+            (YAMLElement.Object [
+                entry "sequence" (YAMLElement.Object [ YAMLElement.Sequence [ value "entry"; YAMLElement.Object [ YAMLElement.Sequence [ value "nested" ] ] ] ])
+                entry "mapping" (YAMLElement.Object [ entry "foo" (value "bar") ])
+            ])
+            "Example 8.22"
+        Expect.equal (Reader.read "k: !!seq\n- x") (Reader.read "k:\n- x") "The tag adds nothing to the sequence"
+        Expect.equal
+            (Reader.read "a:\n  k: !!seq\n  - x\n  - y\n  m: 1")
+            (Reader.read "a:\n  k:\n  - x\n  - y\n  m: 1")
+            "The sequence ends before the key behind it"
+        Expect.equal
+            (Reader.read "k: !!seq # c\n# d\n- x")
+            (YAMLElement.Object [ entry "k" (YAMLElement.Object [ YAMLElement.Comment " c"; YAMLElement.Comment " d"; YAMLElement.Sequence [ value "x" ] ]) ])
+            "The comments stay in front of the sequence"
+
+    // yaml@2.6.1 rejects each of these inputs with "A node can have at most one tag" or "A node can have at most one
+    // anchor". It reads a tag and an anchor in either order, as in `k: !!str &a 1`, as {"k":"1"}.
+    testCase "7.9 Two tags or two anchors on one line are an error" <| fun _ ->
+        let inputs =
+            [ "k: !!str !!int 1", "tag"; "k: &a &b 1", "anchor"; "k: !!str &a !!int 1", "tag"; "- &a &b x", "anchor"
+              "? !!str !!int a\n: v", "tag"; "[&a &b x]", "anchor"; "&a &b k: v", "anchor" ]
+        for (yaml, name) in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message $"A node cannot have two {name}s." $"{yaml} has two {name}s"
+        Expect.equal (Reader.read "k: !!str &a 1") (Reader.read "k: &a !!str 1") "One tag and one anchor in either order"
+
+    // yaml@2.6.1 reads `k: !!seq [a, b]` as {"k":["a","b"]}, `k: !!map {a: 1}` as {"k":{"a":1}}, `- !!seq [a, b]` as
+    // [["a","b"]], `--- !!map` followed by `k: v` as {"k":"v"} and `k: !<tag:yaml.org,2002:seq>` followed by `- a` as {"k":["a"]}.
+    testCase "7.10 A core tag on the collection it names is dropped" <| fun _ ->
+        Expect.equal (Reader.read "k: !!seq [a, b]") (Reader.read "k: [a, b]") "A flow sequence"
+        Expect.equal (Reader.read "k: !!map {a: 1}") (Reader.read "k: {a: 1}") "A flow mapping"
+        Expect.equal (Reader.read "- !!seq [a, b]") (Reader.read "- [a, b]") "A flow sequence behind a dash"
+        Expect.equal (Reader.read "--- !!map\nk: v") (Reader.read "k: v") "A block mapping behind the document start"
+        Expect.equal (Reader.read "k: !<tag:yaml.org,2002:seq>\n  - a") (Reader.read "k:\n  - a") "A verbatim tag"
+
+    // yaml@2.6.1 reads these inputs as {"base":{"k":"v"}}, {"k":["x"]}, {"k":["a","b"]}, {"k":{"a":1}}, {"k":["x"]},
+    // [{"k":"v"}], {"k":["x"]} and {"k":["a","b"]}. The element model has no field for the anchor or the tag of a
+    // collection, so the reader raises an error and never drops them silently.
+    testCase "7.11 An anchor or another tag on a collection is an error" <| fun _ ->
+        let inputs =
+            [ "base: &b\n  k: v"; "k: !custom\n  - x"; "k: &x [a, b]"; "k: &x {a: 1}"; "k: &a\n- x"; "- &a\n  k: v"
+              "k: !!str\n  - x"; "k: !!map [a, b]" ]
+        for yaml in inputs do
+            let message = try (Reader.read yaml |> ignore; "") with e -> e.Message
+            Expect.stringContains message "YAMLicious does not keep properties on collections" $"{yaml} raises the error"
+        let message = try (Reader.read "base: &b\n  k: v" |> ignore; "") with e -> e.Message
+        Expect.stringContains message "&b" "The error names the anchor that would be lost"
 ]

@@ -490,6 +490,43 @@ let tests_option_null = testList "Encode and Decode option and null" [
         Expect.equal (readOption "k: \"~\"\n") (Some "~") "A double-quoted ~ is a string"
         Expect.equal (readOption "k: ''\n") (Some "") "A single-quoted empty text is a string"
         Expect.equal (readOption "k: |-\n  null\n") (Some "null") "A block scalar with the text null is a string"
+
+    // yaml@2.6.1 reads `k:` followed by `- a` and `- b` as {"k":["a","b"]}, `k: [a, b]` as {"k":["a","b"]}, `k:` followed
+    // by `  a: b` as {"k":{"a":"b"}}, `k: {}` as {"k":{}} and `k:` as {"k":null}. Only the null goes to None.
+    testCase "Decode.option decodes a sequence and a mapping" <| fun _ ->
+        let list = Decode.option (Decode.list Decode.string)
+        Expect.equal (readValue list "k:\n- a\n- b\n") (Some [ "a"; "b" ]) "A block sequence"
+        Expect.equal (readValue list "k: [a, b]\n") (Some [ "a"; "b" ]) "A flow sequence"
+        Expect.equal (readValue list "k:\n") None "A key without a value is null"
+        let map = Decode.option (Decode.map id Decode.string)
+        Expect.equal (readValue map "k:\n  a: b\n") (Some (Map [ "a", "b" ])) "A block mapping"
+        Expect.equal (readValue map "k: {}\n") (Some Map.empty) "The empty flow mapping is not null"
+        Expect.equal (Decode.option (Decode.list Decode.string) YAMLElement.Nil) None "Nil is None"
+
+    // yaml@2.6.1 reads `label:`, `label: # c`, `label: ~`, `label: null`, `label: Null` and `label: NULL` as {"label":null}.
+    // It reads `label: "null"`, `label: 'null'` and `label: !!str null` as the string null. A missing label is absent.
+    testCase "Optional.Field reads a missing field and a null value as None" <| fun _ ->
+        let optional (yaml: string) = Decode.read yaml |> Decode.object (fun get -> get.Optional.Field "label" Decode.string)
+        for yaml in [ "label:\n"; "label: # c\n"; "label: ~\n"; "label: null\n"; "label: Null\n"; "label: NULL\n"; "other: 1\n" ] do
+            Expect.equal (optional yaml) None $"The field is null or missing in {yaml}"
+        for yaml in [ "label: \"null\"\n"; "label: 'null'\n"; "label: !!str null\n" ] do
+            Expect.equal (optional yaml) (Some "null") $"The field is the string null in {yaml}"
+        Expect.equal (optional "label: x\n") (Some "x") "A value is Some"
+
+    // yaml@2.6.1 reads `label:` followed by `- a` as {"label":["a"]}, followed by `  a: b` as {"label":{"a":"b"}}, and
+    // `label: {}` as {"label":{}}.
+    testCase "Optional.Field decodes a sequence and a mapping" <| fun _ ->
+        let optional (decoder: YAMLElement -> 'a) (yaml: string) =
+            Decode.read yaml |> Decode.object (fun get -> get.Optional.Field "label" decoder)
+        Expect.equal (optional (Decode.list Decode.string) "label:\n- a\n") (Some [ "a" ]) "A block sequence"
+        Expect.equal (optional (Decode.map id Decode.string) "label:\n  a: b\n") (Some (Map [ "a", "b" ])) "A block mapping"
+        Expect.equal (optional (Decode.map id Decode.string) "label: {}\n") (Some Map.empty) "The empty flow mapping is not null"
+
+    // yaml@2.6.1 reads `label:` as {"label":null}. Required.Field hands the empty value to the decoder, which decides.
+    testCase "Required.Field passes a null value to the decoder" <| fun _ ->
+        let required (decoder: YAMLElement -> 'a) = Decode.read "label:\n" |> Decode.object (fun get -> get.Required.Field "label" decoder)
+        Expect.throws (fun _ -> required Decode.string |> ignore) "Decode.string rejects the empty value"
+        Expect.equal (required (Decode.option Decode.string)) None "Decode.option reads it as None"
 ]
 
 let private sameFloat (actual: float) (expected: float) =
@@ -583,12 +620,16 @@ let tests_decode_core_schema = testList "Decode follows the core schema" [
         Expect.equal (readOption "k: !foo null\n") (Some "null") "A local tag is not null"
         Expect.equal (readOption "k: ! null\n") (Some "null") "The non-specific tag is not null"
 
-    // yaml@2.6.1 reads the sequence `- a`, `-`, `- b` as ["a", null, "b"]. The reader gives the empty item as Object [].
+    // yaml@2.6.1 reads the sequence `- a`, `-`, `- b` as ["a", null, "b"] and `k: {}` as {"k":{}}. The reader gives the
+    // empty item as Nil and the empty flow mapping as Object [], which is not null.
     testCase "Decode.option reads an empty node as None" <| fun _ ->
         let items = "- a\n-\n- b\n" |> Decode.read |> Decode.list (Decode.option Decode.string)
         Expect.equal items [ Some "a"; None; Some "b" ] "The empty sequence item is None"
         Expect.equal (Decode.option Decode.string YAMLElement.Nil) None "Nil is None"
-        Expect.equal (Decode.option Decode.string (YAMLElement.Object [])) None "An empty object is None"
+        Expect.equal
+            (Decode.option (Decode.map id Decode.string) (YAMLElement.Object []))
+            (Some Map.empty)
+            "An empty flow mapping is not null"
 
     // yaml@2.6.1 reads true, True, TRUE, false, False and FALSE as bools. It reads tRuE, yes, on, 1, "true" and
     // 'true' as strings, and `!!bool "true"` as true.
