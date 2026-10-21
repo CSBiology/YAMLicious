@@ -294,7 +294,6 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOfParts [ closed "a"; trivia ]) [] "trivia behind the end marker of the last document"
         Expect.equal (slotsOfParts [ closed "a"; trivia; trivia ]) [] "a run of trivia behind the end marker"
         Expect.equal (slotsOfParts [ closed "a"; extra; trivia ]) [] "trivia behind an extra end marker"
-        Expect.equal (slotsOfParts [ document "a"; extra; trivia ]) [] "An extra end marker closes the document"
         Expect.equal (slotsOfParts [ closed "a"; trivia; extra ]) [] "trivia between an end marker and an extra end marker"
         Expect.equal (slotsOfParts [ closed "a"; trivia; extra; trivia ]) [] "trivia on both sides of an extra end marker"
         Expect.equal (slotsOfParts [ document "a"; trivia ]) [ "Parts[1]" ] "trivia behind a document without a ..."
@@ -308,12 +307,32 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOfParts [ trivia; extra; trivia; document "b" ]) [ "Parts[2]" ] "trivia behind the extra end marker and in front of the document stay invalid"
         Expect.equal (slotsOfParts [ trivia; extra; closed "a"; trivia; document "b" ]) [ "Parts[3]" ] "trivia in front of a document stay invalid when an extra end marker stands earlier"
         // A `...` behind a document without an end marker would end that document, so the stream has no extra end marker there and the trivia belong to the document.
-        Expect.equal (slotsOfParts [ document "a"; trivia; extra ]) [ "Parts[1]" ] "trivia between a document without a ... and an extra end marker"
-        Expect.equal (slotsOfParts [ document "a"; trivia; trivia; extra ]) [ "Parts[1]"; "Parts[2]" ] "a run of trivia between a document without a ... and an extra end marker"
+        Expect.equal (slotsOfParts [ document "a"; trivia; extra ]) [ "Parts[1]"; "Parts[2]" ] "trivia between a document without a ... and an extra end marker"
+        Expect.equal (slotsOfParts [ document "a"; trivia; trivia; extra ]) [ "Parts[1]"; "Parts[2]"; "Parts[3]" ] "a run of trivia between a document without a ... and an extra end marker"
         Expect.equal (slotsOfParts [ closed "a"; extra; trivia; extra ]) [] "trivia between two extra end markers behind a document"
         let withMarker = StreamPart.Document { YamlDocument.create (number "a") with StartMarker = Some marker }
         Expect.equal (slotsOfParts [ trivia; withMarker ]) [ "Parts[0]" ] "trivia in front of a document with a start marker"
         let problems = Validate.stream { Parts = [ trivia; document "a" ] }
+        Expect.stringContains problems.Head "(R3)" "rule"
+
+    // By [211] a `...` behind a document without an end marker is the end marker of that document, so the stream holds no extra end marker there.
+    testCase "an extra end marker stands at the start of the stream or behind a ... and nowhere else" <| fun _ ->
+        let marker: DocumentMarker = { TrailingComment = None; Span = None }
+        let document (text: string) = StreamPart.Document (YamlDocument.create (number text))
+        let closed (text: string) = StreamPart.Document { YamlDocument.create (number text) with EndMarker = Some marker }
+        let extra = StreamPart.ExtraEndMarker marker
+        let trivia = StreamPart.Trivia (lineComment " t")
+        let slotsOfParts (parts: StreamPart list) = slotsOf (Validate.stream { Parts = parts })
+        Expect.equal (slotsOfParts [ extra ]) [] "an extra end marker alone"
+        Expect.equal (slotsOfParts [ extra; extra; document "a" ]) [] "two extra end markers in front of a document"
+        Expect.equal (slotsOfParts [ closed "a"; extra ]) [] "an extra end marker behind a document with an end marker"
+        Expect.equal (slotsOfParts [ closed "a"; extra; extra; document "b" ]) [] "two extra end markers between two documents"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; document "b" ]) [] "trivia and an extra end marker between two documents"
+        Expect.equal (slotsOfParts [ document "a"; extra ]) [ "Parts[1]" ] "an extra end marker behind a document without a ..."
+        Expect.equal (slotsOfParts [ document "a"; extra; document "b" ]) [ "Parts[1]" ] "an extra end marker between two documents, the first without a ..."
+        Expect.equal (slotsOfParts [ document "a"; extra; trivia ]) [ "Parts[1]" ] "trivia behind an extra end marker that follows a document without a ..."
+        Expect.equal (slotsOfParts [ closed "a"; extra; document "b"; extra ]) [ "Parts[3]" ] "an extra end marker behind the second document, which has no ..."
+        let problems = Validate.stream { Parts = [ document "a"; extra ] }
         Expect.stringContains problems.Head "(R3)" "rule"
 
     testCase "a document without a ... gives the trivia in front of the next document to that document" <| fun _ ->

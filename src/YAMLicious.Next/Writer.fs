@@ -450,8 +450,14 @@ type internal Engine(options: WriterOptions) =
     let mutable partPrefix = ""
     // True while the document in progress is the last part of the stream and nothing follows its root.
     let mutable tailOpen = false
+    // True while the document in progress has a comment line behind its root, which stands at the first column.
+    let mutable commentFollowsRoot = false
     // The number of open block frames that still have something to write behind the node in progress.
     let mutable blockers = 0
+    // The trivia that a flow collection leaves behind when the policy writes it as a block collection that something
+    // follows (the lines in front of its closer and the comment behind it), each run with the depth of the frame of that
+    // block collection. A run is written in front of the next entry or item after the frame is closed.
+    let carried = ResizeArray<int * Trivia list>()
 
     let noBreak: Separation = Separation.NewLine { Comment = None; Following = [] }
 
@@ -578,9 +584,21 @@ type internal Engine(options: WriterOptions) =
             out.Put(this.PropertyText(node, placement.Property))
             rest <- rest.Tail
             if rest.IsEmpty && (blockLike || propOnly) then
-                match placement.After with
-                | Separation.NewLine lineBreak -> this.PutOptionalComment lineBreak.Comment
-                | Separation.Inline -> ()
+                let afterProperty =
+                    match placement.After with
+                    | Separation.NewLine lineBreak -> lineBreak.Comment
+                    | Separation.Inline -> None
+                // A node with properties only keeps a comment behind it in its TrailingComment while it stands in a flow
+                // collection, and the policy Canonical moves such a node to a block position. The comment stands behind the
+                // properties then. It goes in front of the next entry or item when the line holds the comment of the line
+                // break already.
+                let behindNode = if propOnly then node.TrailingComment else None
+                match afterProperty, behindNode with
+                | Some _, Some comment ->
+                    this.PutOptionalComment afterProperty
+                    carried.Add((stack.Count + 1, [ Trivia.FullLineComment comment ]))
+                | Some _, None -> this.PutOptionalComment afterProperty
+                | None, _ -> this.PutOptionalComment behindNode
                 if blockLike then out.EndLine()
             else
                 match placement.After with
@@ -603,9 +621,10 @@ type internal Engine(options: WriterOptions) =
     member private this.LinePlan(text: string) : ScalarPlan = this.ShapePlan(Shape.Line text)
 
     /// True when nothing but the line break of the current line can follow in the output: the document is the last
-    /// part of the stream and ends without a `...` or trivia, and every open collection has written its last entry.
-    /// The engine counts the open frames that still have something to write, so the answer takes no walk of the stack.
-    member private _.AtEndOfText() : bool = tailOpen && flowStack.Count = 0 && blockers = 0
+    /// part of the stream and ends without a `...` or trivia, every open collection has written its last entry, and no
+    /// carried trivia wait for a later line. The engine counts the open frames that still have something to write, so
+    /// the answer takes no walk of the stack.
+    member private _.AtEndOfText() : bool = tailOpen && flowStack.Count = 0 && blockers = 0 && carried.Count = 0
 
     /// True when the frame still has an entry, an item or end trivia to write, or when the colon line of the entry
     /// in progress follows. Such a frame keeps the node in progress from being the last one of the text.
@@ -825,9 +844,23 @@ type internal Engine(options: WriterOptions) =
             | YamlNodeKind.Scalar scalar -> scalar.HeaderComment
             | _ -> None
 
+    /// The plan of the block scalar at the root of a document that has a comment line behind it. Without an
+    /// indentation indicator the content of a root scalar starts at the first column, so a comment line behind a body
+    /// without content lines is content. An indicator of 1 puts the content at the column 1, and a comment line at the
+    /// first column is a comment behind the scalar then. Blank lines behind such a body are no problem, because the
+    /// parser reads them as trivia behind the root and they read as the same lines again.
+    member private this.WithRootIndicator(plan: ScalarPlan, value: string, n: int) : ScalarPlan =
+        match plan.Shape with
+        | Shape.Block when n < 0 && commentFollowsRoot && plan.Digit = 0 && value.Replace("\n", "").Length = 0 ->
+            if policy = StylePolicy.RequireStored then
+                this.Fail "The block scalar has no content and a comment line follows it, so it needs an indentation indicator that the stored style lacks."
+            else
+                { plan with Digit = 1 }
+        | _ -> plan
+
     /// Writes a scalar in a block position, behind its properties.
     member private this.WriteBlockScalarNode(node: YamlNode, scalar: YamlScalar, n: int) =
-        let plan = this.PlanScalar(node, scalar, false, true, true, (out.Width = 0), false)
+        let plan = this.WithRootIndicator(this.PlanScalar(node, scalar, false, true, true, (out.Width = 0), false), scalar.Value, n)
         match plan.Shape with
         | Shape.Empty -> out.EndLine()
         | Shape.Line text ->
@@ -941,12 +974,11 @@ type internal Engine(options: WriterOptions) =
                         probe.Add((children.[i], index, -1))
 
     /// Opens the flow collection: writes the opener and, when the collection has items or needs lines, pushes its
-    /// frame. Returns true when a frame was pushed.
-    member private this.OpenFlow(node: YamlNode, closeCol: int) : bool =
+    /// frame. Returns true when a frame was pushed. The items stand at `itemsCol` and the closer at `closeCol`.
+    member private this.OpenFlow(node: YamlNode, closeCol: int, itemsCol: int) : bool =
         let index = flowCounter
         flowCounter <- flowCounter + 1
         let multi = flowFlags.[index]
-        let itemsCol = closeCol + indent
         match node.Kind with
         | YamlNodeKind.Mapping collection ->
             if collection.Items.IsEmpty && not multi then
@@ -1023,10 +1055,10 @@ type internal Engine(options: WriterOptions) =
                 false
         | YamlNodeKind.Mapping _ ->
             this.CheckFlowChild node
-            this.OpenFlow(node, frame.ItemsCol)
+            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent)
         | YamlNodeKind.Sequence _ ->
             this.CheckFlowChild node
-            this.OpenFlow(node, frame.ItemsCol)
+            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent)
 
     /// A block collection inside a flow collection turns into a flow collection, unless the policy keeps the stored style.
     member private this.CheckFlowChild(node: YamlNode) =
@@ -1040,10 +1072,14 @@ type internal Engine(options: WriterOptions) =
                 this.Fail "A block collection cannot stand inside a flow collection, and the policy requires the stored style."
 
     /// The node that ends the line of the item in progress: the node of a sequence item, the value of an entry, or the
-    /// key of an entry whose value is missing.
+    /// key of an entry that has neither a value nor a colon. The last token of an entry with a colon and no value is
+    /// the colon, and a comment behind it stands in the separation of the colon, so no node ends the line then.
     member private _.ItemTailNode(frame: FlowFrame) : YamlNode =
         if frame.IsMap then
-            if YamlNode.isMissingValue frame.Current.Value then frame.Current.Key else frame.Current.Value
+            let entry = frame.Current
+            if not (YamlNode.isMissingValue entry.Value) then entry.Value
+            elif entry.Colon.IsSome then YamlNode.empty
+            else entry.Key
         else
             frame.Node
 
@@ -1087,8 +1123,15 @@ type internal Engine(options: WriterOptions) =
         let mutable pushed = false
         let hasColon = entry.Colon.IsSome || not valueMissing
         if hasColon then
-            if frame.Multi && (not entry.BeforeColon.IsEmpty || (keyComment.IsSome && not valueMissing)) then
-                if not frame.LineBroken then this.EndLineWith keyComment
+            // A comment behind the key ends the line, so the colon stands on a later line, with or without a value.
+            if frame.Multi && (not entry.BeforeColon.IsEmpty || keyComment.IsSome) then
+                if frame.LineBroken then
+                    // The line break behind the last property ended the line already, so a comment of the key goes on a line of its own.
+                    match keyComment with
+                    | Some comment -> this.WriteTrivia([ Trivia.FullLineComment comment ], frame.ItemsCol)
+                    | None -> ()
+                else
+                    this.EndLineWith keyComment
                 frame.LineBroken <- false
                 this.WriteTrivia(entry.BeforeColon, frame.ItemsCol)
                 out.Spaces frame.ItemsCol
@@ -1158,17 +1201,20 @@ type internal Engine(options: WriterOptions) =
         | FlowPhase.NextItem -> if frame.IsMap then this.NextFlowMapEntry frame else this.NextFlowSeqItem frame
 
     /// Writes the flow collection at the cursor. The flags of the subtree have to be set.
-    member private this.RunFlow(node: YamlNode, closeCol: int) =
+    member private this.RunFlow(node: YamlNode, closeCol: int, itemsCol: int) =
         flowStack.Clear()
         flowCounter <- 0
-        this.OpenFlow(node, closeCol) |> ignore
+        this.OpenFlow(node, closeCol, itemsCol) |> ignore
         while flowStack.Count > 0 do
             this.StepFlow flowStack.[flowStack.Count - 1]
 
-    /// Writes a flow collection that stands in a block position whose parent has the indentation `n`.
+    /// Writes a flow collection that stands in a block position whose parent has the indentation `n`. Every line of a
+    /// flow collection that a block node owns, the line of the closer included, stands at the indentation n + 1 or
+    /// deeper ([69] and [80]). The items and the closer therefore stand at the column of a child of the owner. A
+    /// collection at the root has no owner, so its closer stands at the first column.
     member private this.WriteFlowValue(node: YamlNode, n: int) =
         this.ProbeFlow node
-        this.RunFlow(node, (if n < 0 then 0 else n))
+        if n < 0 then this.RunFlow(node, 0, indent) else this.RunFlow(node, n + indent, n + indent)
 
     // ---------------------------------------------------------------------------------------------
     // Block collections
@@ -1204,9 +1250,35 @@ type internal Engine(options: WriterOptions) =
         stack.Add frame
         this.RefreshFrame frame
 
+    /// The trivia at the end of the block that a flow collection becomes: the lines in front of the closer and the
+    /// comment behind it. They stay there when the block ends the text. Otherwise the parser reads them as trivia in
+    /// front of whatever follows the block (R4), so the writer carries them to that place and writes them after the
+    /// frame is closed.
+    member private this.EndOfMovedBlock(node: YamlNode, written: Trivia list, moved: bool) : Trivia list =
+        if not moved then
+            written
+        else
+            let lines =
+                match node.TrailingComment with
+                | Some comment -> written @ [ Trivia.FullLineComment comment ]
+                | None -> written
+            if lines.IsEmpty || this.AtEndOfText() then
+                lines
+            else
+                // The frame is pushed behind this call, so its depth is one more than the stack holds.
+                carried.Add((stack.Count + 1, lines))
+                []
+
+    /// Writes the trivia that blocks closed since the last call left behind, the innermost first, as lines at `col`.
+    member private this.WriteCarried(col: int) =
+        while carried.Count > 0 && fst carried.[carried.Count - 1] > stack.Count do
+            let (_, lines) = carried.[carried.Count - 1]
+            carried.RemoveAt(carried.Count - 1)
+            this.WriteTrivia(lines, col)
+
     /// Pushes the frame of a block collection. A flow collection that the policy writes as a block collection
     /// hands its opening comment to the trivia in front of its first item, and the comment behind its closer to the
-    /// end of the block.
+    /// trivia that follow the block.
     member private this.PushBlock(node: YamlNode, col: int, compact: bool) =
         match node.Kind with
         | YamlNodeKind.Mapping collection ->
@@ -1216,11 +1288,7 @@ type internal Engine(options: WriterOptions) =
                 | first :: rest when moved && collection.OpeningComment.IsSome ->
                     { first with Before = Trivia.FullLineComment collection.OpeningComment.Value :: first.Before } :: rest
                 | items -> items
-            let finish =
-                if moved && node.TrailingComment.IsSome then
-                    collection.End @ [ Trivia.FullLineComment node.TrailingComment.Value ]
-                else
-                    collection.End
+            let finish = this.EndOfMovedBlock(node, collection.End, moved)
             this.AddFrame(BlockFrame(true, col, entries, [], finish, compact))
         | YamlNodeKind.Sequence collection ->
             let moved = collection.Style = CollectionStyle.Flow
@@ -1229,11 +1297,7 @@ type internal Engine(options: WriterOptions) =
                 | first :: rest when moved && collection.OpeningComment.IsSome ->
                     { first with Before = Trivia.FullLineComment collection.OpeningComment.Value :: first.Before } :: rest
                 | items -> items
-            let finish =
-                if moved && node.TrailingComment.IsSome then
-                    collection.End @ [ Trivia.FullLineComment node.TrailingComment.Value ]
-                else
-                    collection.End
+            let finish = this.EndOfMovedBlock(node, collection.End, moved)
             this.AddFrame(BlockFrame(false, col, [], items, finish, compact))
         | _ -> this.Fail "A collection was expected."
 
@@ -1342,7 +1406,7 @@ type internal Engine(options: WriterOptions) =
                     else
                         let saved = out
                         out <- Out(newLine)
-                        this.RunFlow(key, 0)
+                        this.RunFlow(key, 0, indent)
                         let flowText = out.Text()
                         out <- saved
                         Some(propsText + flowText)
@@ -1360,6 +1424,7 @@ type internal Engine(options: WriterOptions) =
         text
 
     member private this.CloseBlock(frame: BlockFrame) =
+        if not frame.End.IsEmpty then this.WriteCarried frame.Col
         this.WriteTrivia(frame.End, frame.Col)
         if frame.RulesOutEnd then blockers <- blockers - 1
         stack.RemoveAt(stack.Count - 1)
@@ -1373,6 +1438,7 @@ type internal Engine(options: WriterOptions) =
             frame.PrevColonless <- true
         else
             frame.PrevColonless <- false
+            this.WriteCarried col
             this.WriteTrivia(entry.BeforeColon, col)
             out.Spaces col
             out.Put ":"
@@ -1390,6 +1456,7 @@ type internal Engine(options: WriterOptions) =
             this.RefreshFrame frame
             let col = frame.Col
             if not (frame.Index = 0 && frame.Compact) then
+                this.WriteCarried col
                 this.WriteTrivia(entry.Before, col)
                 out.Spaces col
             let keyText = if entry.Question.IsSome then None else this.ImplicitKeyText(entry, col, frame.PrevColonless)
@@ -1421,6 +1488,7 @@ type internal Engine(options: WriterOptions) =
             this.RefreshFrame frame
             let col = frame.Col
             if not (frame.Index = 0 && frame.Compact) then
+                this.WriteCarried col
                 this.WriteTrivia(item.Before, col)
                 out.Spaces col
             out.Put "-"
@@ -1453,6 +1521,12 @@ type internal Engine(options: WriterOptions) =
 
     member private this.WriteDocument(document: YamlDocument, needsStart: bool, isLastPart: bool) =
         tailOpen <- isLastPart && document.AfterRoot.IsEmpty && document.EndMarker.IsNone
+        commentFollowsRoot <-
+            document.AfterRoot
+            |> List.exists (fun line ->
+                match line with
+                | Trivia.FullLineComment _ -> true
+                | Trivia.BlankLine _ -> false)
         handlesByPrefix.Clear()
         declaredHandles.Clear()
         for item in document.Prelude do
@@ -1484,6 +1558,7 @@ type internal Engine(options: WriterOptions) =
             if inlineRoot then out.Put " "
             if bare then this.PushBlock(root, 0, false) else this.EmitNode(root, -1, 0)
             this.Drain()
+        this.WriteCarried 0
         this.WriteTrivia(document.AfterRoot, 0)
         if document.EndMarker.IsSome then
             this.WriteMarker("...", document.EndMarker)

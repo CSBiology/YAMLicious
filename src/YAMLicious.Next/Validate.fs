@@ -89,7 +89,9 @@ module internal NodePath =
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
 /// - A stream: `StreamPart.Trivia` does not stand in front of a document, and in a stream with a document
-///   it stands behind a `...` or at the start of the stream in front of an `ExtraEndMarker` only (R3).
+///   it stands behind a `...` or at the start of the stream in front of an `ExtraEndMarker` only (R3). An
+///   `ExtraEndMarker` stands at the start of the stream or behind a part that ends with a `...`, because
+///   behind a document without one the parser reads the `...` as the end marker of that document (R3).
 ///
 /// A node has at most one tag and one anchor by its type, so no check is needed for that. The rules R4 to
 /// R6 depend on the columns and the lines of the text and are not checked.
@@ -318,7 +320,13 @@ module Validate =
                     | _ -> false
                 walkDocument errors (at + ".") followedByDocument document
                 previous <- Some parts.[i]
-            | StreamPart.ExtraEndMarker _ -> previous <- Some parts.[i]
+            | StreamPart.ExtraEndMarker _ ->
+                // Behind a document without a `...` the marker would be the end marker of that document.
+                match previous with
+                | Some part when not (endsWithMarker part) ->
+                    errors.Add(at + ": an extra end marker stands at the start of the stream or behind a `...`, and behind a document without an end marker it is the end marker of that document (R3)")
+                | _ -> ()
+                previous <- Some parts.[i]
             | StreamPart.Trivia _ ->
                 let beforeDocument =
                     match following.[i] with

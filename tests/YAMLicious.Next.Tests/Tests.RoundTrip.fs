@@ -380,6 +380,51 @@ let private constructedTests = testList "Constructed trees" [
             ]
         let written = Writer.writeNode defaults tree
         Expect.nodeEqual (parseRoot written) tree (sprintf "The tree after a round trip of %A" written)
+
+    // The writer puts the comment behind the key of a flow mapping entry on the line of the key and the colon on the next line ([147] has the colon behind the
+    // key, and a comment ends the line). The text is in Tests.Writer. These tests build the tree and read the text back. They need the parser of the gate fix G1,
+    // which reads the comment behind a key as its TrailingComment. The parser before G1 reads it as a line in BeforeColon, and the tests fail there.
+    testCase "a trailing comment of a flow mapping key goes behind the key and comes back equal" <| fun _ ->
+        let tree = YamlNode.flowMapping [ YamlNode.entry (withNote " key" (sc "a")) (sc "b") ]
+        let written = Writer.writeNode defaults tree
+        Expect.equal written "{\n  a # key\n  : b\n}\n" "The text of the tree"
+        Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
+        Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
+
+    // An entry with a colon and no value has two places for a comment: behind the key and behind the colon. The comment behind the key stays behind the key.
+    testCase "a flow mapping entry with a colon and no value keeps the comments of the key and of the colon" <| fun _ ->
+        let key = withNote " key" (sc "a")
+        let inlineColon = YamlNode.entry key nothing
+        let commentedColon = { inlineColon with Colon = Some(newLine (Some " colon") []) }
+        for entries in [ [ inlineColon ]; [ commentedColon ]; [ inlineColon; YamlNode.entry (sc "j") (sc "1") ]; [ commentedColon; YamlNode.entry (sc "j") (sc "1") ] ] do
+            let tree = YamlNode.flowMapping entries
+            let written = Writer.writeNode defaults tree
+            Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
+            Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
+
+    // The content of a root block scalar starts at the first column unless an indentation indicator says otherwise, so the writer adds the indicator 1 to a root block
+    // scalar without content lines that has trivia behind it. The tree that the parser reads from the text has the indicator, and a second write gives the text again.
+    testCase "a root block scalar without content and a comment behind it read back with the indicator" <| fun _ ->
+        let cases =
+            [ BlockScalarStyle.Literal, ChompingMode.Clip, ""
+              BlockScalarStyle.Folded, ChompingMode.Clip, ""
+              BlockScalarStyle.Literal, ChompingMode.Strip, ""
+              BlockScalarStyle.Literal, ChompingMode.Keep, "\n"
+              BlockScalarStyle.Literal, ChompingMode.Keep, "\n\n" ]
+        for (style, chomping, value) in cases do
+            let tree = { YamlDocument.create (blockScalar style chomping None value) with AfterRoot = [ note " c" ] }
+            let written = Writer.write defaults tree
+            let expected = { tree with Root = blockScalar style chomping (Some 1) value }
+            Expect.streamEqual (parseOk written) { Parts = [ StreamPart.Document expected ] } (sprintf "The document read from %A" written)
+            Expect.equal (Writer.writeDocuments defaults (parseOk written)) written "A second write changes nothing"
+
+    testCase "a comment behind the properties of a flow mapping key without content comes back equal" <| fun _ ->
+        let key = withLayout [ placement PropertyName.Anchor (newLine (Some " key") []) ] (YamlNode.withAnchor "a" nothing)
+        let tree = YamlNode.flowMapping [ YamlNode.entry key (sc "b") ]
+        let written = Writer.writeNode defaults tree
+        Expect.equal written "{\n  &a # key\n  : b\n}\n" "The text of the tree"
+        Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
+        Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
 ]
 
 let flowRoundTrips = testList "Flow inputs" [

@@ -305,19 +305,46 @@ let private slotTests = testList "Slots" [
     testCase "the comma stands in front of the trailing comment" <| fun _ ->
         let node = flowSeq [ withNote " one" (sc "a"); withNote " two" (sc "b") ]
         expectNode node "[\n  a, # one\n  b # two\n]\n"
-        expectNode (mapOf [ "k", node ]) "k: [\n  a, # one\n  b # two\n]\n"
+        expectNode (mapOf [ "k", node ]) "k: [\n  a, # one\n  b # two\n  ]\n"
+
+    // yaml@2.6.1 reads the expected texts as [["a","b"]], {"k":{"j":["a","b"]}}, [{"k":["a","b"]}], {"k":[["a"],"b"]} and {"k":{"a":"b"}}. A flow collection that a block node owns
+    // has its lines at least one level in from the block node ([69] and [80]), and the closer is such a line. So the closer stands at the column of the items.
+    testCase "the closer of a flow collection in a block collection stands at the items column" <| fun _ ->
+        let node = flowSeq [ withNote " one" (sc "a"); sc "b" ]
+        expectNode (seqOf [ node ]) "- [\n  a, # one\n  b\n  ]\n"
+        expectNode (mapOf [ "k", mapOf [ "j", node ] ]) "k:\n  j: [\n    a, # one\n    b\n    ]\n"
+        expectNode (seqOf [ mapOf [ "k", node ] ]) "- k: [\n    a, # one\n    b\n    ]\n"
+        let nested = flowSeq [ flowSeq [ withNote " x" (sc "a") ]; sc "b" ]
+        expectNode (mapOf [ "k", nested ]) "k: [\n  [\n    a # x\n  ],\n  b\n  ]\n"
+        let commented = withEnd [ note " end" ] (flowMap [ "a", sc "b" ])
+        expectNode (mapOf [ "k", commented ]) "k: {\n  a: b\n  # end\n  }\n"
 
     // yaml@2.6.1 reads the expected texts as {"a":1,"b":2}.
     testCase "a flow mapping with comments puts one entry on each line" <| fun _ ->
         let entries = [ { entryOf "a" (sc "1") with Before = [ note " first" ] }; entryOf "b" (withNote " second" (sc "2")) ]
         expectNode (withEnd [ blank ] (YamlNode.flowMapping entries)) "{\n  # first\n  a: 1,\n  b: 2 # second\n\n}\n"
 
-    // yaml@2.6.1 reads the expected texts as {"a":"b"}, {"a":"b"}.
+    // yaml@2.6.1 reads the expected texts as {"a":"b"} for the first three, {"":"b"} for the next three, {"a":null} for the next two and {"a":null,"j":1} for the last one.
+    // The comment behind a key stands on the line of the key, the lines of BeforeColon follow it, and the colon stands on the line behind them ([147]).
+    // The key of an entry that has a colon and no value keeps its comment behind it, because the comment behind the colon belongs to the colon.
     testCase "the gap between a key and its colon in a flow mapping" <| fun _ ->
         let gap = { entryOf "a" (sc "b") with BeforeColon = [ note " gap" ] }
         expectNode (YamlNode.flowMapping [ gap ]) "{\n  a\n  # gap\n  : b\n}\n"
         let commentedKey = YamlNode.entry (withNote " key" (sc "a")) (sc "b")
         expectNode (YamlNode.flowMapping [ commentedKey ]) "{\n  a # key\n  : b\n}\n"
+        expectNode (YamlNode.flowMapping [ { commentedKey with BeforeColon = [ note " gap" ] } ]) "{\n  a # key\n  # gap\n  : b\n}\n"
+        // A key that holds properties only has the comment in the After of its last property or in its TrailingComment. The text is the same.
+        let anchored = YamlNode.withAnchor "a" nothing
+        let afterProperty = withLayout [ placement PropertyName.Anchor (newLine (Some " key") []) ] anchored
+        expectNode (YamlNode.flowMapping [ YamlNode.entry afterProperty (sc "b") ]) "{\n  &a # key\n  : b\n}\n"
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (withNote " key" anchored) (sc "b") ]) "{\n  &a # key\n  : b\n}\n"
+        // Both comments of such a key stay, the second one on a line of its own.
+        expectNode (YamlNode.flowMapping [ YamlNode.entry (withNote " second" afterProperty) (sc "b") ]) "{\n  &a # key\n  # second\n  : b\n}\n"
+        // An entry with a colon and no value keeps the comment of the key behind the key, and the colon keeps its own comment.
+        let noValue = { commentedKey with Value = nothing }
+        expectNode (YamlNode.flowMapping [ noValue ]) "{\n  a # key\n  :\n}\n"
+        expectNode (YamlNode.flowMapping [ { noValue with Colon = Some(newLine (Some " colon") []) } ]) "{\n  a # key\n  : # colon\n}\n"
+        expectNode (YamlNode.flowMapping [ noValue; entryOf "j" (sc "1") ]) "{\n  a # key\n  :,\n  j: 1\n}\n"
 
     // yaml@2.6.1 reads the expected texts as [["a"],"b"].
     testCase "a comment behind the closer of a flow collection and a nested flow collection" <| fun _ ->
@@ -677,6 +704,28 @@ let private documentTests = testList "Documents" [
     testCase "the trivia behind the root of a scalar document stay behind it" <| fun _ ->
         Expect.equal (Writer.write defaults { document (sc "a") with AfterRoot = [ note " t" ] }) "a\n# t\n" "AfterRoot"
         Expect.equal (Writer.write defaults { document (sc "a") with AfterRoot = [ note " t" ]; EndMarker = Some(marker None) }) "a\n# t\n...\n" "AfterRoot and an end marker"
+
+    // yaml@2.6.1 reads `|1` and a comment line as "", `>1` and a comment line as "", `|1-` and a comment line as "", `|1+`, a blank line and a comment line as "\n", `|2` and a comment line
+    // as "", `|`, two spaces, `a` and a comment line as "a\n", `|` and two blank lines as "", `|1`, a blank line and a comment line as "", and `|` and a comment line as the content "# c\n".
+    // The content of a root block scalar starts at the first column unless an indentation indicator says otherwise, so a comment line behind a body without content lines is content
+    // and needs the indicator. The indicator 1 puts the content at the column 1, and the comment at the first column ends the scalar. Blank lines need no indicator.
+    testCase "a root block scalar without content gets an indentation indicator when a comment follows it" <| fun _ ->
+        let withComment (node: YamlNode) = { document node with AfterRoot = [ note " c" ] }
+        Expect.equal (Writer.write defaults (withComment (lit ""))) "|1\n# c\n" "Literal, Clip"
+        Expect.equal (Writer.write defaults (withComment (fold ""))) ">1\n# c\n" "Folded, Clip"
+        Expect.equal (Writer.write defaults (withComment (blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "\n"))) "|1+\n\n# c\n" "Literal, Keep, a blank line"
+        Expect.equal (Writer.write defaults (withComment (blockScalar BlockScalarStyle.Literal ChompingMode.Strip None ""))) "|1-\n# c\n" "Literal, Strip"
+        Expect.equal (Writer.write defaults { withComment (lit "") with AfterRoot = [ blank; note " c" ] }) "|1\n\n# c\n" "A blank line in front of the comment"
+        // A stored indicator stays, and a scalar with content, without a comment behind it or inside a collection needs none.
+        Expect.equal (Writer.write defaults (withComment (blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 2) ""))) "|2\n# c\n" "Stored indicator"
+        Expect.equal (Writer.write defaults (withComment (lit "a\n"))) "|\n  a\n# c\n" "Content"
+        Expect.equal (Writer.write defaults (document (lit ""))) "|\n" "No trivia"
+        Expect.equal (Writer.write defaults { document (lit "") with AfterRoot = [ blank; blank ] }) "|\n\n\n" "Blank lines"
+        Expect.equal (Writer.write defaults (document (withEnd [ note " c" ] (mapOf [ "k", lit "" ])))) "k: |\n# c\n" "Inside a mapping"
+        // The policy that requires the stored style cannot add the indicator.
+        let error = writeError (fun () -> Writer.write (withStyles RequireStored) (withComment (lit "")))
+        Expect.stringContains error.Message "indentation indicator" "RequireStored"
+        Expect.equal (Writer.write (withStyles RequireStored) (withComment (blockScalar BlockScalarStyle.Literal ChompingMode.Clip (Some 1) ""))) "|1\n# c\n" "RequireStored with the stored indicator"
 ]
 
 let private blockLayoutTests = testList "Block layout" [
@@ -782,6 +831,15 @@ let private blockLayoutTests = testList "Block layout" [
 let private policyTests = testList "Style policies" [
     let requireStored (node: YamlNode) = Writer.writeNode (withStyles RequireStored) node
     let canonical (node: YamlNode) = Writer.writeNode (withStyles Canonical) node
+    let writeCanonical (text: string) = Writer.writeDocuments (withStyles Canonical) (parseOk text)
+    // The data of a text with the flow collections counted as block collections, which is what Canonical makes of them.
+    let blockData (text: string) = (Projection.data (parseOk text)).Replace("\"style\":\"flow\"", "\"style\":\"block\"")
+    /// The Canonical text of the input is the expected text, it keeps the data, and a second write of the text that it reads as gives the same text.
+    let expectTwice (input: string) (expected: string) =
+        let once = writeCanonical input
+        Expect.equal once expected (sprintf "The Canonical text of %A" input)
+        Expect.equal (writeCanonical once) once (sprintf "The second Canonical write of %A" input)
+        Expect.equal (blockData once) (blockData input) (sprintf "The data of the Canonical text of %A" input)
 
     testCase "RequireStored raises when a plain scalar cannot stand plain" <| fun _ ->
         let error = writeError (fun () -> requireStored (mapOf [ "a", mapOf [ "k", sc "x: y" ] ]))
@@ -835,7 +893,7 @@ let private policyTests = testList "Style policies" [
         Expect.equal (canonical (flowSeq [ flowSeq [ sc "a" ] ])) "- - a\n" "Nested"
 
     // The opening comment of a flow collection has no slot in a block collection. It stands on a line in front of the first item, and the
-    // comment behind the closer stands at the end of the block.
+    // comment behind the closer stands at the end of the block when the block ends the text. The test below this one shows where the comment goes otherwise.
     testCase "Canonical keeps every comment and blank line, including the ones of a flow collection" <| fun _ ->
         let flow = withNote " after" (withOpening " open" (flowSeq [ withNote " item" (sc "a"); sc "b" ]))
         Expect.equal (canonical (mapOf [ "k", flow ])) "k:\n  # open\n  - a # item\n  - b\n  # after\n" "The comments of a flow collection"
@@ -845,6 +903,34 @@ let private policyTests = testList "Style policies" [
         let flow = YamlNode.flowSequence [ itemBefore [ note " c" ] (sc "a") ]
         Expect.equal (canonical (seqOf [ flow ])) "-\n  # c\n  - a\n" "Trivia in front of the first item"
         Expect.equal (canonical (seqOf [ withOpening " o" (flowSeq [ sc "a" ]) ])) "-\n  # o\n  - a\n" "Opening comment"
+
+    // yaml@2.6.1 reads each expected text as the data of its input: [["a"],"b"], {"k":["a"],"j":1}, {"[ a ]":"v"} (it spells the sequence key as a string), {"k":["a"]},
+    // {"a":["x"],"b":1}, [[["a"]],"b"], [["a"]], [["a"],"b"] and {"k":[["a"]],"j":1}.
+    // The comment behind the closer of a flow collection and the lines in front of the closer move to the trivia of the next entry or item when something follows
+    // the block that replaces the collection, and to the end of the block when the block ends the text. The parser reads them from there (R4), so the second
+    // write gives the first text again.
+    testCase "Canonical gives the same text twice when the trivia at the closer of a flow collection move" <| fun _ ->
+        expectTwice "[[a] # c\n , b]\n" "- - a\n# c\n- b\n"
+        expectTwice "k: [a] # c\nj: 1\n" "k:\n  - a\n# c\nj: 1\n"
+        expectTwice "? [a] # c\n: v\n" "? - a\n# c\n: v\n"
+        expectTwice "k: [a] # c\n" "k:\n  - a\n  # c\n"
+        expectTwice "{a: [x] # c\n, b: 1}\n" "a:\n  - x\n# c\nb: 1\n"
+        expectTwice "[[[a] # c\n], b]\n" "- - - a\n# c\n- b\n"
+        expectTwice "[[a] # c\n # end\n]\n" "- - a\n# c\n# end\n"
+        expectTwice "[[a] # c\n]\n" "- - a\n  # c\n"
+        // The lines in front of the closer are in the End of the flow collection, and the block that replaces it is not the last node.
+        expectTwice "[[a\n # e\n ] , b]\n" "- - a\n# e\n- b\n"
+        // Two collections close in a row, and the comment of the inner one stands in front of the comment of the outer one.
+        expectTwice "k: [ [a] # c\n ] # o\nj: 1\n" "k:\n  - - a\n# c\n# o\nj: 1\n"
+
+    // yaml@2.6.1 reads the first two inputs as [null,"b"] and {"k":"","j":1}, and the expected texts in the same way. It rejects a comma that stands on a line behind a
+    // property, so the third input, which rule 22 of M3 reads, has no reference. A node that holds properties only keeps the comment behind it in its TrailingComment in a
+    // flow collection (rule 21 of M3). In a block collection the comment stands behind the properties. When the line holds the comment of the line break behind the property
+    // already, the second comment stands in front of what follows.
+    testCase "Canonical keeps the comment behind a node that holds properties only" <| fun _ ->
+        expectTwice "[&a , # c\n b]\n" "- &a # c\n- b\n"
+        expectTwice "{k: !!str , # c\n j: 1}\n" "k: !!str # c\nj: 1\n"
+        expectTwice "[&a # c1\n , # c2\n b]\n" "- &a # c1\n# c2\n- b\n"
 ]
 
 let private invalidTreeTests = testList "Invalid trees" [
