@@ -2,28 +2,118 @@
 
 ![NuGet Version](https://img.shields.io/nuget/v/YAMLicious?style=for-the-badge) ![NuGet Downloads](https://img.shields.io/nuget/dt/YAMLicious?style=for-the-badge)
 
-YAMLicious is a small YAML reader/writer inspired by [Thoth.Json](https://github.com/thoth-org/Thoth.Json) syntax!
+YAMLicious is a YAML 1.2.2 reader and writer for F# with decoders and encoders in the style of [Thoth.Json](https://github.com/thoth-org/Thoth.Json). It runs on .NET, and [Fable](https://fable.io) compiles it to JavaScript and Python.
+
+The reader builds a tree of nodes that keeps comments, blank lines, scalar and collection styles, tags, anchors and source spans. The writer prints the tree again with every comment and blank line in place.
 
 > [!IMPORTANT]
 > If you want to use YAMLicious in Python, please install [`fable-library`](https://pypi.org/project/fable-library/#history) via python dependency manager of your choice. YAMLicious depends on fable-library for core functionality.
 
-## Code examples
+## Installation
 
-### F# Model
-
-```fsharp
-type Package = {
-    Name: string
-    Version: string option
-}
-
-type ArcValidation = {
-    ArcSpecificationVersion: string
-    Packages: Package list
-}   
+```
+dotnet add package YAMLicious
 ```
 
-### YAML
+The package carries the F# sources in its `fable/` folder, so a Fable project compiles them for JavaScript or Python.
+
+## Usage
+
+### Read a text
+
+`Reader.readRoot` parses a text with one document and returns the root node. `Reader.read` returns the whole `YamlDocument`, and `Reader.readDocuments` returns a `YamlStream` for a text with any number of documents. The `tryRead` and `tryReadDocuments` variants return a `Result` with a `YamlError`, and the functions without `try` raise `YamlParseException`.
+
+```fsharp
+open YAMLicious
+
+type Package = { Name: string; Version: string option }
+
+type DocValidation =
+    { FormatDefinitionVersion: string
+      Packages: Package list }
+
+let yaml =
+    """# validation packages of a spec
+arc_specification: 2.0.0-draft
+validation_packages:
+  - name: package1
+    version: 1.0.0
+  - name: package2 # needs a review
+    version: 2.0.0
+  - name: package3
+"""
+
+let root: YamlNode = Reader.readRoot yaml
+```
+
+### Decode
+
+A `Decoder<'T>` is a function from `YamlNode` to `'T`. `Decode.object` reads a mapping through getters. `Decode.list` and `Decode.option` wrap another decoder.
+
+```fsharp
+let packageDecoder: Decoder<Package> =
+    Decode.object (fun get ->
+        { Name = get.Required.Field "name" Decode.string
+          Version = get.Optional.Field "version" Decode.string })
+
+let docValidationDecoder: Decoder<DocValidation> =
+    Decode.object (fun get ->
+        { FormatDefinitionVersion = get.Required.Field "arc_specification" Decode.string
+          Packages = get.Required.Field "validation_packages" (Decode.list packageDecoder) })
+
+let docValidation: DocValidation = docValidationDecoder root
+
+printfn "%A" (docValidation.Packages |> List.map (fun package -> package.Name, package.Version))
+```
+
+```
+[("package1", Some "1.0.0"); ("package2", Some "2.0.0"); ("package3", None)]
+```
+
+The scalar decoders follow the YAML 1.2 core schema. A plain `1` is an int and a quoted `"1"` is a string. `yes` is a string too, and `Decode.string` reads the text of any scalar.
+
+### Errors with positions
+
+Every `YamlError` has a stable `Code` and the `Span` of the offending text, and its message names the line. A decoder raises `YamlDecodeException` with a `DecodeError` that names the path to the failing node and its span. `Decode.tryDecode` returns the error as a value.
+
+```fsharp
+match Reader.tryRead "name: \"package1" with
+| Ok _ -> ()
+| Error error ->
+    printfn "%s at %d:%d" (YamlErrorCode.name error.Code) error.Span.Start.Line error.Span.Start.Column
+
+let withoutName = Reader.readRoot "arc_specification: 2.0.0-draft\nvalidation_packages:\n  - version: 1.0.0\n"
+
+match Decode.tryDecode docValidationDecoder withoutName with
+| Ok _ -> ()
+| Error error -> printfn "%s" (DecodeError.text error)
+```
+
+```
+unclosed-quote at 1:7
+At validation_packages[0]: The mapping has no field name. (line 3, column 5)
+```
+
+### Encode and write
+
+The encoders build nodes. `Encode.optionalField` returns `None` for a missing value, so combine the fields with `List.choose id`. `Writer.writeNode` turns a node into text.
+
+```fsharp
+let packageEncoder (package: Package) : YamlNode =
+    [ Some("name", Encode.string package.Name)
+      Encode.optionalField "version" Encode.string package.Version ]
+    |> List.choose id
+    |> Encode.object
+
+let docValidationEncoder (doc: DocValidation) : YamlNode =
+    Encode.object
+        [ "arc_specification", Encode.string doc.FormatDefinitionVersion
+          "validation_packages", Encode.list packageEncoder doc.Packages ]
+
+let text: string = Writer.writeNode WriterOptions.defaults (docValidationEncoder docValidation)
+
+printf "%s" text
+```
 
 ```yaml
 arc_specification: 2.0.0-draft
@@ -35,79 +125,60 @@ validation_packages:
   - name: package3
 ```
 
-### Decode (from YAML)
+`WriterOptions.Indent` is the number of spaces for one level and is 2 by default. `NewLine` ends every line and is `"\n"` by default, and `Styles` is the style policy that the next section describes. `Writer.write` writes a `YamlDocument` and `Writer.writeDocuments` writes a `YamlStream`.
+
+### Comments survive a round trip
+
+A comment sits in one slot of the tree, so a document that you read and write again keeps its comments and blank lines.
 
 ```fsharp
-// from yaml
-let Example1 = 
-    "arc_specification: 2.0.0-draft
-validation_packages:
-    - name: package1
-    version: 1.0.0
-    - name: package2
-    version: 2.0.0
-    - name: package3"
+let document: YamlDocument = Reader.read yaml
 
-let packageEncoder : (YAMLicious.YAMLElement -> Package) = 
-    Decode.object (fun get ->
-        {
-            Name = get.Required.Field "name" Decode.string
-            Version = get.Optional.Field "version" Decode.string
-        }
-    )
-
-let arcValidationDecoder : (YAMLicious.YAMLElement -> ArcValidation) =
-    Decode.object (fun get ->
-        {
-            ArcSpecificationVersion = get.Required.Field "arc_specification" Decode.string
-            Packages = get.Required.Field "validation_packages" (Decode.list packageEncoder)
-        }
-    )
-
-let actual : ArcValidation = Examples.ValidationPackageTypes.string |> Decode.read |> arcValidationDecoder
-
+printfn "%b" (Writer.write WriterOptions.defaults document = yaml)
 ```
 
-### Encode (to YAML)
+```
+true
+```
+
+To add a comment to a tree that you build, use `YamlNode.withTrailingComment` for a comment behind a value. The text of a comment is everything behind the `#`.
 
 ```fsharp
-// to yaml
-let Example2 = {
-    ArcSpecificationVersion = "2.0.0-draft"
-    Packages = [
-        { Name = "package1"; Version = Some "1.0.0" }
-        { Name = "package2"; Version = Some "2.0.0" }
-        { Name = "package3"; Version = None }
-    ]
-}
+let note = YamlNode.withTrailingComment (YamlComment.create " checked") (YamlNode.plain "1.0.0")
 
-let packageEncoder (pack: Package) = 
-    [
-        "name", Encode.string pack.Name
-        Encode.tryInclude "version" Encode.string pack.Version 
-    ]
-    |> Encode.choose
-    |> Encode.object
+printf "%s" (Writer.writeNode WriterOptions.defaults (Encode.object [ ("version", note) ]))
+```
 
-let arcValidationEncoder (arc: ArcValidation) = 
-    Encode.object [
-        "arc_specification", Encode.string arc.ArcSpecificationVersion
-        "validation_packages", Encode.list packageEncoder arc.Packages
-    ]
-
-let actual : string = Encode.write 2 (arcValidationEncoder Example2)
+```yaml
+version: 1.0.0 # checked
 ```
 
 ### Scalar styles
 
-When you encode a value without specifying a scalar style, the writer automatically picks a representation that stays valid YAML:
+A node stores the style of its scalars and collections. A scalar that you construct states a preference, and the writer quotes a text that cannot stand plain. Examples are a text that starts with an indicator and a text that holds `: ` or ` #`. `Encode.string` double-quotes a text that the core schema reads as null, a bool, an int or a float.
 
-- multiline strings become block scalars
-- single-line strings that are not valid unquoted (e.g. containing `#` or `: `, or starting with an indicator such as `*`, `@`, `-`) become double-quoted scalars
-- everything else stays plain
+The `Styles` option of `WriterOptions` decides what the writer does with the stored styles.
 
-If you need a specific style, set it explicitly on the `YAMLContent`; an explicit `Plain` style is respected as an opt-out from the automatic quoting.
+| `StylePolicy` | Behavior |
+|---|---|
+| `PreferStored` | Keeps a stored style that can express the value and picks the nearest valid style otherwise. This is the default. |
+| `RequireStored` | Raises `YamlWriteException` where a stored style cannot express the value. |
+| `Canonical` | Ignores the stored styles. Scalars are plain where that keeps the meaning and double-quoted otherwise, and collections are block collections. |
 
+```fsharp
+let literal = YamlNode.scalar (ScalarStyle.Block(BlockScalarStyle.Literal, ChompingMode.Clip, None)) "one\ntwo\n"
+let tree = Encode.object [ ("text", literal) ]
+
+printf "%s" (Writer.writeNode WriterOptions.defaults tree)
+printf "%s" (Writer.writeNode { WriterOptions.defaults with Styles = Canonical } tree)
+```
+
+```yaml
+text: |
+  one
+  two
+text: "one\ntwo\n"
+```
 
 ---
 ## Local Development
