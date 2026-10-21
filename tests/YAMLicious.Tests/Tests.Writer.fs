@@ -1063,6 +1063,18 @@ let private writeClipScalarsAtDepth (text: string) =
         node <- YamlNode.sequence [ YamlNode.item node ]
     Writer.writeNode defaults node |> ignore
 
+/// A block sequence nested 50 levels deep that holds one mapping for each eight characters of the text. Each mapping has a
+/// literal scalar with the chomping Clip and two line feeds in its value, which gets the chomping Keep, and a blank line stands in
+/// the Before of the next item. The writer asks for each scalar whether a blank line follows, and the answer takes a walk up
+/// from the scalar to the first open collection that has more to write, so the cost of a scalar does not grow with the text.
+let private writeKeepScalarsAtDepth (text: string) =
+    let clip = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
+    let items = [ for i in 1 .. text.Length / 8 -> (if i = 1 then YamlNode.item else itemBefore [ blank ]) (mapOf [ "k", clip ]) ]
+    let mutable node = YamlNode.sequence items
+    for _ in 1 .. 50 do
+        node <- YamlNode.sequence [ YamlNode.item node ]
+    Writer.writeNode defaults node |> ignore
+
 let private styleTests = testList "Ported from ScalarStyles, BlockScalars and YamlRead" [
     // Tests.ScalarStyles "Writer emits styled inline sequence scalars with quotes". yaml@2.6.1 reads the text as {"items":["a","b"]}. The old writer chose the inline form for
     // every sequence of scalars. The tree stores the style, so the test builds a flow sequence.
@@ -1248,6 +1260,97 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
         Expect.equal (Writer.writeDocuments defaults reparsed) written "The second write gives the first text"
 ]
 
+/// The places where a blank line can follow a scalar directly, as a tree built around the scalar, and the text that the writer
+/// gives when the scalar is the value "x" with two line feeds and becomes double-quoted because of the blank line.
+let keepPlaces: (string * (YamlNode -> YamlStream) * string) list =
+    let one (root: YamlNode) : YamlStream = { Parts = [ StreamPart.Document(document root) ] }
+    let blankBefore (entry: MappingEntry) : MappingEntry = { entry with Before = [ blank ] }
+    let secondDocument (prelude: PreludeItem list) : StreamPart =
+        StreamPart.Document { document (sc "y") with Prelude = prelude; StartMarker = Some(marker None) }
+    [ "the Before of the next entry", (fun s -> one (YamlNode.mapping [ entryOf "a" s; blankBefore (entryOf "b" (sc "1")) ])), "a: \"x\\n\\n\"\n\nb: 1\n"
+      "the Before of the next item", (fun s -> one (YamlNode.sequence [ YamlNode.item s; itemBefore [ blank ] (sc "y") ])), "- \"x\\n\\n\"\n\n- y\n"
+      "the End of a mapping", (fun s -> one (withEnd [ blank ] (mapOf [ "a", s ]))), "a: \"x\\n\\n\"\n\n"
+      "the End of a sequence", (fun s -> one (withEnd [ blank ] (seqOf [ s ]))), "- \"x\\n\\n\"\n\n"
+      "the Before of an entry of the outer mapping, three levels deep",
+      (fun s -> one (YamlNode.mapping [ entryOf "a" (mapOf [ "b", mapOf [ "c", s ] ]); blankBefore (entryOf "d" (sc "1")) ])),
+      "a:\n  b:\n    c: \"x\\n\\n\"\n\nd: 1\n"
+      "the Before of an entry behind a sequence in a mapping",
+      (fun s -> one (YamlNode.mapping [ entryOf "a" (seqOf [ s ]); blankBefore (entryOf "d" (sc "1")) ])),
+      "a:\n  - \"x\\n\\n\"\n\nd: 1\n"
+      "the End of the root, two levels deep", (fun s -> one (withEnd [ blank ] (mapOf [ "a", mapOf [ "b", s ] ]))), "a:\n  b: \"x\\n\\n\"\n\n"
+      "the gap in front of the colon of an explicit key",
+      (fun s -> one (YamlNode.mapping [ { explicitEntry s (sc "w") with BeforeColon = [ blank ] } ])),
+      "? \"x\\n\\n\"\n\n: w\n"
+      "the Before of the entry behind an explicit key without a colon",
+      (fun s -> one (YamlNode.mapping [ explicitKeyOnly s; blankBefore (entryOf "d" (sc "1")) ])),
+      "? \"x\\n\\n\"\n\nd: 1\n"
+      "AfterRoot", (fun s -> { Parts = [ StreamPart.Document { document s with AfterRoot = [ blank ] } ] }), "\"x\\n\\n\"\n\n"
+      "the prelude of the next document",
+      (fun s -> { Parts = [ StreamPart.Document(document s); secondDocument [ PreludeItem.PreludeTrivia blank ] ] }),
+      "\"x\\n\\n\"\n\n--- y\n" ]
+
+let private keepBlankTests = testList "A blank line behind a Keep block scalar" [
+    // yaml@2.6.1 reads the texts of each place with the block scalar `|+` as the value with the empty line, for example {"a":"x\n\n","b":1} for the first place, and
+    // reads the double-quoted texts of the next test as the same value. The empty lines behind a Keep scalar are part of its value ([165] to [169]).
+    testCase "a stored Keep scalar with a blank line directly behind it is an invalid tree in every place" <| fun _ ->
+        let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        for (place, build, _) in keepPlaces do
+            for options in [ defaults; withStyles RequireStored; withStyles Canonical ] do
+                let error = writeError (fun () -> Writer.writeDocuments options (build keep))
+                Expect.stringContains error.Message "Keep" (sprintf "The chomping in %s" place)
+                Expect.stringContains error.Message "[165]" (sprintf "The production in %s" place)
+                Expect.stringContains error.Message ".Style" (sprintf "The slot in %s" place)
+
+    // yaml@2.6.1 reads each expected text as the value "x\n\n" in the place of the scalar. A stored Clip or Strip cannot express the value, so the writer
+    // picks Keep, and a blank line behind a Keep scalar reads as part of its value. No other chomping gives the value, so the scalar is double-quoted.
+    testCase "a scalar that gets the chomping Keep is double-quoted when a blank line directly follows" <| fun _ ->
+        for (place, build, expected) in keepPlaces do
+            for stored in [ ChompingMode.Clip; ChompingMode.Strip ] do
+                let stream = build (blockScalar BlockScalarStyle.Literal stored None "x\n\n")
+                let written = Writer.writeDocuments defaults stream
+                Expect.equal written expected (sprintf "The text in %s with the stored chomping %A" place stored)
+                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place)
+            Expect.equal (Writer.writeDocuments (withStyles Canonical) (build (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"))) expected (sprintf "Canonical in %s" place)
+            let error = writeError (fun () -> Writer.writeDocuments (withStyles RequireStored) (build (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n")))
+            Expect.stringContains error.Message "chomping" (sprintf "RequireStored in %s" place)
+
+    // yaml@2.6.1 reads the expected texts as {"a":"\n","b":1}, {"a":"x\n\n\n","b":1}, {"a":"x\n\n","b":1}, {"a":"x\n","b":1} and {"a":"x","b":1}. A value of line feeds only, more line feeds
+    // and a folded scalar need the same rule, and a value that the stored chomping expresses needs none.
+    testCase "the rule holds for a value of line feeds only, more line feeds and a folded scalar" <| fun _ ->
+        let next = { entryOf "b" (sc "1") with Before = [ blank ] }
+        let write (scalar: YamlNode) = Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" scalar; next ])
+        Expect.equal (write (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "\n")) "a: \"\\n\"\n\nb: 1\n" "Line feeds only"
+        Expect.equal (write (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n\n")) "a: \"x\\n\\n\\n\"\n\nb: 1\n" "Three line feeds"
+        Expect.equal (write (blockScalar BlockScalarStyle.Folded ChompingMode.Clip None "x\n\n")) "a: \"x\\n\\n\"\n\nb: 1\n" "Folded"
+        // A value that the stored chomping expresses has no Keep, so a blank line behind it is trivia.
+        Expect.equal (write (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n")) "a: |\n  x\n\nb: 1\n" "Clip with one line feed"
+        Expect.equal (write (blockScalar BlockScalarStyle.Literal ChompingMode.Strip None "x")) "a: |-\n  x\n\nb: 1\n" "Strip"
+
+    // yaml@2.6.1 reads `a: |+`, `  x`, `# c`, an empty line and `b: 1` as {"a":"x\n","b":1}. A comment line ends the empty lines of the scalar (l-trail-comments), so the blank line
+    // behind the comment line is trivia and the scalar stays a block scalar. The Keep scalar keeps its empty lines, and a stored Clip with two line feeds is written as Keep.
+    testCase "a comment line between the Keep scalar and the blank line keeps the block scalar" <| fun _ ->
+        let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        let behindComment = { entryOf "b" (sc "1") with Before = [ note " c"; blank ] }
+        Expect.equal (Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" keep; behindComment ])) "a: |+\n  x\n# c\n\nb: 1\n" "Before of the next entry"
+        let clipped = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
+        Expect.equal (Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" clipped; behindComment ])) "a: |+\n  x\n\n# c\n\nb: 1\n" "Before of the next entry, two line feeds"
+        Expect.equal (Writer.writeNode defaults (withEnd [ note " c"; blank ] (mapOf [ "a", keep ]))) "a: |+\n  x\n# c\n\n" "End"
+        Expect.equal (Writer.writeNode defaults (seqOf [ keep ] |> withEnd [ note " c"; blank ])) "- |+\n  x\n# c\n\n" "End of a sequence"
+        let secondDocument = StreamPart.Document { document (sc "y") with Prelude = [ PreludeItem.PreludeTrivia(note " c"); PreludeItem.PreludeTrivia blank ]; StartMarker = Some(marker None) }
+        Expect.equal (writeStream [ StreamPart.Document(document keep); secondDocument ]) "|+\n  x\n# c\n\n--- y\n" "Prelude of the next document"
+        Expect.equal (Writer.write defaults { document keep with AfterRoot = [ note " c"; blank ] }) "|+\n  x\n# c\n\n" "AfterRoot"
+
+    // yaml@2.6.1 reads `|+`, `  x`, an empty line, `...`, an empty line, `%YAML 1.2` and `--- y` as ["x\n\n","y"]. The writer puts `...` in front of a prelude with a directive, so no blank line
+    // follows the scalar directly. A `...` behind the scalar and a following entry without a blank line need no change either.
+    testCase "a prelude with a directive, an end marker and no trivia leave the block scalar alone" <| fun _ ->
+        let clipped = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
+        let directive = PreludeItem.Directive { Kind = DirectiveKind.YamlVersion(1, 2); TrailingComment = None; Span = None }
+        let secondDocument = StreamPart.Document { document (sc "y") with Prelude = [ PreludeItem.PreludeTrivia blank; directive ] }
+        Expect.equal (writeStream [ StreamPart.Document(document clipped); secondDocument ]) "|+\n  x\n\n...\n\n%YAML 1.2\n--- y\n" "A directive in the prelude"
+        Expect.equal (Writer.write defaults { document clipped with EndMarker = Some(marker None) }) "|+\n  x\n\n...\n" "An end marker"
+        Expect.equal (Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" clipped; entryOf "b" (sc "1") ])) "a: |+\n  x\n\nb: 1\n" "No trivia"
+]
+
 let private depthTests = testList "Deep trees and linear time" [
     testCase "a block sequence nested 10000 levels deep" <| fun _ ->
         Expect.equal (writeNode (nestedSequence depth)) (repeated "- " depth + "x\n") "One dash on the line for each level"
@@ -1286,6 +1389,20 @@ let private depthTests = testList "Deep trees and linear time" [
     testCase "writing literal scalars without a final line feed at depth takes time linear in their number" <| fun _ ->
         expectLinear "write of Clip scalars at depth" writeClipScalarsAtDepth countLineBreaks (fun lines -> repeated "x\n" lines)
 
+    testCase "writing Keep scalars that a blank line follows at depth takes time linear in their number" <| fun _ ->
+        expectLinear "write of Keep scalars with a blank line behind them at depth" writeKeepScalarsAtDepth countLineBreaks (fun lines -> repeated "x\n" lines)
+
+    // The blank line behind the scalar is found through 10000 open collections, which have nothing more to write.
+    testCase "a blank line behind a scalar with the chomping Keep nested 10000 levels deep" <| fun _ ->
+        let clipped = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
+        let mutable chain = clipped
+        for _ in 2 .. depth do
+            chain <- YamlNode.sequence [ YamlNode.item chain ]
+        let withBlank = YamlNode.sequence [ YamlNode.item chain; itemBefore [ blank ] (sc "y") ]
+        Expect.equal (writeNode withBlank) (repeated "- " depth + "\"x\\n\\n\"\n\n- y\n") "The scalar is double-quoted"
+        let withoutBlank = YamlNode.sequence [ YamlNode.item chain; YamlNode.item (sc "y") ]
+        Expect.isTrue ((writeNode withoutBlank).StartsWith(repeated "- " depth + "|+\n")) "The scalar stays a block scalar"
+
     // The last node of the text is found through 10000 open collections, and a scalar that has another entry behind it is not the last node.
     testCase "a literal scalar without a final line feed at the end of a text nested 10000 levels deep" <| fun _ ->
         let clip = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a"
@@ -1306,4 +1423,4 @@ let private depthTests = testList "Deep trees and linear time" [
 ]
 
 let Main =
-    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; styleTests; invalidTreeTests; depthTests ]
+    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; styleTests; invalidTreeTests; keepBlankTests; depthTests ]

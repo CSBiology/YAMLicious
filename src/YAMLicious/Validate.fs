@@ -75,6 +75,11 @@ module internal NodePath =
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
+/// - A block scalar with the chomping Keep: no blank line follows its last line directly, because l-chomped-empty
+///   makes that line part of the value ([165] to [169]). The next line is the `Before` of the next entry or item,
+///   the `BeforeColon` of an explicit key with a colon, the `End` of the collection, the `AfterRoot` of the document
+///   or the prelude of the next document. A comment line in between ends the empty lines of the scalar
+///   (l-trail-comments), so a blank line behind a comment line is trivia.
 /// - A stream: `StreamPart.Trivia` does not stand in front of a document, and in a stream with a document
 ///   it stands behind a `...` or at the start of the stream in front of an `ExtraEndMarker` only (R3). An
 ///   `ExtraEndMarker` stands at the start of the stream or behind a part that ends with a `...`, because
@@ -105,6 +110,42 @@ module Validate =
         match separation with
         | Some (Separation.NewLine lineBreak) -> lineBreak.Following
         | _ -> []
+
+    /// True when the first of the trivia lines is a blank line.
+    let internal startsWithBlankLine (lines: Trivia list) : bool =
+        match lines with
+        | Trivia.BlankLine _ :: _ -> true
+        | _ -> false
+
+    /// True when the entry has a colon in the text. An entry without a colon and without a value is a key alone.
+    let internal entryHasColon (entry: MappingEntry) : bool =
+        entry.Colon.IsSome || not (YamlNode.isMissingValue entry.Value)
+
+    /// True when the first line that follows the root of the document in the text is a blank line. That line is the
+    /// first of `AfterRoot`, or the first of the prelude of the next document when no `...` stands between. The
+    /// writer prints a `...` in front of the prelude of a document with a directive, so such a prelude counts as
+    /// no blank line.
+    let internal blankLineFollowsRoot (document: YamlDocument) (next: YamlDocument option) : bool =
+        if not document.AfterRoot.IsEmpty then
+            startsWithBlankLine document.AfterRoot
+        elif document.EndMarker.IsSome then
+            false
+        else
+            match next with
+            | Some following ->
+                let hasDirective =
+                    following.Prelude
+                    |> List.exists (fun item ->
+                        match item with
+                        | PreludeItem.Directive _ -> true
+                        | PreludeItem.PreludeTrivia _ -> false)
+                match following.Prelude with
+                | PreludeItem.PreludeTrivia (Trivia.BlankLine _) :: _ -> not hasDirective
+                | _ -> false
+            | None -> false
+
+    let private keepText =
+        "a blank line directly behind a block scalar with the chomping Keep belongs to the value of the scalar, so the trivia cannot hold it (l-chomped-empty, [165] to [169])"
 
     let private followingText =
         "the trivia belong to the Before of the first entry or item of the block collection behind the line break (R2)"
@@ -148,14 +189,15 @@ module Validate =
             elif YamlNode.isMissingValue content then
                 report slot missingText
 
-    let private walkNode (errors: ResizeArray<string>) (prefix: string) (canEnd: bool) (root: YamlNode) =
+    let private walkNode (errors: ResizeArray<string>) (prefix: string) (canEnd: bool) (blankAfterRoot: bool) (root: YamlNode) =
         // The first flag tells whether the node is an item or a key or value of a flow collection. The second tells
         // whether the node is the last node of the text of its document, where the trivia behind it can go to its End.
-        let stack = ResizeArray<YamlNode * NodePath.PathInfo * bool * bool>()
-        stack.Add((root, NodePath.rootPath, false, canEnd))
+        // The third tells whether the first line that follows the last line of the node is a blank line.
+        let stack = ResizeArray<YamlNode * NodePath.PathInfo * bool * bool * bool>()
+        stack.Add((root, NodePath.rootPath, false, canEnd, blankAfterRoot))
         while stack.Count > 0 do
             let last = stack.Count - 1
-            let (node, path, inFlow, isLastNode) = stack.[last]
+            let (node, path, inFlow, isLastNode, blankFollows) = stack.[last]
             stack.RemoveAt last
             // The slot of the node is built only for an error, so a tree without errors builds no path.
             let report (suffix: string) (text: string) =
@@ -192,6 +234,9 @@ module Validate =
                         report ".TrailingComment" "a missing value has no trailing comment, the comment belongs to the separation behind the indicator (R1)"
                     elif YamlNode.isPropertyOnly node && not inFlow then
                         report ".TrailingComment" "a node with properties and no content has no trailing comment outside a flow collection, the comment belongs to the After of its last property (R1)"
+                match scalar.Style with
+                | ScalarStyle.Block (_, ChompingMode.Keep, _) when blankFollows -> report ".Style" keepText
+                | _ -> ()
             | YamlNodeKind.Mapping collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -223,8 +268,17 @@ module Validate =
                     let at = ".entries[" + string i + "]"
                     // The text of the last entry ends with its value, or with its key when no colon follows.
                     let lastEntry = isLastNode && not childInFlow && i = entries.Length - 1
-                    stack.Add((entries.[i].Value, NodePath.child path (at + ".Value"), childInFlow, lastEntry && entries.[i].Colon.IsSome))
-                    stack.Add((entries.[i].Key, NodePath.child path (at + ".Key"), childInFlow, lastEntry && entries.[i].Colon.IsNone))
+                    // The first line behind the entry is the Before of the next entry, the End of the collection, or whatever follows the collection.
+                    // A block scalar in a flow collection is written in another style, so the rule does not apply there.
+                    let blankBehind =
+                        if childInFlow then false
+                        elif i < entries.Length - 1 then startsWithBlankLine entries.[i + 1].Before
+                        elif not collection.End.IsEmpty then startsWithBlankLine collection.End
+                        else blankFollows
+                    // A key that a colon follows ends where the gap in front of the colon starts.
+                    let blankBehindKey = if entryHasColon entries.[i] then startsWithBlankLine entries.[i].BeforeColon else blankBehind
+                    stack.Add((entries.[i].Value, NodePath.child path (at + ".Value"), childInFlow, lastEntry && entries.[i].Colon.IsSome, blankBehind))
+                    stack.Add((entries.[i].Key, NodePath.child path (at + ".Key"), childInFlow, lastEntry && entries.[i].Colon.IsNone, blankBehindKey))
             | YamlNodeKind.Sequence collection ->
                 if collection.Style = CollectionStyle.Block then
                     if node.TrailingComment.IsSome then
@@ -249,14 +303,20 @@ module Validate =
                 let childInFlow = collection.Style = CollectionStyle.Flow
                 for i in items.Length - 1 .. -1 .. 0 do
                     let lastItem = isLastNode && not childInFlow && i = items.Length - 1
-                    stack.Add((items.[i].Node, NodePath.child path (".items[" + string i + "].Node"), childInFlow, lastItem))
+                    let blankBehind =
+                        if childInFlow then false
+                        elif i < items.Length - 1 then startsWithBlankLine items.[i + 1].Before
+                        elif not collection.End.IsEmpty then startsWithBlankLine collection.End
+                        else blankFollows
+                    stack.Add((items.[i].Node, NodePath.child path (".items[" + string i + "].Node"), childInFlow, lastItem, blankBehind))
 
-    let private walkDocument (errors: ResizeArray<string>) (prefix: string) (followedByDocument: bool) (document: YamlDocument) =
+    let private walkDocument (errors: ResizeArray<string>) (prefix: string) (next: YamlDocument option) (document: YamlDocument) =
         let root = document.Root
+        let followedByDocument = next.IsSome
         if not document.BeforeRoot.IsEmpty && isBareBlockCollection root then
             errors.Add(prefix + "BeforeRoot: the trivia belong to the Before of the first entry or item of the root collection (R3)")
         // The trivia behind the last node of a document go to the Prelude of the next document when no `...` stands between.
-        walkNode errors prefix (not (followedByDocument && document.EndMarker.IsNone)) root
+        walkNode errors prefix (not (followedByDocument && document.EndMarker.IsNone)) (blankLineFollowsRoot document next) root
         if not document.AfterRoot.IsEmpty then
             if isBlockCollection root then
                 errors.Add(prefix + "AfterRoot: the trivia behind a block collection belong to its End (R3)")
@@ -268,7 +328,7 @@ module Validate =
     /// The problems of a document, in the order of the tree. The list is empty when the document is valid.
     let document (document: YamlDocument) : string list =
         let errors = ResizeArray<string>()
-        walkDocument errors "" false document
+        walkDocument errors "" None document
         List.ofSeq errors
 
     /// The problems of a stream, in the order of its parts. The list is empty when the stream is valid.
@@ -301,11 +361,11 @@ module Validate =
             let at = "Parts[" + string i + "]"
             match parts.[i] with
             | StreamPart.Document document ->
-                let followedByDocument =
+                let nextDocument =
                     match following.[i] with
-                    | Some (StreamPart.Document _) -> true
-                    | _ -> false
-                walkDocument errors (at + ".") followedByDocument document
+                    | Some (StreamPart.Document next) -> Some next
+                    | _ -> None
+                walkDocument errors (at + ".") nextDocument document
                 previous <- Some parts.[i]
             | StreamPart.ExtraEndMarker _ ->
                 // Behind a document without a `...` the marker would be the end marker of that document.

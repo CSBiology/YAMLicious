@@ -675,6 +675,89 @@ let tests_end_rule = testList "Slot rules: the End of a block collection" [
         Expect.equal (Validate.stream (twoDocuments root (Some { TrailingComment = None; Span = None }))) [] "an end marker"
 ]
 
+let private keepScalar (text: string) : YamlNode =
+    YamlNode.scalar (ScalarStyle.Block (BlockScalarStyle.Literal, ChompingMode.Keep, None)) text
+
+let private blankLine: Trivia = BlankLine None
+
+let private noMarker: DocumentMarker = { TrailingComment = None; Span = None }
+
+let tests_keep_rule = testList "Slot rules: a blank line behind a Keep block scalar" [
+    // yaml@2.6.1 reads `a: |+`, `  x`, an empty line and `b: 1` as {"a":"x\n\n","b":1}, and `- |+`, `  x`, an empty line and `- y` as ["x\n\n","y"].
+    // The empty line is part of the value ([165] to [169]), so a BlankLine in the Before of the next entry or item cannot come from a text.
+    testCase "a blank line in the Before of the next entry or item is wrong" <| fun _ ->
+        let keep = keepScalar "x\n"
+        let next = { field "b" (number "1") with Before = [ blankLine ] }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" keep; next ])) [ "root.entries[0].Value.Style" ] "the next entry"
+        let nextItem = { YamlNode.item (number "y") with Before = [ blankLine ] }
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item keep; nextItem ])) [ "root.items[0].Node.Style" ] "the next item"
+        let problems = Validate.document (documentOf (YamlNode.mapping [ field "a" keep; next ]))
+        Expect.stringContains problems.Head "Keep" "The chomping"
+        Expect.stringContains problems.Head "[165]" "The production"
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" (keepScalar ""); next ])) [ "root.entries[0].Value.Style" ] "an empty value"
+
+    // yaml@2.6.1 reads `a: |+`, `  x` and an empty line as {"a":"x\n\n"}, and `- |+`, `  x` and an empty line as ["x\n\n"].
+    testCase "a blank line in the End of the collection is wrong" <| fun _ ->
+        let keep = keepScalar "x\n"
+        Expect.equal (slotsOfDocument (withEnd [ blankLine ] (YamlNode.mapping [ field "a" keep ]))) [ "root.entries[0].Value.Style" ] "a mapping"
+        Expect.equal (slotsOfDocument (withEnd [ blankLine ] (YamlNode.sequence [ YamlNode.item keep ]))) [ "root.items[0].Node.Style" ] "a sequence"
+        // The End of the root is behind the last node of every collection on the path.
+        let nested = YamlNode.mapping [ field "a" (YamlNode.mapping [ field "b" keep ]) ] |> withEnd [ blankLine ]
+        Expect.equal (slotsOfDocument nested) [ "root.entries[0].Value.entries[0].Value.Style" ] "two levels deep"
+
+    // yaml@2.6.1 reads `a:`, `  b:`, `    c: |+`, `      x`, an empty line and `d: 1` as {"a":{"b":{"c":"x\n\n"}},"d":1}.
+    testCase "a blank line behind the last line of a collection that is nested in other collections is wrong" <| fun _ ->
+        let keep = keepScalar "x\n"
+        let next = { field "d" (number "1") with Before = [ blankLine ] }
+        let deep = YamlNode.mapping [ field "a" (YamlNode.mapping [ field "b" (YamlNode.mapping [ field "c" keep ]) ]); next ]
+        Expect.equal (slotsOfDocument deep) [ "root.entries[0].Value.entries[0].Value.entries[0].Value.Style" ] "mappings"
+        let mixed = YamlNode.mapping [ field "a" (YamlNode.sequence [ YamlNode.item (YamlNode.mapping [ field "b" keep ]) ]); next ]
+        Expect.equal (slotsOfDocument mixed) [ "root.entries[0].Value.items[0].Node.entries[0].Value.Style" ] "a mapping in a sequence in a mapping"
+        // A scalar in front of another entry of its own collection has that entry behind it, whatever follows the collection.
+        let inner = YamlNode.mapping [ field "b" keep; field "c" (number "2") ]
+        expectValid (YamlNode.mapping [ field "a" inner; next ]) "an entry of the same collection follows"
+
+    // yaml@2.6.1 reads `? |+`, `  x`, an empty line and `: w` as {"x\n\n":"w"}, and `? |+`, `  x`, an empty line and `d: 1` as {"x\n\n":null,"d":1}.
+    testCase "a blank line behind an explicit key is wrong in the gap in front of the colon and in the next entry" <| fun _ ->
+        let keep = keepScalar "x\n"
+        let withGap = { field "k" (number "w") with Question = Some Separation.Inline; Key = keep; BeforeColon = [ blankLine ] }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ withGap ])) [ "root.entries[0].Key.Style" ] "the gap in front of the colon"
+        let keyAlone = { field "k" YamlNode.empty with Question = Some Separation.Inline; Key = keep; Colon = None }
+        let next = { field "d" (number "1") with Before = [ blankLine ] }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ keyAlone; next ])) [ "root.entries[0].Key.Style" ] "no colon, the next entry"
+        // The colon line follows a key that has a colon, so the Before of the next entry stands behind the value.
+        let withColon = { field "k" (number "w") with Question = Some Separation.Inline; Key = keep }
+        expectValid (YamlNode.mapping [ withColon; next ]) "the colon line follows the key"
+
+    // yaml@2.6.1 reads `|+`, `  x` and an empty line as "x\n\n", and `|+`, `  x`, an empty line, `--- y` as ["x\n\n","y"].
+    testCase "a blank line behind the root or in the prelude of the next document is wrong" <| fun _ ->
+        let keep = keepScalar "x\n"
+        Expect.equal (slotsOf (Validate.document { documentOf keep with AfterRoot = [ blankLine ] })) [ "root.Style" ] "AfterRoot"
+        let second prelude = StreamPart.Document { documentOf (number "y") with Prelude = prelude; StartMarker = Some noMarker }
+        let stream (prelude: PreludeItem list) : YamlStream = { Parts = [ StreamPart.Document (documentOf keep); second prelude ] }
+        Expect.equal (slotsOf (Validate.stream (stream [ PreludeTrivia blankLine ]))) [ "Parts[0].root.Style" ] "the prelude of the next document"
+        // The writer puts `...` in front of a prelude with a directive, and a comment line ends the empty lines.
+        let directive = PreludeItem.Directive { Kind = DirectiveKind.YamlVersion (1, 2); TrailingComment = None; Span = None }
+        Expect.equal (Validate.stream (stream [ PreludeTrivia blankLine; directive ])) [] "a directive in the prelude"
+        Expect.equal (Validate.stream (stream [ PreludeTrivia (lineComment " c"); PreludeTrivia blankLine ])) [] "a comment first"
+        let closed = StreamPart.Document { documentOf keep with EndMarker = Some noMarker }
+        Expect.equal (Validate.stream { Parts = [ closed; second [ PreludeTrivia blankLine ] ] }) [] "an end marker in between"
+
+    // yaml@2.6.1 reads `a: |+`, `  x`, `# c`, an empty line and `b: 1` as {"a":"x\n","b":1}, and the same text with an empty line in front of the comment as {"a":"x\n\n","b":1}.
+    // A comment line ends the empty lines of the scalar (l-trail-comments), so a blank line behind the comment line is trivia.
+    testCase "a blank line behind a comment line, a Strip or Clip scalar and a scalar in a flow collection are valid" <| fun _ ->
+        let keep = keepScalar "x\n"
+        let behindComment = { field "b" (number "1") with Before = [ lineComment " c"; blankLine ] }
+        expectValid (YamlNode.mapping [ field "a" keep; behindComment ]) "a comment line in between"
+        expectValid (withEnd [ lineComment " c"; blankLine ] (YamlNode.mapping [ field "a" keep ])) "a comment line in the End"
+        let next = { field "b" (number "1") with Before = [ blankLine ] }
+        for chomping in [ ChompingMode.Strip; ChompingMode.Clip ] do
+            let scalar = YamlNode.scalar (ScalarStyle.Block (BlockScalarStyle.Literal, chomping, None)) "x\n"
+            expectValid (YamlNode.mapping [ field "a" scalar; next ]) (sprintf "the chomping %A" chomping)
+        expectValid (YamlNode.mapping [ field "a" keep; field "b" (number "1") ]) "no trivia"
+        expectValid (YamlNode.mapping [ field "a" (YamlNode.flowSequence [ YamlNode.item keep; { YamlNode.item (number "y") with Before = [ blankLine ] } ]) ]) "a flow collection writes another style"
+]
+
 let tests_line_break_rule = testList "Slot rules: a block collection starts on a later line" [
     // yaml@2.6.1 reads `k:` followed by `  - a` as {"k":["a"]} and rejects `k: - a` and `k: a: 1` (a block collection cannot start behind an
     // implicit key on its line).
@@ -741,5 +824,6 @@ let Main = testList "Validate" [
     tests_rule_checks
     tests_rules
     tests_end_rule
+    tests_keep_rule
     tests_line_break_rule
 ]

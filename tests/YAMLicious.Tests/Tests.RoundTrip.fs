@@ -222,6 +222,17 @@ let private blockInputs: string list = [
     "a: !!str\nb: &x\nc: *x\n"
     "k: >+\n  a\n\n\n"
     "k: |+\n\n\n"
+    // The empty lines behind a Keep scalar are part of its value, and a comment line ends them. The trivia come back in the Before, the End and the prelude.
+    "a: |+\n  x\n\n\nb: 1\n"
+    "a: |+\n  x\n\n# c\n\nb: 1\n"
+    "a: |+\n  x\n# c\n\nb: 1\n"
+    "- |+\n  x\n\n- y\n"
+    "a:\n  b:\n    c: |+\n      x\n\nd: 1\n"
+    "a: |+\n  x\n# c\n\n"
+    "? |+\n  x\n\n: w\n"
+    "|+\n  x\n\n"
+    "|+\n  x\n\n--- y\n"
+    "|+\n  x\n# c\n\n--- y\n"
     "k: |2\n   a\n  b\n"
     // A quoted scalar may hold U+FEFF ([107] and [118]). Single quotes have no escape for it, so the writer keeps it raw there.
     "'a\uFEFFb'"
@@ -423,6 +434,29 @@ let private constructedTests = testList "Constructed trees" [
             let expected = { tree with Root = blockScalar style chomping (Some 1) value }
             Expect.streamEqual (parseOk written) { Parts = [ StreamPart.Document expected ] } (sprintf "The document read from %A" written)
             Expect.equal (Writer.writeDocuments defaults (parseOk written)) written "A second write changes nothing"
+
+    // The empty lines behind a Keep scalar are part of its value ([165] to [169]), so a BlankLine trivia directly behind a scalar that the writer would give the chomping
+    // Keep reads back as part of the value. The writer double-quotes the scalar, and the tree that comes back has the same value, the double-quoted style and the same trivia.
+    testCase "a scalar with two line feeds and a blank line behind it comes back double-quoted with the same value and trivia" <| fun _ ->
+        for (place, build, _) in Tests.Writer.keepPlaces do
+            for stored in [ ChompingMode.Clip; ChompingMode.Strip ] do
+                let written = Writer.writeDocuments defaults (build (blockScalar BlockScalarStyle.Literal stored None "x\n\n"))
+                Expect.streamEqual (parseOk written) (build (dq "x\n\n")) (sprintf "The tree read in %s from %A" place written)
+                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place)
+
+    // A comment line between the Keep scalar and the blank line ends the empty lines of the scalar (l-trail-comments), so the scalar stays a block scalar and the trivia come back.
+    testCase "a Keep scalar with a comment line and a blank line behind it comes back equal" <| fun _ ->
+        let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        let behind = [ note " c"; blank ]
+        let trees =
+            [ YamlNode.mapping [ YamlNode.entry (sc "a") keep; { YamlNode.entry (sc "b") (sc "1") with Before = behind } ]
+              YamlNode.sequence [ YamlNode.item keep; { YamlNode.item (sc "y") with Before = behind } ]
+              withEnd behind (YamlNode.mapping [ YamlNode.entry (sc "a") keep ])
+              YamlNode.mapping [ YamlNode.entry (sc "a") (YamlNode.mapping [ YamlNode.entry (sc "b") keep ]); { YamlNode.entry (sc "d") (sc "1") with Before = behind } ] ]
+        for tree in trees do
+            let written = Writer.writeNode defaults tree
+            Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
+            Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
 
     testCase "a comment behind the properties of a flow mapping key without content comes back equal" <| fun _ ->
         let key = withLayout [ placement PropertyName.Anchor (newLine (Some " key") []) ] (YamlNode.withAnchor "a" nothing)

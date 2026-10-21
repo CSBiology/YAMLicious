@@ -460,6 +460,8 @@ type internal Engine(options: WriterOptions) =
     let mutable tailOpen = false
     // True while the document in progress has a comment line behind its root, which stands at the first column.
     let mutable commentFollowsRoot = false
+    // True while the first line that the writer prints behind the root of the document in progress is a blank line.
+    let mutable blankFollowsRoot = false
     // The number of open block frames that still have something to write behind the node in progress.
     let mutable blockers = 0
     // The trivia that a flow collection leaves behind when the policy writes it as a block collection that something
@@ -652,6 +654,32 @@ type internal Engine(options: WriterOptions) =
             blockers <- blockers + (if now then 1 else -1)
             frame.RulesOutEnd <- now
 
+    /// True when the first line that the writer prints behind the node in progress is a blank line. It is the Before of the
+    /// next entry or item, the gap in front of the colon of an explicit key, the End of a collection, or what follows the
+    /// root. The walk stops at the first open frame that still has something to write. Such a frame is passed by the node
+    /// that ends its collection only, so the walks of all nodes together cost a step for each frame.
+    member private _.BlankLineFollows() : bool =
+        let mutable decided = false
+        let mutable result = false
+        let mutable i = stack.Count - 1
+        while not decided && i >= 0 do
+            let frame = stack.[i]
+            if frame.IsMap && frame.Phase = BlockPhase.ColonNext && Validate.entryHasColon frame.Current then
+                decided <- true
+                result <- Validate.startsWithBlankLine frame.Current.BeforeColon
+            elif frame.IsMap && not frame.Entries.IsEmpty then
+                decided <- true
+                result <- Validate.startsWithBlankLine frame.Entries.Head.Before
+            elif not frame.IsMap && not frame.Items.IsEmpty then
+                decided <- true
+                result <- Validate.startsWithBlankLine frame.Items.Head.Before
+            elif not frame.End.IsEmpty then
+                decided <- true
+                result <- Validate.startsWithBlankLine frame.End
+            else
+                i <- i - 1
+        if decided then result else blankFollowsRoot
+
     member private this.Preview(value: string) : string =
         if value.Length > 40 then "\"" + value.Replace("\n", "\\n").Substring(0, 40) + "...\"" else "\"" + value.Replace("\n", "\\n") + "\""
 
@@ -705,12 +733,18 @@ type internal Engine(options: WriterOptions) =
                     elif policy = StylePolicy.RequireStored then
                         this.Fail("The value " + this.Preview value + " starts with a blank, so the block scalar needs an indentation indicator that the stored style lacks.")
                     else min indent 9
-            Some
-                { Shape = Shape.Block
-                  IsLiteral = isLiteral
-                  Chomp = chomp
-                  Digit = digit
-                  Unterminated = endsText && fits }
+            // The empty lines behind a Keep scalar belong to its value ([165] to [169]), so a blank line that the tree
+            // holds behind it would read as part of the value. No other chomping gives the same value, so the scalar
+            // takes the double-quoted style. A stored Keep never gets here, because Validate rejects the tree.
+            if chomp = ChompingMode.Keep && this.BlankLineFollows() then
+                Some(this.Fallback(value, "a blank line follows it, and the chomping Keep would read that line as part of the value."))
+            else
+                Some
+                    { Shape = Shape.Block
+                      IsLiteral = isLiteral
+                      Chomp = chomp
+                      Digit = digit
+                      Unterminated = endsText && fits }
 
     /// Plans a scalar that is neither missing nor a property alone.
     ///
@@ -1527,8 +1561,9 @@ type internal Engine(options: WriterOptions) =
         | Some m -> this.PutOptionalComment m.TrailingComment
         | None -> ()
 
-    member private this.WriteDocument(document: YamlDocument, needsStart: bool, isLastPart: bool) =
+    member private this.WriteDocument(document: YamlDocument, needsStart: bool, isLastPart: bool, next: YamlDocument option) =
         tailOpen <- isLastPart && document.AfterRoot.IsEmpty && document.EndMarker.IsNone
+        blankFollowsRoot <- Validate.blankLineFollowsRoot document next
         commentFollowsRoot <-
             document.AfterRoot
             |> List.exists (fun line ->
@@ -1575,8 +1610,9 @@ type internal Engine(options: WriterOptions) =
     member this.WriteStream(stream: YamlStream, prefixParts: bool) =
         let mutable open_ = false
         let mutable index = 0
-        let total = List.length stream.Parts
-        for part in stream.Parts do
+        let parts = List.toArray stream.Parts
+        let total = parts.Length
+        for part in parts do
             match part with
             | StreamPart.Document document ->
                 if prefixParts then partPrefix <- "Parts[" + string index + "]"
@@ -1595,7 +1631,15 @@ type internal Engine(options: WriterOptions) =
                     || not document.Prelude.IsEmpty
                     || open_
                     || YamlNode.isMissingValue document.Root
-                this.WriteDocument(document, needsStart, (index = total - 1))
+                // The document that follows with no marker in between puts its prelude behind the root of this one.
+                let nextDocument =
+                    if index + 1 < total then
+                        match parts.[index + 1] with
+                        | StreamPart.Document following -> Some following
+                        | _ -> None
+                    else
+                        None
+                this.WriteDocument(document, needsStart, (index = total - 1), nextDocument)
                 open_ <- document.EndMarker.IsNone
             | StreamPart.Trivia trivia -> this.WriteTrivia([ trivia ], 0)
             | StreamPart.ExtraEndMarker marker ->
@@ -1614,13 +1658,20 @@ type internal Engine(options: WriterOptions) =
 /// parser reads into the same slot, so `Parser.parseStream` of the output gives a tree that is equal to the input
 /// except for the spans. A tree that a program built can differ in styles that the writer had to change, unless
 /// the policy is `RequireStored`, which raises instead. A tree that the parser produced has one exception, which
-/// the third paragraph names.
+/// the paragraph on the empty root block scalar names.
 ///
 /// The output ends every line with `WriterOptions.NewLine`, the last line included. One case differs: a block scalar
 /// with the chomping Clip or Keep whose value has no final line feed can only be the last node of the text. The
 /// writer leaves out its last line break there, because [165] b-chomped-last takes the end of the input in place
 /// of a line feed, and the output depends on the tree alone. Anywhere else such a chomping conflicts with the
 /// value: `PreferStored` writes Strip and `RequireStored` raises.
+///
+/// A block scalar with the chomping Keep owns the empty lines behind it (l-chomped-empty, [165] to [169]), so a blank
+/// line that the tree holds directly behind it would read as part of the value. `Validate` rejects a stored Keep in
+/// that place. The writer picks Keep for a stored Strip or Clip when the value ends in several line feeds, and with a
+/// blank line behind it the scalar becomes double-quoted, because no other chomping gives the same value.
+/// `RequireStored` raises there already, since the stored chomping does not match the line feeds of the value. A
+/// comment line in between ends the empty lines (l-trail-comments), so the scalar stays a block scalar then.
 ///
 /// The one exception to the equal tree is an empty root block scalar without an indentation indicator that has a
 /// comment line behind it, which only a text with a byte order mark in front of the comment line produces. The
