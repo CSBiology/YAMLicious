@@ -2852,6 +2852,37 @@ expression: >
         Expect.equal (Reader.read "- # c\n- x") (root [ YAMLElement.Nil; YAMLElement.Comment " c"; x ]) "With a comment, which stays behind the item"
         Expect.equal (Reader.read "- {}\n- x") (root [ YAMLElement.Object []; x ]) "The empty flow mapping is not an empty item"
 
+    // yaml@2.6.1 reads `/participants/{id}.json:` followed by `  get: 1` as {"/participants/{id}.json":{"get":1}}. It
+    // reads the other inputs as {"a[0]":1,"b{x}":2,"c[d]":[1,2],"e{f}":{"g":1}} and {"key with [brackets] inside":"v"}.
+    testCase "A plain key may hold braces and brackets" <| fun _ ->
+        Expect.equal
+            (Reader.read "/participants/{id}.json:\n  get: 1")
+            (YAMLElement.Object [ entry "/participants/{id}.json" (YAMLElement.Object [ entry "get" (scalarNode "1") ]) ])
+            "The key of an OpenAPI path with a parameter"
+        Expect.equal
+            (Reader.read "a[0]: 1\nb{x}: 2\nc[d]: [1, 2]\ne{f}: {g: 1}")
+            (YAMLElement.Object [
+                entry "a[0]" (scalarNode "1")
+                entry "b{x}" (scalarNode "2")
+                entry "c[d]" (sequenceNode [ scalarNode "1"; scalarNode "2" ])
+                entry "e{f}" (YAMLElement.Object [ entry "g" (scalarNode "1") ])
+            ])
+            "Braces and brackets inside the key, with flow values behind it"
+        Expect.equal (Reader.read "key with [brackets] inside: v") (plainMapping "key with [brackets] inside" "v") "A key with words around the brackets"
+
+    // yaml@2.6.1 reads this as {"paths":{"/participants/{id}.json":{"get":{"tags":["participants"],"parameters":[{"name":"id","in":"path"}]}}}}.
+    testCase "Decode reads an OpenAPI path with a parameter in its key" <| fun _ ->
+        let yaml = "paths:\n  /participants/{id}.json:\n    get:\n      tags:\n      - participants\n      parameters:\n      - name: id\n        in: path\n"
+        let decoded =
+            Decode.read yaml
+            |> Decode.object (fun root ->
+                root.Required.Field "paths" (Decode.object (fun paths ->
+                    paths.Required.Field "/participants/{id}.json" (Decode.object (fun path ->
+                        path.Required.Field "get" (Decode.object (fun get ->
+                            get.Required.Field "tags" (Decode.list Decode.string),
+                            get.Required.Field "parameters" (Decode.list (Decode.object (fun p -> p.Required.Field "name" Decode.string, p.Required.Field "in" Decode.string))))))))))
+        Expect.equal decoded ([ "participants" ], [ ("id", "path") ]) "The operation behind the braces key"
+
     // yaml@2.6.1 reads `? a` followed by `:` as {"a":null}, and the same with a comment behind the colon. `? a` followed
     // by `: {}` is {"a":{}}.
     testCase "An explicit key with an empty value maps to Nil" <| fun _ ->

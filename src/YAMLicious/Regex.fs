@@ -35,9 +35,9 @@ let VerbatimTagPattern =
 
 let KeyPattern =
     #if FABLE_COMPILER_PYTHON
-    $"^(?P<key>[^\{{\[]+):\s*({CommentPattern})?$"
+    $"^(?P<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s*({CommentPattern})?$"
     #else
-    $"^(?<key>[^\\{{\\[]+):\s*({CommentPattern})?$"
+    $"^(?<key>(?:[!&]\S*\s+)*[^!&\s\\{{\\[].*?):\s*({CommentPattern})?$"
     #endif
 
 let ExplicitKeyPattern = "^\\?\\s*$"
@@ -49,9 +49,9 @@ let ExplicitValuePattern = "^:\\s*(.*)$"
 [<Literal>]
 let KeyValuePattern =
     #if FABLE_COMPILER_PYTHON
-    "^(?P<key>[^\{{\[]+):\s+(?P<value>.*)$"
+    "^(?P<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s+(?P<value>.*)$"
     #else
-    "^(?<key>[^\{{\[]+):\s+(?<value>(.*))$"
+    "^(?<key>(?:[!&]\S*\s+)*[^!&\s\{{\[].*?):\s+(?<value>(.*))$"
     #endif
 
 let LineCommentPattern =
