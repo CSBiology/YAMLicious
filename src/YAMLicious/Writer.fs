@@ -76,31 +76,6 @@ module internal WriterText =
     /// No mark.
     let noMark: char = char 0
 
-    /// The chomping that a block scalar gets for its value, and whether the stored chomping fits the value. The line
-    /// feeds at the end of the value decide: none give Strip, one gives Clip, and several, or a value of line feeds
-    /// only, give Keep. A value without a final line feed fits Clip and Keep only when the scalar ends the text
-    /// (`endsText`), where the writer leaves out the last line break ([165] b-chomped-last takes the end of the input
-    /// in place of a line feed). The result is the stored chomping when it fits and the one that the value needs
-    /// otherwise.
-    let blockChomping (value: string) (stored: ChompingMode) (endsText: bool) : ChompingMode * bool =
-        let n = value.Length
-        let mutable bodyEnd = n
-        while bodyEnd > 0 && value.[bodyEnd - 1] = '\n' do
-            bodyEnd <- bodyEnd - 1
-        let breaks = n - bodyEnd
-        let onlyBreaks = n > 0 && bodyEnd = 0
-        let derived =
-            if breaks = 0 then ChompingMode.Strip
-            elif onlyBreaks then ChompingMode.Keep
-            elif breaks = 1 then ChompingMode.Clip
-            else ChompingMode.Keep
-        let fits =
-            match stored with
-            | ChompingMode.Strip -> breaks = 0
-            | ChompingMode.Clip -> n = 0 || (breaks = 1 && not onlyBreaks) || endsText
-            | ChompingMode.Keep -> n = 0 || breaks >= 1 || endsText
-        ((if fits then stored else derived), fits)
-
     /// True when the text holds a surrogate half without its partner. A Python string never does.
     let hasLoneSurrogate (text: string) =
         let mutable found = false
@@ -115,30 +90,10 @@ module internal WriterText =
                 i <- i + 1
         found
 
-    /// True when every character of the text except the line feed passes `accept`. A surrogate pair counts as one
-    /// character that passes.
-    let private allExceptLineFeed (accept: char -> bool) (text: string) =
-        let mutable ok = true
-        let mutable i = 0
-        while ok && i < text.Length do
-            let c = text.[i]
-            if c = '\n' then
-                i <- i + 1
-            elif isHighSurrogate c then
-                if i + 1 < text.Length && isLowSurrogate text.[i + 1] then i <- i + 2 else ok <- false
-            elif isLowSurrogate c then
-                ok <- false
-            elif accept c then
-                i <- i + 1
-            else
-                ok <- false
-        ok
-
-    /// True when every character of the text except the line feed can stand raw in a plain scalar or a block scalar.
-    let isRawText (text: string) = allExceptLineFeed isRawChar text
+    let private isSingleChar (c: char) = c = '\n' || isQuotedChar c
 
     /// True when every character of the text except the line feed can stand raw in single quotes.
-    let isSingleQuotable (text: string) = allExceptLineFeed isQuotedChar text
+    let isSingleQuotable (text: string) = Validate.allChars isSingleChar text
 
     /// The number of code points of the text, which is the unit of the limit on an implicit key.
     let codePointLength (text: string) =
@@ -163,7 +118,7 @@ module internal WriterText =
     /// text and a lone `-`, `?` or `:` then read as part of the scalar.
     let canBePlain (text: string) (flow: bool) (multiOk: bool) (atLineStart: bool) (beforeColon: bool) =
         let n = text.Length
-        if n = 0 || not (isRawText text) then
+        if n = 0 || not (Validate.isBlockText text) then
             false
         else
             let mutable ok = true
@@ -230,13 +185,13 @@ module internal WriterText =
             sb.Append(hexDigits.[(value >>> shift) &&& 0xF]) |> ignore
             shift <- shift - 4
 
-    /// The double-quoted spelling of a value. A line feed becomes an escape, so the result is one line. A character
-    /// that an nb-double-char allows stands raw, the tab included. That leaves the escapes for the quote, the
-    /// backslash, the line breaks and the C0 controls, which have named escapes where YAML has them and a
-    /// hexadecimal escape otherwise.
-    /// The printable characters ([1]) stand raw. DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark get an
-    /// escape, so a reader that follows [1] and a person who reads the text see no control character. `verbatim`
-    /// leaves those characters raw as well, which is the shortest spelling that [2] allows.
+    /// The double-quoted spelling of a value. A line feed becomes an escape, so the result is one line. The tab stands
+    /// raw. The quote, the backslash, the line breaks, the C0 controls, NEL, NBSP and the line and paragraph separators
+    /// have named escapes where YAML has them, which readers of YAML 1.1 keep as well. The other controls get a
+    /// hexadecimal escape. DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark get one too, so a reader that
+    /// follows [1] and a person who reads the text see no control character. The remaining printable characters ([1])
+    /// stand raw. `verbatim` leaves NEL, NBSP, the separators and those controls raw, which is the shortest spelling
+    /// that [2] allows.
     let renderDouble (text: string) (verbatim: bool) =
         let sb = StringBuilder()
         sb.Append('"') |> ignore
@@ -257,6 +212,10 @@ module internal WriterText =
             elif isHighSurrogate c && i + 1 < text.Length && isLowSurrogate text.[i + 1] then
                 sb.Append(c).Append(text.[i + 1]) |> ignore
                 i <- i + 1
+            elif code = 0x85 && not verbatim then sb.Append("\N") |> ignore
+            elif code = 0xA0 && not verbatim then sb.Append("\_") |> ignore
+            elif code = 0x2028 && not verbatim then sb.Append("\L") |> ignore
+            elif code = 0x2029 && not verbatim then sb.Append("\P") |> ignore
             elif isRawChar c || (verbatim && isQuotedChar c) then sb.Append(c) |> ignore
             elif code < 0x100 then
                 sb.Append("\\x") |> ignore
@@ -731,12 +690,12 @@ type internal Engine(options: WriterOptions) =
     /// last line break ([165] b-chomped-last takes the end of the input in place of a line feed). Anywhere else
     /// the stored chomping conflicts with the value.
     member private this.TryBlock(value: string, isLiteral: bool, storedChomp: ChompingMode, storedDigit: int option) : ScalarPlan option =
-        if not (WriterText.isRawText value) then
+        if not (Validate.isBlockText value) then
             None
         else
             let n = value.Length
             let endsText = n > 0 && value.[n - 1] <> '\n' && storedChomp <> ChompingMode.Strip && this.AtEndOfText()
-            let (chosen, fits) = WriterText.blockChomping value storedChomp endsText
+            let (chosen, fits) = Validate.blockChomping value storedChomp endsText
             let chomp =
                 if fits || policy <> StylePolicy.RequireStored then
                     chosen
@@ -756,8 +715,9 @@ type internal Engine(options: WriterOptions) =
                     else min indent 9
             // The empty lines behind a Keep scalar belong to its value ([165] to [169]), so a blank line that the tree
             // holds behind it would read as part of the value. No other chomping gives the same value, so a scalar that
-            // gets Keep from its value takes the double-quoted style. A stored Keep stays, because Validate lets a
-            // blank line follow it only where the writer prints that line so that it ends the body.
+            // gets Keep from its value takes the double-quoted style. A stored Keep that fits the value stays, because
+            // Validate (`storedKeepApplies`) lets a blank line follow it only where the writer prints that line so that
+            // it ends the body. A stored Keep that does not fit has been replaced by the chomping of the value above.
             if chomp = ChompingMode.Keep && storedChomp <> ChompingMode.Keep && this.BlankLineFollows() then
                 Some(this.Fallback(value, "a blank line follows it, and the chomping Keep would read that line as part of the value."))
             else
@@ -1273,7 +1233,9 @@ type internal Engine(options: WriterOptions) =
                 | Some (Separation.NewLine lineBreak) ->
                     this.EndLineWith lineBreak.Comment
                     this.WriteTrivia(lineBreak.Following, frame.ItemsCol + indent)
-                    out.Spaces(frame.ItemsCol + indent)
+                    // A missing key writes nothing on the new line, so the next token starts that line. Indentation alone
+                    // would make a line that reads back as a blank line.
+                    if YamlNode.isMissingValue entry.Key then frame.LineBroken <- true else out.Spaces(frame.ItemsCol + indent)
                 | _ ->
                     // [142] and [150] ask for a separation behind the question mark, even when the key is empty.
                     out.Put " "
@@ -1461,6 +1423,19 @@ type internal Engine(options: WriterOptions) =
                     out.Spaces childCol
                     this.EmitNode(node, n, childCol)
 
+    /// The text of a flow collection that is an implicit key. `compact` writes the shortest spelling that the productions
+    /// allow: a comma without a blank behind it, a pair of a flow sequence without braces, and the characters of a
+    /// double-quoted scalar raw.
+    member private this.FlowKeyText(key: YamlNode, compact: bool) : string =
+        let saved = out
+        out <- Out(newLine)
+        compactFlow <- compact
+        this.RunFlow(key, 0, indent)
+        compactFlow <- false
+        let text = out.Text()
+        out <- saved
+        text
+
     /// The key of an implicit entry as one line, properties included, or None when the entry needs `?`.
     member private this.ImplicitKeyText(entry: MappingEntry, col: int, prevColonless: bool) : string option =
         let key = entry.Key
@@ -1509,13 +1484,9 @@ type internal Engine(options: WriterOptions) =
                     if flowFlags.[0] then
                         None
                     else
-                        let saved = out
-                        out <- Out(newLine)
-                        compactFlow <- true
-                        this.RunFlow(key, 0, indent)
-                        compactFlow <- false
-                        let flowText = out.Text()
-                        out <- saved
+                        // The normal spelling comes first. A flow key that passes the limit may meet it with the shortest spelling.
+                        let normal = this.FlowKeyText(key, false)
+                        let flowText = if WriterText.codePointLength (propsText + normal) > 1024 then this.FlowKeyText(key, true) else normal
                         Some(propsText + flowText)
         // The limit counts code points from the first property to the colon.
         let text =
@@ -1798,12 +1769,15 @@ type internal Engine(options: WriterOptions) =
 /// value: `PreferStored` writes Strip and `RequireStored` raises.
 ///
 /// A block scalar with the chomping Keep owns the empty lines behind it (l-chomped-empty, [165] to [169]), so a blank
-/// line that the tree holds directly behind it would read as part of the value. `Validate` rejects a stored Keep in
-/// front of more content. The writer picks Keep for a stored Strip or Clip when the value ends in several line feeds,
-/// and with a blank line behind it the scalar becomes double-quoted, because no other chomping gives the same value.
-/// `RequireStored` raises there already, since the stored chomping does not match the line feeds of the value. A
-/// comment line in between ends the empty lines (l-trail-comments), so the scalar stays a block scalar then.
-/// `endsWithKeptLines` tells a caller that puts a blank line behind a node whether the node ends in such a scalar.
+/// line that the tree holds directly behind it would read as part of the value. `Validate` rejects a stored Keep that
+/// fits the value in front of more content. A stored Keep fits a value that is empty or ends in a line feed. On a
+/// value without a final line feed it is a style mismatch, which `PreferStored` writes as Strip and `RequireStored`
+/// raises for, and the blank line behind it is trivia. The writer picks Keep for a stored Strip or Clip when the
+/// value ends in several line feeds, and with a blank line behind it the scalar becomes double-quoted, because no
+/// other chomping gives the same value. `RequireStored` raises there already, since the stored chomping does not
+/// match the line feeds of the value. A comment line in between ends the empty lines (l-trail-comments), so the
+/// scalar stays a block scalar then. `endsWithKeptLines` tells a caller that puts a blank line behind a node whether
+/// the node ends in such a scalar, by the same rule.
 ///
 /// Behind the last scalar of a document only trivia and markers follow, in the End of the last collection, in
 /// AfterRoot and in the prelude of the next document. A stored Keep scalar may have a blank line there, because the
@@ -1822,16 +1796,20 @@ type internal Engine(options: WriterOptions) =
 /// characters ([27]), which include NEL, NBSP and the two Unicode line separators, because YAML 1.2 ends a line at a
 /// line feed or a carriage return only. Single quotes hold every nb-json character ([2], [118]) from U+0020 up and
 /// the tab, since they have no escape. Double quotes write the printable characters raw, the tab included, and escape
-/// the line breaks, the C0 controls, DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark.
+/// the line breaks, the C0 controls, NEL, NBSP, the two Unicode line separators, DEL, the C1 controls, U+FFFE, U+FFFF
+/// and the byte order mark, with the named escapes of the specification where it has one. The tree keeps no spelling
+/// of an escape, so a consumer that double-quotes a string gets the named escapes. Readers of YAML 1.1 keep them,
+/// while they read a raw NEL or separator as a line break.
 ///
 /// A root plain scalar and the key of an entry of a root mapping start at the first column. When such a text begins
 /// with `---` or `...` and a blank or the end of the text follows, the writer puts the whole root one column in,
 /// where the text is a scalar and no document marker.
 ///
-/// An implicit key is limited to 1024 characters. The writer measures the key as it writes it and spells it as short
-/// as the productions allow: a flow collection as a key has a `,` without a blank behind it and writes a one-entry
-/// mapping in a sequence as a flow pair, and a double-quoted key writes DEL, the C1 controls, U+FFFE, U+FFFF and the
-/// byte order mark raw when the escapes would pass the limit.
+/// An implicit key is limited to 1024 characters. The writer measures the key as it writes it. It writes the normal
+/// spelling first and spells the key as short as the productions allow only when the normal one passes the limit:
+/// a flow collection as a key has a `,` without a blank behind it and writes a one-entry mapping in a sequence as a
+/// flow pair, and a double-quoted scalar of the key writes NEL, NBSP, the line and paragraph separators, DEL, the C1
+/// controls, U+FFFE, U+FFFF and the byte order mark raw.
 ///
 /// The writer adds a `---` where the text would otherwise change the document count or lose the directives. That
 /// happens for a document with directives or trivia in its prelude and for a document that follows one without
@@ -1874,37 +1852,39 @@ module Writer =
 
     /// True when the text of the node ends in a block scalar that the writer writes with the chomping Keep. A caller
     /// that joins the text of several nodes leaves out the blank line behind such a node. The empty lines behind a Keep
-    /// scalar belong to its value, and a scalar that needs Keep because its value ends in several line feeds would
-    /// become a double-quoted scalar when a blank line followed it.
+    /// scalar belong to its value, so `Validate` rejects a blank line behind a stored Keep that fits the value, and a
+    /// scalar that needs Keep because its value ends in several line feeds would become a double-quoted scalar when a
+    /// blank line followed it.
     ///
     /// The answer follows the last node of the text, which is the value of the last entry of a block mapping (its key
     /// when no colon follows) and the node of the last item of a block sequence, one level after the other. It stops
     /// at a collection that has trivia at its end, because those lines end the text and end the empty lines of the
     /// scalar. It stops at a flow collection and at every scalar that is no block scalar. The chomping is the one that
     /// the writer writes when more text follows the node: the stored chomping when it fits the value, and the one that
-    /// the value needs otherwise. The policy `RequireStored` raises where the stored chomping does not fit, so the
-    /// stored chomping counts there. The policy `Canonical` writes no block scalar, so the answer is false.
+    /// the value needs otherwise. A stored Keep on a value without a final line feed does not fit, so the writer
+    /// writes Strip there and the answer is false. The policy `Canonical` writes no block scalar, so the answer is
+    /// true only for a stored Keep that fits the value, because `Validate` rejects the blank line behind it under
+    /// every policy.
     let endsWithKeptLines (options: WriterOptions) (node: YamlNode) : bool =
-        if options.Styles = StylePolicy.Canonical then
-            false
-        else
-            let mutable current = node
-            let mutable result = false
-            let mutable walking = true
-            while walking do
-                match current.Kind with
-                | YamlNodeKind.Scalar scalar ->
-                    walking <- false
-                    match scalar.Style with
-                    | ScalarStyle.Block (_, stored, _) when WriterText.isRawText scalar.Value ->
-                        let (chosen, fits) = WriterText.blockChomping scalar.Value stored false
-                        let chomp = if fits || options.Styles <> StylePolicy.RequireStored then chosen else stored
-                        result <- chomp = ChompingMode.Keep
-                    | _ -> ()
-                | YamlNodeKind.Mapping collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
-                    let last = List.last collection.Items
-                    current <- if last.Colon.IsSome then last.Value else last.Key
-                | YamlNodeKind.Sequence collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
-                    current <- (List.last collection.Items).Node
-                | _ -> walking <- false
-            result
+        let mutable current = node
+        let mutable result = false
+        let mutable walking = true
+        while walking do
+            match current.Kind with
+            | YamlNodeKind.Scalar scalar ->
+                walking <- false
+                match scalar.Style with
+                | ScalarStyle.Block (_, stored, _) ->
+                    result <-
+                        if options.Styles = StylePolicy.Canonical then
+                            Validate.storedKeepApplies scalar.Style scalar.Value
+                        else
+                            Validate.isBlockText scalar.Value && fst (Validate.blockChomping scalar.Value stored false) = ChompingMode.Keep
+                | _ -> ()
+            | YamlNodeKind.Mapping collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
+                let last = List.last collection.Items
+                current <- if last.Colon.IsSome then last.Value else last.Key
+            | YamlNodeKind.Sequence collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
+                current <- (List.last collection.Items).Node
+            | _ -> walking <- false
+        result

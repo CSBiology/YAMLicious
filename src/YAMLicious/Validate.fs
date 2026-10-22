@@ -75,19 +75,28 @@ module internal NodePath =
 ///   or lone surrogate half. This holds for every comment of the tree, the comments of the directives and the markers
 ///   included.
 /// - A name: an anchor or an alias name is one or more ns-anchor-char characters ([102]).
+/// - A tag: a named tag has a suffix of one or more characters ([98], [99]).
 /// - A directive: a document has at most one `%YAML` directive and its version is 1.x. A tag handle is `!`, `!!` or
 ///   a word between two `!`, a document declares it once, and its prefix holds URI characters. A reserved directive
 ///   has a name of ns-char characters that is neither `YAML` nor `TAG`, and its parameters are ns-char words that
 ///   do not start with a `#`.
 /// - A block collection: `End` is empty unless the collection is the last node of the text of its document
 ///   (R4). A trivia run between two nodes goes to the `Before` of the next one, and the run in front of a
-///   following document without a `...` goes to its `Prelude`, so no other collection has an `End`.
+///   following document without a `...` goes to its `Prelude`, so no other collection has an `End`. The Ends
+///   along the last node of the text, the innermost first, hold one run of trivia, which the parser splits (R4):
+///   a blank line goes with the comment that follows it, and the blank lines behind the last comment go to the
+///   End of that comment. So the End of a nested collection ends with a comment unless it holds the last
+///   comment, no End behind the one with the last comment holds anything, and a run without a comment goes to
+///   the End of the root collection.
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
 ///   without a `...` between (R3).
-/// - A block scalar with the chomping Keep (R5): no blank line follows its last line directly when more content
-///   follows, because l-chomped-empty makes that line part of the value ([165] to [169]). The next line is the
-///   `Before` of the next entry or item or the `BeforeColon` of an explicit key with a colon. A comment line in
+/// - A block scalar with the chomping Keep (R5): when the stored Keep is the chomping that the writer writes for
+///   the value, no blank line follows its last line directly when more content follows, because l-chomped-empty
+///   makes that line part of the value ([165] to [169]). The stored Keep is that chomping when the value can stand
+///   in a block scalar and is empty or ends in a line feed. A stored Keep on a value without a final line feed is a
+///   style mismatch that the policies of the writer handle, and a blank line behind it is trivia. The next line is
+///   the `Before` of the next entry or item or the `BeforeColon` of an explicit key with a colon. A comment line in
 ///   between ends the empty lines of the scalar (l-trail-comments), so a blank line behind a comment line is trivia.
 ///   The exception is a blank line in the `End` of the last collection, in `AfterRoot` or in the prelude of the next
 ///   document. Only trivia and markers follow there, and the parser reads a line that holds a byte order mark as the
@@ -217,8 +226,52 @@ module Validate =
     /// True when the text is a directive name or a directive parameter: one or more ns-chars ([82], [83]).
     let internal isDirectiveWord (text: string) : bool = text.Length > 0 && allChars isNsChar text
 
+    // ------------------------------------------------------------------------------------------
+    // The chomping of a block scalar
+
+    let private isBlockChar (c: char) = c = '\n' || isNbChar c
+
+    /// True when every character of the text except the line feed is an nb-char, so the text can stand in a plain
+    /// scalar or in a block scalar.
+    let internal isBlockText (text: string) : bool = allChars isBlockChar text
+
+    /// The chomping that a block scalar gets for its value, and whether the stored chomping fits the value. The line
+    /// feeds at the end of the value decide: none give Strip, one gives Clip, and several, or a value of line feeds
+    /// only, give Keep. A value without a final line feed fits Clip and Keep only when the scalar ends the text
+    /// (`endsText`), where the writer leaves out the last line break ([165] b-chomped-last takes the end of the input
+    /// in place of a line feed). The result is the stored chomping when it fits and the one that the value needs
+    /// otherwise.
+    let internal blockChomping (value: string) (stored: ChompingMode) (endsText: bool) : ChompingMode * bool =
+        let n = value.Length
+        let mutable bodyEnd = n
+        while bodyEnd > 0 && value.[bodyEnd - 1] = '\n' do
+            bodyEnd <- bodyEnd - 1
+        let breaks = n - bodyEnd
+        let onlyBreaks = n > 0 && bodyEnd = 0
+        let derived =
+            if breaks = 0 then ChompingMode.Strip
+            elif onlyBreaks then ChompingMode.Keep
+            elif breaks = 1 then ChompingMode.Clip
+            else ChompingMode.Keep
+        let fits =
+            match stored with
+            | ChompingMode.Strip -> breaks = 0
+            | ChompingMode.Clip -> n = 0 || (breaks = 1 && not onlyBreaks) || endsText
+            | ChompingMode.Keep -> n = 0 || breaks >= 1 || endsText
+        ((if fits then stored else derived), fits)
+
+    /// The rule of the chomping Keep for a scalar that more text follows (R5). It applies to a stored Keep that is the
+    /// chomping written for the value: the value can stand in a block scalar and the Keep fits it. The empty lines
+    /// behind such a scalar belong to its value, so a blank trivia line directly behind it would change the value. A
+    /// stored Keep that does not fit is a style mismatch that the policies of the writer handle, and a blank line behind
+    /// it is trivia. The check of `Validate`, the planning of a block scalar and `Writer.endsWithKeptLines` use this rule.
+    let internal storedKeepApplies (style: ScalarStyle) (value: string) : bool =
+        match style with
+        | ScalarStyle.Block (_, ChompingMode.Keep, _) -> isBlockText value && snd (blockChomping value ChompingMode.Keep false)
+        | _ -> false
+
     let private keepText =
-        "a blank line directly behind a block scalar with the chomping Keep belongs to the value of the scalar when more content follows, so the trivia cannot hold it (l-chomped-empty, [165] to [169])"
+        "a blank line directly behind a block scalar with the stored chomping Keep belongs to the value of the scalar when more content follows and the Keep fits the value, so the trivia cannot hold it (l-chomped-empty, [165] to [169])"
 
     let private followingText =
         "the trivia belong to the Before of the first entry or item of the block collection behind the line break (R2)"
@@ -246,6 +299,15 @@ module Validate =
 
     let private colonValueText =
         "an entry with a value has a colon, because the value indicator is omitted only behind a key without a value"
+
+    let private tagText =
+        "a named tag has a suffix of one or more characters, because a shorthand tag is a handle followed by ns-tag-char characters ([99]) and a verbatim tag holds a URI ([98])"
+
+    let private endBlankText =
+        "a blank line goes with the comment that follows it, so the End of a nested block collection ends with a comment unless it holds the last comment behind the last node (R4)"
+
+    let private endAfterText =
+        "the lines behind the last comment of the trivia behind the last node stay in the End that holds that comment, and trivia without a comment stay in the End of the root collection (R4)"
 
     let private implicitColonText =
         "the entry of a block mapping without a question mark has a colon, because its key stands on one line with the colon"
@@ -421,6 +483,9 @@ module Validate =
             match node.Properties.Anchor with
             | Some name when not (isAnchorName name) -> report ".Properties.Anchor" nameText
             | _ -> ()
+            match node.Properties.Tag with
+            | Some (YamlTag.Named name) when name.Suffix.Length = 0 -> report ".Properties.Tag" tagText
+            | _ -> ()
             let mutable placementIndex = 0
             for placement in node.PropertyLayout do
                 checkSeparation report (".PropertyLayout[" + string placementIndex + "].After") (Some placement.After)
@@ -443,9 +508,8 @@ module Validate =
                         report ".TrailingComment" "a missing value has no trailing comment, the comment belongs to the separation behind the indicator (R1)"
                     elif YamlNode.isPropertyOnly node && not inFlow then
                         report ".TrailingComment" "a node with properties and no content has no trailing comment outside a flow collection, the comment belongs to the After of its last property (R1)"
-                match scalar.Style with
-                | ScalarStyle.Block (_, ChompingMode.Keep, _) when blankFollows = blankThenContent -> report ".Style" keepText
-                | _ -> ()
+                if blankFollows = blankThenContent && storedKeepApplies scalar.Style scalar.Value then
+                    report ".Style" keepText
             | YamlNodeKind.Mapping collection ->
                 checkComment report ".OpeningComment" collection.OpeningComment
                 checkTrivia report ".End" collection.End
@@ -535,6 +599,63 @@ module Validate =
                         else blankFollows
                     stack.Add((items.[i].Node, NodePath.child path (".items[" + string i + "].Node"), childInFlow, lastItem, blankBehind))
 
+    /// The last line of a trivia list is a comment line.
+    let private endsWithComment (lines: Trivia list) : bool =
+        match List.tryLast lines with
+        | Some (Trivia.FullLineComment _) -> true
+        | _ -> false
+
+    let private hasComment (lines: Trivia list) : bool =
+        lines
+        |> List.exists (fun line ->
+            match line with
+            | Trivia.FullLineComment _ -> true
+            | Trivia.BlankLine _ -> false)
+
+    /// Rule R4 for the trivia behind the last node of a document, as far as the tree decides it. The Ends of the block
+    /// collections along the last node of the text, the innermost first, hold one run of trivia. A blank line goes with
+    /// the comment that follows it, and the blank lines behind the last comment go to the End of that comment. A run
+    /// without a comment goes to the End of the root collection. So a nested End ends with a comment unless it holds the
+    /// last comment, and no End behind the one with the last comment holds anything.
+    let private checkEnds (errors: ResizeArray<string>) (prefix: string) (root: YamlNode) =
+        // The Ends from the root inwards, with the places of the collections.
+        let ends = ResizeArray<NodePath.PathInfo * Trivia list>()
+        let mutable current = root
+        let mutable path = NodePath.rootPath
+        let mutable walking = true
+        while walking do
+            match current.Kind with
+            | YamlNodeKind.Mapping collection when collection.Style = CollectionStyle.Block && not collection.Items.IsEmpty ->
+                ends.Add((path, collection.End))
+                let index = collection.Items.Length - 1
+                let last = List.last collection.Items
+                if last.Colon.IsSome then
+                    current <- last.Value
+                    path <- NodePath.child path (".entries[" + string index + "].Value")
+                else
+                    current <- last.Key
+                    path <- NodePath.child path (".entries[" + string index + "].Key")
+            | YamlNodeKind.Sequence collection when collection.Style = CollectionStyle.Block && not collection.Items.IsEmpty ->
+                ends.Add((path, collection.End))
+                let index = collection.Items.Length - 1
+                current <- (List.last collection.Items).Node
+                path <- NodePath.child path (".items[" + string index + "].Node")
+            | _ -> walking <- false
+        // The outermost End with a comment holds the last comment of the run.
+        let mutable lastComment = -1
+        for k in ends.Count - 1 .. -1 .. 0 do
+            if hasComment (snd ends.[k]) then lastComment <- k
+        for k in 0 .. ends.Count - 1 do
+            let (at, lines) = ends.[k]
+            if not lines.IsEmpty then
+                let slot = prefix + NodePath.slotOf at + ".End: "
+                if lastComment < 0 then
+                    if k > 0 then errors.Add(slot + endAfterText)
+                elif k < lastComment then
+                    errors.Add(slot + endAfterText)
+                elif k > lastComment && not (endsWithComment lines) then
+                    errors.Add(slot + endBlankText)
+
     let private walkDocument (errors: ResizeArray<string>) (prefix: string) (next: YamlDocument option) (document: YamlDocument) =
         let root = document.Root
         let followedByDocument = next.IsSome
@@ -553,7 +674,9 @@ module Validate =
         // Behind the root only trivia and markers follow, see `blankInTail`.
         let blankAfterRoot = if blankLineFollowsRoot document next then blankInTail else noBlank
         // The trivia behind the last node of a document go to the Prelude of the next document when no `...` stands between.
-        walkNode errors prefix (not (followedByDocument && document.EndMarker.IsNone)) blankAfterRoot root
+        let canEnd = not (followedByDocument && document.EndMarker.IsNone)
+        walkNode errors prefix canEnd blankAfterRoot root
+        if canEnd then checkEnds errors prefix root
         if not document.AfterRoot.IsEmpty then
             if isBlockCollection root then
                 errors.Add(prefix + "AfterRoot: the trivia behind a block collection belong to its End (R3)")

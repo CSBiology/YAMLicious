@@ -763,6 +763,97 @@ let tests_keep_rule = testList "Slot rules: a blank line behind a Keep block sca
             expectValid (YamlNode.mapping [ field "a" scalar; next ]) (sprintf "the chomping %A" chomping)
         expectValid (YamlNode.mapping [ field "a" keep; field "b" (number "1") ]) "no trivia"
         expectValid (YamlNode.mapping [ field "a" (YamlNode.flowSequence [ YamlNode.item keep; { YamlNode.item (number "y") with Before = [ blankLine ] } ]) ]) "a flow collection writes another style"
+
+    // The rule applies to a stored Keep that is the chomping written for the value, which is a value that can stand in a block scalar and is empty or ends in a line feed. A stored Keep on a
+    // value without a final line feed, as the parser reads `a: |+` with the body `  abc` at the end of the input, is a style mismatch that the policies of the writer handle (PreferStored
+    // writes Strip, RequireStored raises). The blank line behind it is trivia. yaml@2.6.1 reads the texts with a blank line behind the Keep scalar as the value with the empty lines.
+    testCase "a stored Keep that does not fit the value leaves the blank line as trivia" <| fun _ ->
+        let nextEntry = { field "b" (number "1") with Before = [ blankLine ] }
+        let nextItem = { YamlNode.item (number "y") with Before = [ blankLine ] }
+        let cases =
+            [ "abc", false
+              "abc\n", true
+              "", true
+              "abc\n\n", true
+              "\n", true
+              "a\nb", false
+              "a\nb\n\n", true
+              "a" + string (char 1) + "\n", false
+              "a" + string (char 0xFEFF) + "\n", false ]
+        for (value, rejected) in cases do
+            let keep = keepScalar value
+            let slots (expected: string) = if rejected then [ expected ] else []
+            Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" keep; nextEntry ])) (slots "root.entries[0].Value.Style") (sprintf "the next entry after %A" value)
+            Expect.equal (slotsOfDocument (YamlNode.sequence [ YamlNode.item keep; nextItem ])) (slots "root.items[0].Node.Style") (sprintf "the next item after %A" value)
+            let withGap = { field "k" (number "w") with Question = Some Separation.Inline; Key = keep; BeforeColon = [ blankLine ] }
+            Expect.equal (slotsOfDocument (YamlNode.mapping [ withGap ])) (slots "root.entries[0].Key.Style") (sprintf "the gap in front of the colon after %A" value)
+        // The parser reads the body at the end of the input with the stored Keep, and the value has no final line feed.
+        let parsed = parseOk "a: |+\n  abc"
+        let scalar =
+            match parsed.Parts with
+            | [ StreamPart.Document document ] ->
+                match document.Root.Kind with
+                | YamlNodeKind.Mapping collection -> collection.Items.Head.Value
+                | _ -> failwith "A mapping was expected"
+            | _ -> failwith "One document was expected"
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" scalar; nextEntry ])) [] "the node that the parser produced"
+]
+
+let tests_end_run_rule = testList "Slot rules: the run of trivia behind the last node" [
+    // The parser reads `a:`, `  b: c`, an empty line and `# d` at the first column as a root End of [blank, comment], because a blank line goes with the comment that follows it. It reads
+    // `a:`, `  b: c`, `  # d` and an empty line as an End of the inner mapping with [comment, blank], because the blank lines behind the last comment stay with that comment.
+    testCase "a nested End ends with a comment unless it holds the last comment of the run" <| fun _ ->
+        let note = lineComment " d"
+        let tree (inner: Trivia list) (outer: Trivia list) =
+            withEnd outer (YamlNode.mapping [ field "a" (withEnd inner (YamlNode.mapping [ field "b" (number "c") ])) ])
+        let wrongEnd = [ "root.entries[0].Value.End" ]
+        Expect.equal (slotsOfDocument (tree [ blankLine ] [])) wrongEnd "a blank line alone in the inner End"
+        Expect.equal (slotsOfDocument (tree [ blankLine ] [ note ])) wrongEnd "a blank line in the inner End and a comment in the root End"
+        Expect.equal (slotsOfDocument (tree [ note; blankLine ] [ note ])) wrongEnd "the inner End ends with a blank line and the last comment stands behind it"
+        Expect.equal (slotsOfDocument (tree [ blankLine; note; blankLine ] [ note ])) wrongEnd "a blank line before and behind a comment"
+        Expect.equal (slotsOfDocument (tree [ note ] [ blankLine ])) [ "root.End" ] "a blank line in the root End behind the last comment of the inner End"
+        Expect.equal (slotsOfDocument (tree [ note ] [ blankLine; note ])) [] "a comment in both Ends with a blank line in front of the second"
+        expectValid (tree [] [ blankLine ]) "a blank line alone in the root End"
+        expectValid (tree [] [ blankLine; note; blankLine ]) "blank lines around a comment in the root End"
+        expectValid (tree [ note ] []) "a comment in the inner End"
+        expectValid (tree [ note; blankLine ] []) "a blank line behind the last comment, in the inner End"
+        expectValid (tree [ blankLine; note; blankLine ] []) "blank lines around the last comment, in the inner End"
+        expectValid (tree [ blankLine; note ] [ note; blankLine ]) "the root End holds the last comment"
+
+    // The same run along three levels and through a sequence. The problem names the End that breaks the rule.
+    testCase "the rule follows the last node through sequences and several levels" <| fun _ ->
+        let note = lineComment " d"
+        let deep (innermost: Trivia list) (middle: Trivia list) (outer: Trivia list) =
+            let inner = withEnd innermost (YamlNode.mapping [ field "c" (number "1") ])
+            let middleNode = withEnd middle (YamlNode.sequence [ YamlNode.item inner ])
+            withEnd outer (YamlNode.mapping [ field "a" middleNode ])
+        Expect.equal (slotsOfDocument (deep [ blankLine ] [ note ] [])) [ "root.entries[0].Value.items[0].Node.End" ] "the innermost End has a blank line and a comment follows"
+        Expect.equal (slotsOfDocument (deep [ note ] [ blankLine ] [])) [ "root.entries[0].Value.End" ] "the middle End holds a blank line behind the last comment"
+        Expect.equal (slotsOfDocument (deep [] [] [ blankLine ])) [] "the root End holds the blank line"
+        Expect.equal (slotsOfDocument (deep [] [ blankLine ] [])) [ "root.entries[0].Value.End" ] "the middle End holds a blank line and no comment stands in the run"
+        Expect.equal (slotsOfDocument (deep [ note; blankLine ] [] [])) [] "the innermost End holds the comment and the blank line behind it"
+        Expect.equal (slotsOfDocument (deep [ note ] [ note ] [ note ])) [] "a comment in every End"
+        Expect.equal (slotsOfDocument (deep [ note ] [ blankLine; note ] [ blankLine; note ])) [] "a blank line in front of the comments of the outer Ends"
+
+    // An End behind a collection that is not the last node of its document is wrong already, and the run rule adds no second problem.
+    testCase "the run rule leaves a document that is followed by another one to the End rule" <| fun _ ->
+        let nested = withEnd [ blankLine ] (YamlNode.mapping [ field "b" (number "c") ])
+        let first = StreamPart.Document (documentOf (YamlNode.mapping [ field "a" nested ]))
+        let second = StreamPart.Document { documentOf (number "y") with StartMarker = Some noMarker }
+        Expect.equal (slotsOf (Validate.stream { Parts = [ first; second ] })) [ "Parts[0].root.entries[0].Value.End" ] "one problem"
+
+    // yaml@2.6.1 rejects `!!` followed by a blank, and `!<>`.
+    testCase "a named tag with an empty suffix is wrong" <| fun _ ->
+        let tagged (tag: YamlTag) =
+            { number "v" with
+                Properties = { Tag = Some tag; Anchor = None }
+                PropertyLayout = [ placement PropertyName.Tag Separation.Inline ] }
+        for (label, name) in [ "core", { Prefix = YamlTag.coreNamespace; Suffix = "" }; "local", { Prefix = "!"; Suffix = "" }; "verbatim", { Prefix = ""; Suffix = "" } ] do
+            Expect.equal (slotsOfDocument (tagged (YamlTag.Named name))) [ "root.Properties.Tag" ] (sprintf "the %s tag" label)
+        expectValid (tagged (YamlTag.core "str")) "a core tag"
+        expectValid (tagged (YamlTag.local "x")) "a local tag"
+        expectValid (tagged (YamlTag.NonSpecific)) "the non-specific tag"
+        expectValid (tagged (YamlTag.Named { Prefix = ""; Suffix = "tag:example.com,2000:x" })) "a verbatim tag"
 ]
 
 let tests_line_break_rule = testList "Slot rules: a block collection starts on a later line" [
@@ -935,6 +1026,7 @@ let Main = testList "Validate" [
     tests_rules
     tests_end_rule
     tests_keep_rule
+    tests_end_run_rule
     tests_character_rules
     tests_line_break_rule
 ]

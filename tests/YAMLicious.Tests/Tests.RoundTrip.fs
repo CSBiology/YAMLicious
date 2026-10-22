@@ -278,13 +278,22 @@ let private blockInputs: string list = [
     "a: |\n  b" + lineSeparator + "c\n"
     "a: 'b" + del + c1Control + "c'\n"
     "a: \"b\tc\"\n"
-    // An implicit key within 1024 characters in its shortest spelling.
+    // An implicit key within 1024 characters in its shortest spelling, and short flow keys in the normal spelling.
     "\"" + String.replicate 1010 "a" + String.replicate 8 "\t" + "\": v\n"
     "[" + String.concat "," (List.replicate 500 "a") + "]: v\n"
-    "[a: b]: v\n"
-    "[a:]: v\n"
-    "[a: b,c: d]: v\n"
-    "[{a: b,c: d}]: v\n"
+    "[" + String.concat "," (List.replicate 150 "a: b") + "]: v\n"
+    "[a, b]: v\n"
+    "[{a: b}, {c:}]: v\n"
+    "{c: d, e: f}: g\n"
+    "[{a: b, c: d}]: v\n"
+    "[\"a\\x7Fb\"]: v\n"
+    // The trivia behind the last node split between the Ends of the nested collections: a blank line goes with the comment that follows it (rule R4).
+    "a:\n  b: c\n  # x\n\n# y\n"
+    "a:\n  b: c\n\n  # x\n"
+    "a:\n  b: c\n  # x\n\n"
+    "a:\n  b:\n    c: d\n\n    # x\n  # y\n\n# z\n\n"
+    "- - a\n  # x\n\n# y\n"
+    "a:\n  b: c\n\n"
 ]
 
 let private flowInputs: string list = [
@@ -376,6 +385,14 @@ let private flowInputs: string list = [
     // U+FEFF in single quotes, in one line and folded over lines, stays raw in a flow collection too.
     "['a\uFEFFb', 'x\uFEFF\n y']\n"
     "{k: 'x\uFEFF\n y'}\n"
+    // A missing key behind a question mark that ends its line has no token on the next line, so the writer writes no line of indentation only, which would read back as a blank line.
+    "{? # c\n\n: b}\n"
+    "[? # c\n\n: b]\n"
+    "{? # c\n# d\n: b}\n"
+    "{? # c\n: b}\n"
+    "{? # c\n}\n"
+    "{a: 1, ? # c\n\n: b, c: 2}\n"
+    "- ? # c\n\n  : b\n"
 ]
 
 let private roundTripList (name: string) (options: WriterOptions) =
@@ -518,6 +535,27 @@ let private constructedTests = testList "Constructed trees" [
             let written = Writer.writeNode defaults tree
             Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
             Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
+
+    // The trivia behind a stored Keep scalar at the end of the text stand in the Ends of the collections along the last node. The first blank line is written as a byte order mark line,
+    // and a comment line ends the empty lines. The Ends follow the rule R4 for the run, so the tree that comes back has the same Ends.
+    testCase "the Ends behind a nested Keep scalar come back equal" <| fun _ ->
+        let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        let inner (value: YamlNode) (lines: Trivia list) = withEnd lines (YamlNode.mapping [ YamlNode.entry (sc "b") value ])
+        let outer (lines: Trivia list) (child: YamlNode) = withEnd lines (YamlNode.mapping [ YamlNode.entry (sc "a") child ])
+        let trees =
+            [ outer [ blank ] (inner keep [])
+              outer [] (inner keep [ blank; note " c" ])
+              outer [ blank; note " d" ] (inner keep [ blank; note " c" ])
+              outer [ blank; note " d"; blank ] (inner keep [ blank; note " c" ])
+              outer [] (inner keep [ note " c"; blank ])
+              outer [ blank ] (outer [] (inner keep []))
+              outer [] (outer [ blank; note " m" ] (inner keep []))
+              outer [ note " d"; blank ] (outer [ blank; note " m" ] (inner keep [ blank; note " c" ])) ]
+        for tree in trees do
+            for options in [ defaults; required ] do
+                let written = Writer.writeNode options tree
+                Expect.nodeEqual (parseRoot written) tree (sprintf "The tree read from %A" written)
+                Expect.equal (Writer.writeNode options (parseRoot written)) written "A second write changes nothing"
 
     testCase "a comment behind the properties of a flow mapping key without content comes back equal" <| fun _ ->
         let key = withLayout [ placement PropertyName.Anchor (newLine (Some " key") []) ] (YamlNode.withAnchor "a" nothing)

@@ -108,8 +108,14 @@ type ChompingMode =
 ///
 /// Rule R5 (blank lines behind a block scalar). A blank line behind the body of a block scalar with the
 /// chomping Clip or Strip is trivia under rule R4. With the chomping Keep it is content of the scalar and
-/// part of its value. The root scalar of a document is the exception: a line that holds a tab or a byte order mark
-/// ends its body, and the parser reads that line as a blank line behind the root.
+/// part of its value, so a tree holds no blank line directly behind a stored Keep that is the chomping written
+/// for the value, which is a value that is empty or ends in a line feed. A stored Keep on a value without a
+/// final line feed is a style mismatch, and the blank line behind it is trivia. A comment line ends the empty
+/// lines of the scalar, so a blank line behind a comment line is trivia too. The one exception is the end of a
+/// document, where only trivia and markers follow: a blank line may stand in `AfterRoot` behind a root scalar,
+/// in the `End` of the last collection, and in the `Prelude` of the next document. The parser reads a line that
+/// holds a byte order mark behind any scalar there as that blank line, and a line that holds a tab behind a root
+/// scalar, because such a line ends the body of the scalar ([202], [211]).
 [<RequireQualifiedAccess>]
 type ScalarStyle =
     | Plain
@@ -132,7 +138,8 @@ type TagName =
 
 /// An explicit tag. The non-specific tag `!` is always `NonSpecific`. A `Named` tag never has an empty
 /// suffix: the parser does not produce `Named { Prefix = "!"; Suffix = "" }`, and `YamlTag.local` and
-/// `YamlTag.core` reject an empty suffix. Two tags are the same tag exactly when their identifiers are equal.
+/// `YamlTag.core` reject an empty suffix. `Validate` reports a tree that holds one. Two tags are the same tag
+/// exactly when their identifiers are equal.
 /// A verbatim tag `!<uri>` is a `Named` tag with the empty prefix and the URI as its suffix, because no
 /// handle binds a prefix to it.
 [<RequireQualifiedAccess>]
