@@ -245,9 +245,9 @@ module YamlNode =
     /// goes, because it no longer describes the text. The same text gives the node back unchanged.
     ///
     /// The layout of the scalar (see `ScalarLayout`) stays when it fits the new text. It fits when each boundary still
-    /// stands at the space or at the line feeds that it replaced, the text next to a fold is no blank, and the rules of
-    /// the style hold: a double-quoted scalar has no empty line between two breaks unless an escaped break follows it,
-    /// and the lines of a folded block scalar start with text. A boundary never moves and the check never looks for a
+    /// stands at the space or at the line feeds that it replaced and the text next to a fold is no blank. The rules of
+    /// the style have to hold as well: a double-quoted scalar has no empty line between two breaks unless an escaped
+    /// break follows it, and the lines of a folded block scalar start with text. A boundary never moves and the check never looks for a
     /// nearby space, so an edit that shifts the text behind a boundary drops the layout. A plain scalar that a core schema reader takes for a string
     /// gets the style that `Encode.string` picks when the new text reads as null, a bool, an int or a float, and it loses
     /// its layout then. A plain scalar that is typed already stays plain, so `80` becomes `81` and `true` becomes `false`.
