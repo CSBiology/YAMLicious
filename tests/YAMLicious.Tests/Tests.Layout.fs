@@ -1,7 +1,7 @@
 module Tests.Layout
 
-// The tests of the layout of a scalar. The parser keeps the line breaks that folded into the value of a plain, quoted or
-// folded scalar, and the writer writes the lines of the author again while they fit the value. Most tests parse a text and
+// The tests of the layout of a scalar. The parser keeps the line breaks that folded into the value of a scalar, and the
+// writer writes the lines of the author again while they fit the value. Most tests parse a text and
 // expect the writer to give the text back, because the writer indents the continuation lines by one indentation step. The
 // text then has to read as the same stream, the layouts included, and a second write has to change nothing.
 //
@@ -52,6 +52,23 @@ let private withBreaks (boundaries: (int * LayoutKind) list) (node: YamlNode) : 
 let private updateScalar (change: YamlScalar -> YamlScalar) (node: YamlNode) : YamlNode =
     { node with Kind = YamlNodeKind.Scalar(change (scalarOf node)) }
 
+/// A character above U+FFFF. It takes two indexes of a value on .NET and JavaScript and one on Python.
+let private astral = "\U0001F600"
+
+/// The first scalar of the root: the value of the first entry of a mapping or the first item of a sequence.
+let private firstNode (root: YamlNode) : YamlNode =
+    match root.Kind with
+    | YamlNodeKind.Mapping collection -> collection.Items.Head.Value
+    | YamlNodeKind.Sequence collection -> collection.Items.Head.Node
+    | _ -> root
+
+/// The root with another first scalar.
+let private withFirstNode (replacement: YamlNode) (root: YamlNode) : YamlNode =
+    match root.Kind with
+    | YamlNodeKind.Mapping collection -> { root with Kind = YamlNodeKind.Mapping { collection with Items = { collection.Items.Head with Value = replacement } :: collection.Items.Tail } }
+    | YamlNodeKind.Sequence collection -> { root with Kind = YamlNodeKind.Sequence { collection with Items = { collection.Items.Head with Node = replacement } :: collection.Items.Tail } }
+    | _ -> replacement
+
 let private nel = string (char 0x85)
 let private lineSeparator = string (char 0x2028)
 let private paragraphSeparator = string (char 0x2029)
@@ -66,7 +83,7 @@ let private wrappedValue =
 let private wrappedTests = testList "A wrapped description" [
     // yaml@2.6.1 reads the text as {"doc":"Reads the sample table and the peak list from the input folder, then matches every peak against the reference list and writes one summary table with the matches for each sample group.\n"}.
     // The two line breaks of the folded block scalar are the two boundaries, and the writer gives the three lines back.
-    testCase "a folded block scalar is written on its three lines" <| fun _ ->
+    testCase "the writer gives a folded block scalar its three lines" <| fun _ ->
         let spaceBefore (word: string) = wrappedValue.IndexOf(" " + word)
         let expected = mapOf [ "doc", withBreaks [ spaceBefore "matches", LayoutKind.Fold 0; spaceBefore "with", LayoutKind.Fold 0 ] (fold wrappedValue) ]
         Expect.nodeEqual (parseRoot wrapped) expected "The layout names the two spaces"
@@ -92,7 +109,7 @@ let private plainTests = testList "Plain scalars" [
         expectKept "a:\n  one\n  two\n"
         Expect.equal (Writer.writeDocuments { defaults with Indent = 4 } (parseOk "a: one\n  two\n")) "a: one\n    two\n" "A wider indentation"
 
-    // yaml@2.6.1 reads the texts as {"a":"x#y z:w [p] {q},r"}, {"k":"one --- two ... three"} and {"k":"one - two ? three"}. A continuation line can start with a flow indicator, a document marker or an indicator, because
+    // yaml@2.6.1 reads the texts as {"a":"x#y z:w [p] {q},r"}, {"k":"one --- two ... three"} and {"k":"one - two ? three"}. A continuation line can start with an indicator or with text that looks like a document marker, because
     // it stands behind the indentation of the block.
     testCase "continuation lines may hold a hash, a colon, flow indicators and text that looks like a document marker" <| fun _ ->
         expectKept "a: x#y\n  z:w\n  [p]\n  {q},r\n"
@@ -164,7 +181,7 @@ let private doubleTests = testList "Double-quoted scalars" [
 
     // yaml@2.6.1 reads the texts as {"a":"x  y"}, {"a":"x\t y"}, {"a":"x  y"}, {"a":"x y"}, {"a":"x y"} and {"a":"x y"}. A blank next to a fold would go away when the reader folds the line, so the writer
     // escapes it. A blank in front of an escaped break stays, and a blank behind it goes away, so the writer escapes it.
-    testCase "a blank next to a boundary of a double-quoted scalar is escaped where the reader would drop it" <| fun _ ->
+    testCase "the writer escapes a blank next to a boundary of a double-quoted scalar where the reader would drop it" <| fun _ ->
         expectKept "a: \"x\\ \n  y\"\n"
         expectKept "a: \"x\\t\n  y\"\n"
         expectKept "a: \"x\n  \\ y\"\n"
@@ -227,8 +244,8 @@ let private foldedTests = testList "Folded block scalars" [
 ]
 
 let private keyTests = testList "Keys" [
-    // yaml@2.6.1 reads the text as {"a b":"v"}. An implicit key stands on one line, so a layout on a key that a program built is not replayed.
-    testCase "an implicit key is written on one line" <| fun _ ->
+    // yaml@2.6.1 reads the text as {"a b":"v"}. An implicit key stands on one line, so the writer ignores the layout of a key that a program built.
+    testCase "an implicit key stays on one line" <| fun _ ->
         let key = withBreaks [ 1, LayoutKind.Fold 0 ] (sc "a b")
         Expect.equal (Writer.writeNode defaults (YamlNode.mapping [ YamlNode.entry key (sc "v") ])) "a b: v\n" "The key"
         Expect.equal (Writer.writeNode defaults (YamlNode.flowMapping [ YamlNode.entry key (sc "v") ])) "{\n  a\n  b: v\n}\n" "A braced flow mapping has no limit"
@@ -260,8 +277,8 @@ let private policyTests = testList "Policies" [
             Expect.equal once expected (sprintf "The Canonical text of %A" input)
             Expect.equal (Writer.writeDocuments canonical (parseOk once)) once (sprintf "The second Canonical write of %A" input)
 
-    // The layout fits the value at the offsets of its boundaries. A record update of the value can break the fit, and then the writer writes the normal spelling. RequireStored needs the style
-    // and not the layout, so it writes the normal spelling too.
+    // The layout fits the value at the offsets of its boundaries. A record update of the value can break the fit, and then the writer writes the normal spelling. RequireStored checks the style
+    // only, so it writes the normal spelling too.
     testCase "a layout that does not fit the value gives the normal spelling and no error" <| fun _ ->
         let node = parseRoot "a: one\n  two\n"
         let stale = mapOf [ "a", updateScalar (fun scalar -> { scalar with Value = "onetwo" }) (YamlNode.entries node).Head.Value ]
@@ -279,7 +296,7 @@ let private policyTests = testList "Policies" [
 ]
 
 let private consumerTests = testList "Changing the text of a scalar" [
-    // The same text gives the node back, a text of the same length keeps the lines, and a text that moves a boundary drops them.
+    // The same text gives the node back. A text that leaves each boundary at its space keeps the lines, and a text that moves a boundary drops them.
     testCase "withScalarValue keeps the layout while it fits" <| fun _ ->
         let node = (YamlNode.entries (parseRoot "a: one two\n  three\n")).Head.Value
         let same = YamlNode.withScalarValue "one two three" node
@@ -295,7 +312,7 @@ let private consumerTests = testList "Changing the text of a scalar" [
         let shorter = YamlNode.withScalarValue "one" node
         Expect.equal (scalarOf shorter).Layout None "A text that ends in front of the boundary drops the layout"
 
-    // The comments and the properties stay, the span goes, and the style is the one of the node. A node that is no scalar is an error.
+    // The comments and the properties stay with the style, and the span goes. A node that is no scalar is an error.
     testCase "withScalarValue keeps the properties, the comments and the style" <| fun _ ->
         let node = YamlNode.withAnchor "x" (YamlNode.withTag (YamlTag.core "str") (withNote " c" (dq "a b")))
         let edited = YamlNode.withScalarValue "c d" node
@@ -306,8 +323,20 @@ let private consumerTests = testList "Changing the text of a scalar" [
         Expect.equal (scalarOf (YamlNode.withScalarValue "c d\n" block)).HeaderComment (scalarOf block).HeaderComment "The header comment"
         Expect.throws (fun () -> YamlNode.withScalarValue "x" (seqOf [ sc "a" ]) |> ignore) "A sequence"
 
-    // yaml@2.6.1 reads the plain text true as a bool, and Encode.string double-quotes it. An edit that makes a plain scalar read as null, a bool, an int or a float takes the style of Encode.string.
-    testCase "withScalarValue quotes a plain text that reads as another type" <| fun _ ->
+    // yaml@2.6.1 reads {"k":"abcd"} for the first text. The edit puts a character above U+FFFF between the two halves of the old value, and the boundary of the escaped break then stands at the index 2, which is
+    // between the two halves of its surrogate pair on .NET and JavaScript and behind the character on Python. A layout whose boundary splits a character does not fit, because the writer would cut the pair in two.
+    testCase "withScalarValue drops a layout whose boundary would split a surrogate pair" <| fun _ ->
+        let node = (YamlNode.entries (parseRoot "k: \"ab\\\n  cd\"\n")).Head.Value
+        Expect.equal (scalarOf node).Value "abcd" "The value of the node"
+        let edited = YamlNode.withScalarValue ("a" + astral + "d") node
+        Expect.equal (scalarOf edited).Layout.IsSome (astral.Length = 1) "The layout stays only where the index 2 is behind the character"
+        let written = Writer.writeNode defaults (mapOf [ "k", edited ])
+        Expect.equal (firstValue written).Value ("a" + astral + "d") "The text reads as the edited value"
+        Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
+
+    // yaml@2.6.1 reads 80 as an int and true as a bool, and Encode.string double-quotes a string with that text. An edit that makes a plain string read as null, a bool, an int or a float takes the style of Encode.string.
+    // A plain scalar that was typed before the edit stays plain, so a number can become another number.
+    testCase "withScalarValue quotes a plain string that now reads as another type" <| fun _ ->
         let node = sc "name"
         for text in [ "true"; "null"; "12"; "1.5"; "~" ] do
             let edited = YamlNode.withScalarValue text node
@@ -317,6 +346,21 @@ let private consumerTests = testList "Changing the text of a scalar" [
         Expect.equal (scalarOf (YamlNode.withScalarValue "2" tagged)).Style ScalarStyle.Plain "A tagged node keeps its style"
         let quoted = YamlNode.withScalarValue "true" (YamlNode.entries (parseRoot "a: one\n  two\n")).Head.Value
         Expect.equal (scalarOf quoted).Layout None "The layout goes with the style"
+        for (before, after) in [ "80", "81"; "true", "false"; "1.5", "2.5"; "null", "~"; "80", "text"; "true", "12"; "", "80" ] do
+            let edited = YamlNode.withScalarValue after (sc before)
+            Expect.equal (scalarOf edited).Style ScalarStyle.Plain (sprintf "A typed plain scalar %A stays plain when it becomes %A" before after)
+            Expect.equal (scalarOf edited).Value after (sprintf "The new text of %A" before)
+        Expect.equal (Writer.writeNode defaults (mapOf [ "port", YamlNode.withScalarValue "81" (sc "80") ])) "port: 81\n" "The number stays a number"
+
+    // yaml@2.6.1 reads [", y", z] as the strings ", y" and "z". The scalar keeps a layout that fits its value and style, but a plain scalar cannot start with a comma, so the writer quotes it on one line.
+    // The flow collection stays on one line then, because the probe and the writer ask the same question.
+    testCase "a flow collection stays on one line when the writer quotes its scalar with a layout" <| fun _ ->
+        let root = parseRoot "[x\n y, z]\n"
+        let edited = YamlNode.withScalarValue ", y" (firstNode root)
+        Expect.isTrue (scalarOf edited).Layout.IsSome "The layout fits the value and the style"
+        let written = Writer.writeNode defaults (withFirstNode edited root)
+        Expect.equal written "[\", y\", z]\n" "One line"
+        Expect.equal (Writer.writeNode defaults (parseRoot written)) written "A second write changes nothing"
 ]
 
 let private textTests = testList "Characters next to the boundaries" [
@@ -360,13 +404,56 @@ let private sizeTests = testList "Large scalars" [
         let writeFolded (text: string) = Writer.writeDocuments defaults (parseOk text) |> ignore
         expectLinear "write of folded scalars" writeFolded countLineBreaks (fun lines -> "a: >\n" + String.replicate lines "  word\n")
         expectLinear "write of plain scalars" writeFolded countLineBreaks (fun lines -> "a: w\n" + String.replicate lines "  word\n")
+        expectLinear "write of single-quoted scalars" writeFolded countLineBreaks (fun lines -> "a: 'w\n" + String.replicate lines "  word\n" + "  end'\n")
+        expectLinear "write of double-quoted scalars" writeFolded countLineBreaks (fun lines -> "a: \"w\\\n" + String.replicate lines "  word\\\n" + "  end\"\n")
+]
+
+let private editTests = testList "Edits through withScalarValue" [
+    // The test edits the first scalar of each text a hundred and twenty times with a pseudo-random edit, writes the tree and reads it, then writes it again. The generator is a small linear
+    // congruential generator, so every target runs the same edits. A character above U+FFFF goes in at an index that keeps a surrogate pair together.
+    testCase "an edited scalar writes and reads back with its value and a layout that stays" <| fun _ ->
+        let sources =
+            [ "plain in a block", "k: one two\n  three four\n  five six\n"
+              "plain in a flow sequence", "[one two\n three four\n five six, z]\n"
+              "single in a block", "k: 'one two\n  three  four\n\n  five six'\n"
+              "single in a flow sequence", "['one two\n three four\n five six', z]\n"
+              "double in a block", "k: \"one two\n  three\\\n  four\n\n  five six\"\n"
+              "double in a flow sequence", "[\"one two\n three\\\n four\n five six\", z]\n"
+              "folded in a block", "k: >\n  one two\n  three four\n\n  five six\n" ]
+        let mutable state = 7
+        let next (bound: int) =
+            state <- (state * 75 + 74) % 65537
+            state % bound
+        let pieces = [| "x"; " "; "\n"; "\t"; "#"; ":"; "\""; "'"; "\\"; "-"; astral; "e"; "  "; ", " |]
+        let isHalf (c: char) = int c >= 0xD800 && int c <= 0xDFFF
+        let edit (value: string) : string =
+            let piece = pieces.[next pieces.Length]
+            let at = next (value.Length + 1)
+            let splits = at > 0 && at < value.Length && isHalf value.[at - 1] && isHalf value.[at]
+            match next 3 with
+            | 0 -> if splits then value + piece else value.Substring(0, at) + piece + value.Substring(at)
+            | 1 -> if at < value.Length && not (isHalf value.[at]) then value.Substring(0, at) + piece + value.Substring(at + 1) else value + piece
+            | _ -> if at < value.Length && not (isHalf value.[at]) then value.Substring(0, at) + value.Substring(at + 1) else value
+        for (label, source) in sources do
+            let root = parseRoot source
+            let node = firstNode root
+            for round in 1 .. 120 do
+                let value = edit (scalarOf node).Value
+                let edited = YamlNode.withScalarValue value node
+                let text = Writer.writeNode defaults (withFirstNode edited root)
+                let back = parseRoot text
+                let scalar = scalarOf (firstNode back)
+                Expect.equal scalar.Value value (sprintf "%s, round %d: the value read from %A" label round text)
+                if scalar.Layout.IsSome then
+                    Expect.equal scalar.Layout (scalarOf edited).Layout (sprintf "%s, round %d: the layout read from %A" label round text)
+                Expect.equal (Writer.writeNode defaults back) text (sprintf "%s, round %d: the second write of %A" label round text)
 ]
 
 let private fitsTests = testList "The check of a layout" [
-    // The check looks at the value and the style only, and it never moves a boundary. A fold replaces one space, a fold with empty lines or an escaped break replaces line feeds, and the pieces
-    // between the boundaries have to keep the text that the reader would keep: a plain or folded scalar has no blank at the end of a line in front of a fold and none at the start of the line
-    // behind it, and single quotes may have an empty first or last piece. Only a double-quoted scalar has folds with empty lines and escaped breaks, and only an escaped break may stand behind an
-    // empty piece. A literal block scalar has no layout.
+    // The check looks at the value and the style only, and it never moves a boundary. A fold replaces one space, and a fold with empty lines or an escaped break replaces line feeds. The pieces
+    // between the boundaries have to keep their text: the lines of a plain scalar neither start nor end with a blank next to a fold, and the lines of a folded block scalar start with text. Single quotes
+    // may have an empty first or last piece. Only a double-quoted scalar has folds with empty lines and escaped breaks, and only an escaped break may stand behind an empty piece. A literal block scalar
+    // has no layout.
     testCase "a layout fits where the boundaries replace the text they name and the pieces keep text" <| fun _ ->
         let fold (at: int) = at, LayoutKind.Fold 0
         let plain = ScalarStyle.Plain
@@ -399,6 +486,10 @@ let private fitsTests = testList "The check of a layout" [
               "double, an empty piece between an escaped break and a fold", double, "x y", [ 1, LayoutKind.EscapedBreak 0; fold 1 ], false
               "double, an empty piece between a fold and an escaped break", double, "x y", [ fold 1; 2, LayoutKind.EscapedBreak 0 ], true
               "double, blanks next to a fold", double, "x  y", [ fold 1 ], true
+              "double, an escaped break in front of a character above U+FFFF", double, "a" + astral + "d", [ 1, LayoutKind.EscapedBreak 0 ], true
+              "double, an escaped break behind a character above U+FFFF", double, "a" + astral + "d", [ 1 + astral.Length, LayoutKind.EscapedBreak 0 ], true
+              "double, an escaped break at the index 2, between the halves of a pair on .NET and JavaScript", double, "a" + astral + "d", [ 2, LayoutKind.EscapedBreak 0 ], (astral.Length = 1)
+              "double, a fold with empty lines in front of a character above U+FFFF", double, "a" + "\n" + astral, [ 1, LayoutKind.Fold 1 ], true
               "folded, a space between lines of text", folded, "one two" + "\n", [ fold 3 ], true
               "folded, the line starts with a blank", folded, " a b" + "\n", [ fold 2 ], false
               "folded, the line behind starts with a blank", folded, "a  b" + "\n", [ fold 1 ], false
@@ -424,4 +515,4 @@ let private equalityTests = testList "Equality and printing" [
         Expect.isFalse ((YamlNode.show flat).Contains "breaks") "No layout, no printout"
 ]
 
-let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; foldedTests; keyTests; policyTests; consumerTests; textTests; sizeTests; fitsTests; equalityTests ]
+let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; foldedTests; keyTests; policyTests; consumerTests; editTests; textTests; sizeTests; fitsTests; equalityTests ]

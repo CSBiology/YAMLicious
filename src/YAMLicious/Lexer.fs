@@ -157,14 +157,6 @@ module internal Lexer =
             sb.Append(text.[k]) |> ignore
         sb.ToString()
 
-    let private appendRange (sb: StringBuilder) (text: string) (first: int) (finish: int) =
-        for k in first .. finish - 1 do
-            sb.Append(text.[k]) |> ignore
-
-    let private appendLineFeeds (sb: StringBuilder) (count: int) =
-        for _ in 1 .. count do
-            sb.Append('\n') |> ignore
-
     /// Appends one code point. A .NET string and a JavaScript string hold a code point above U+FFFF as a
     /// surrogate pair, and a Python string holds it as one character.
     let private appendCodePoint (sb: StringBuilder) (codePoint: int) =
@@ -702,29 +694,29 @@ module internal Lexer =
             )
         let e = text.[p + 1]
         match e with
-        | '0' -> sb.AppendChar('\u0000') |> ignore; p + 2
-        | 'a' -> sb.AppendChar('\u0007') |> ignore; p + 2
-        | 'b' -> sb.AppendChar('\u0008') |> ignore; p + 2
-        | 't' -> sb.AppendChar('\t') |> ignore; p + 2
-        | '\t' -> sb.AppendChar('\t') |> ignore; p + 2
-        | 'n' -> sb.AppendChar('\n') |> ignore; p + 2
-        | 'v' -> sb.AppendChar('\u000B') |> ignore; p + 2
-        | 'f' -> sb.AppendChar('\u000C') |> ignore; p + 2
-        | 'r' -> sb.AppendChar('\r') |> ignore; p + 2
-        | 'e' -> sb.AppendChar('\u001B') |> ignore; p + 2
-        | ' ' -> sb.AppendChar(' ') |> ignore; p + 2
-        | '"' -> sb.AppendChar('"') |> ignore; p + 2
-        | '/' -> sb.AppendChar('/') |> ignore; p + 2
-        | '\\' -> sb.AppendChar('\\') |> ignore; p + 2
-        | 'N' -> sb.AppendChar('\u0085') |> ignore; p + 2
-        | '_' -> sb.AppendChar('\u00A0') |> ignore; p + 2
-        | 'L' -> sb.AppendChar('\u2028') |> ignore; p + 2
-        | 'P' -> sb.AppendChar('\u2029') |> ignore; p + 2
+        | '0' -> sb.AppendChar('\u0000'); p + 2
+        | 'a' -> sb.AppendChar('\u0007'); p + 2
+        | 'b' -> sb.AppendChar('\u0008'); p + 2
+        | 't' -> sb.AppendChar('\t'); p + 2
+        | '\t' -> sb.AppendChar('\t'); p + 2
+        | 'n' -> sb.AppendChar('\n'); p + 2
+        | 'v' -> sb.AppendChar('\u000B'); p + 2
+        | 'f' -> sb.AppendChar('\u000C'); p + 2
+        | 'r' -> sb.AppendChar('\r'); p + 2
+        | 'e' -> sb.AppendChar('\u001B'); p + 2
+        | ' ' -> sb.AppendChar(' '); p + 2
+        | '"' -> sb.AppendChar('"'); p + 2
+        | '/' -> sb.AppendChar('/'); p + 2
+        | '\\' -> sb.AppendChar('\\'); p + 2
+        | 'N' -> sb.AppendChar('\u0085'); p + 2
+        | '_' -> sb.AppendChar('\u00A0'); p + 2
+        | 'L' -> sb.AppendChar('\u2028'); p + 2
+        | 'P' -> sb.AppendChar('\u2029'); p + 2
         | 'x' ->
             let value = readHex text (p + 2) 2
             if value < 0 then
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\x needs two hexadecimal digits." p (min n (p + 4)) [ opening ]
-            sb.AppendChar(char value) |> ignore
+            sb.AppendChar(char value)
             p + 4
         | 'u' ->
             let value = readHex text (p + 2) 4
@@ -739,7 +731,7 @@ module internal Lexer =
                 // A lone surrogate is no character, and a Python string cannot hold it through a StringBuilder.
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\u names a surrogate that no second escape completes to a character." p (p + 6) [ opening ]
             else
-                sb.AppendChar(char value) |> ignore
+                sb.AppendChar(char value)
                 p + 6
         | 'U' ->
             let value = readHex text (p + 2) 8

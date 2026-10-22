@@ -241,16 +241,19 @@ module YamlNode =
             { node with Kind = YamlNodeKind.Scalar { content with HeaderComment = Some comment } }
         | _ -> failwith ("Only a block scalar has a header comment, not " + describe node + ".")
 
-    /// The node with another text in its scalar. Properties, comments and the style stay, and the span goes, because
-    /// it no longer describes the text. The same text gives the node back unchanged.
+    /// The node with another text in its scalar. The properties and the comments stay, and so does the style. The span
+    /// goes, because it no longer describes the text. The same text gives the node back unchanged.
     ///
-    /// The layout of the scalar (see `ScalarLayout`) stays when it fits the new text at the same indexes of the
-    /// boundaries. It never moves a boundary and never looks for a nearby space, so an edit that keeps the length of
-    /// each line keeps the lines, and any other edit that moves a boundary drops them. A plain scalar whose new text a
-    /// core schema reader takes for null, a bool, an int or a float gets the style that `Encode.string` picks, unless
-    /// the node has an explicit tag, and it loses its layout then. A caller that decodes a string, edits it and
-    /// writes it again keeps the decoded node next to the string and calls this function with the edited string, so
-    /// the lines of the author survive an edit that leaves them in place.
+    /// The layout of the scalar (see `ScalarLayout`) stays when it fits the new text. It fits when each boundary still
+    /// stands at the space or at the line feeds that it replaced, the text next to a fold is no blank, and the rules of
+    /// the style hold: a double-quoted scalar has no empty line between two breaks unless an escaped break follows it,
+    /// and the lines of a folded block scalar start with text. A boundary never moves and the check never looks for a
+    /// nearby space, so an edit that shifts the text behind a boundary drops the layout. A plain scalar that a core schema reader takes for a string
+    /// gets the style that `Encode.string` picks when the new text reads as null, a bool, an int or a float, and it loses
+    /// its layout then. A plain scalar that is typed already stays plain, so `80` becomes `81` and `true` becomes `false`.
+    /// A node with an explicit tag keeps its style. A caller that edits a decoded string and writes it again keeps the
+    /// decoded node next to the string and calls this function with the edited string, so the lines of the author
+    /// survive an edit that the layout still fits.
     ///
     /// Fails on a node that is no scalar.
     let withScalarValue (value: string) (node: YamlNode) : YamlNode =
@@ -260,7 +263,10 @@ module YamlNode =
                 node
             else
                 let restyled =
-                    content.Style = ScalarStyle.Plain && node.Properties.Tag.IsNone && CoreSchema.resolvesToNonString value
+                    content.Style = ScalarStyle.Plain
+                    && node.Properties.Tag.IsNone
+                    && not (CoreSchema.resolvesToNonString content.Value)
+                    && CoreSchema.resolvesToNonString value
                 let style = if restyled then (CoreSchema.stringContent value).Style else content.Style
                 let layout =
                     match content.Layout with

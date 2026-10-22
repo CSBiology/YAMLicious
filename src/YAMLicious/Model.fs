@@ -2,8 +2,8 @@ namespace YAMLicious
 
 // The node model. It describes the serialization tree of a YAML stream: values,
 // properties, scalar and collection styles, the place of every comment, directives and document boundaries.
-// It keeps none of the original spacing, quote escapes or indentation of collections. A plain, quoted or
-// folded scalar keeps the line breaks that its folding turned into the value, in an opaque `ScalarLayout`.
+// It keeps none of the original spacing, quote escapes or indentation of collections. A scalar that folded line
+// breaks into its value keeps them in an opaque `ScalarLayout`.
 //
 // Two pairs of spellings read the same, and the writer picks one form of each. A flow pair such as
 // `[a: b]` and the one-entry flow mapping `[{a: b}]` give the same tree. So do an indentless block
@@ -182,10 +182,10 @@ type internal LayoutKind =
 /// One line break of a scalar, see `LayoutKind`.
 type internal LayoutBoundary = { At: int; Kind: LayoutKind }
 
-/// The line breaks of a plain, quoted or folded scalar, so that the writer can write the lines of the author
-/// again. The boundaries stand in the order of the value, and a layout has at least one. Only the library
-/// creates a layout, and a program compares it with `YamlNode.equalIgnoringSpans`, copies it with the scalar
-/// and drops it when the value no longer fits it.
+/// The line breaks that folding turned into the value of a scalar, so that the writer can write the lines of the
+/// author again. The boundaries stand in the order of the value, and a layout has at least one. Only the library
+/// creates a layout. A program compares it with `YamlNode.equalIgnoringSpans` and copies it along with the scalar,
+/// and `YamlNode.withScalarValue` drops it when the new value no longer fits it.
 ///
 /// A plain scalar and a single-quoted scalar keep the breaks that fold into one space, because the line feeds
 /// of the value tell the empty lines already. A double-quoted scalar keeps the breaks that fold into a space
@@ -205,7 +205,8 @@ type ScalarLayout = internal { Boundaries: LayoutBoundary list }
 ///
 /// `Layout` is None on a scalar that a program constructed and on a scalar without a line break that folded. The
 /// parser sets it for the other plain, quoted and folded scalars. The writer writes the lines of the layout again
-/// where they fit the value, the style and the place of the scalar, and it writes its normal spelling otherwise.
+/// when they fit the value and the style and the scalar stands where more than one line is possible. It writes the
+/// normal spelling otherwise.
 type YamlScalar =
     { Value: string
       Style: ScalarStyle

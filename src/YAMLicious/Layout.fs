@@ -10,13 +10,23 @@ type internal LayoutPiece =
 /// The check of a layout against a value and a style, and the pieces that the writer replays.
 ///
 /// A layout fits when the writer can write the lines again so that the reader gets the same value and the same
-/// layout. The check looks at the value and the style only. It keeps the offsets of the boundaries, so it never
-/// shifts a boundary, looks for a nearby space or wraps the text. The writer adds the checks that depend on the
-/// place of the scalar, for example that a plain scalar in a flow collection holds no flow indicator. The cost is
-/// linear in the length of the value and the number of boundaries.
+/// layout. The check looks at the value and the style only. It keeps the offsets of the boundaries, so it neither
+/// shifts a boundary nor wraps the text. The writer adds the checks that depend on the place of the scalar, for example
+/// that a plain scalar in a flow collection holds no flow indicator. The cost is linear in the length of the value and
+/// the number of boundaries.
 module internal Layout =
 
     let private isBlank (c: char) = c = ' ' || c = '\t'
+
+    /// True when the index stands between the two halves of a surrogate pair. A piece that ends there would split a
+    /// character. A Python string indexes by code point, so it has no such index.
+    let private splitsPair (value: string) (index: int) =
+        index > 0
+        && index < value.Length
+        && int value.[index - 1] >= 0xD800
+        && int value.[index - 1] <= 0xDBFF
+        && int value.[index] >= 0xDC00
+        && int value.[index] <= 0xDFFF
 
     /// The number of characters of the value that the boundary replaces: the space of a fold without empty lines,
     /// and one line feed for each empty line otherwise.
@@ -27,7 +37,8 @@ module internal Layout =
         | LayoutKind.EscapedBreak lines -> lines
 
     /// Cuts the value at the boundaries. Returns None when a boundary has a kind that the style cannot have, lies
-    /// outside the value or inside the text that the previous boundary replaces, or replaces text of another kind.
+    /// outside the value or inside the text that the previous boundary replaces, replaces text of another kind or
+    /// splits a surrogate pair.
     let private cut (layout: ScalarLayout) (value: string) (emptyLinesOk: bool) (escapedOk: bool) : LayoutPiece[] option =
         let n = value.Length
         let pieces = ResizeArray<LayoutPiece>()
@@ -42,7 +53,7 @@ module internal Layout =
                 | LayoutKind.Fold 0 -> true
                 | LayoutKind.Fold lines -> emptyLinesOk && lines > 0
                 | LayoutKind.EscapedBreak lines -> escapedOk && lines >= 0
-            if not kindOk || boundary.At < start || boundary.At + take > n then
+            if not kindOk || boundary.At < start || boundary.At + take > n || splitsPair value boundary.At then
                 ok <- false
             else
                 match boundary.Kind with

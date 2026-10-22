@@ -211,7 +211,7 @@ module internal WriterText =
             elif code = 0x0B then sb.Append("\\v") |> ignore
             elif code = 0x0C then sb.Append("\\f") |> ignore
             elif code = 0x1B then sb.Append("\\e") |> ignore
-            elif isHighSurrogate c && i + 1 < text.Length && isLowSurrogate text.[i + 1] then
+            elif isHighSurrogate c && i + 1 < finish && isLowSurrogate text.[i + 1] then
                 sb.Append(c).Append(text.[i + 1]) |> ignore
                 i <- i + 1
             elif code = 0x85 && not verbatim then sb.Append("\\N") |> ignore
@@ -746,12 +746,23 @@ type internal Engine(options: WriterOptions) =
                       Unterminated = endsText && fits
                       Pieces = [||] }
 
-    /// The pieces of the layout of the scalar when the writer replays them here, and None otherwise. A scalar written in one
-    /// line cannot go over several lines: that is an implicit key and the key of a flow collection that stands on one line.
-    /// The layout has to fit the value and the style. The caller has checked the rest, that the style can hold the value here.
-    member private _.TryLayout(scalar: YamlScalar, multiOk: bool) : LayoutPiece[] option =
+    /// The pieces of the layout of the scalar when the writer replays them at this place, and None otherwise. The place has
+    /// to allow more than one line: `multiOk` is false for an implicit key and for every item of a flow collection that stays
+    /// on one line, and `compactFlow` is true while the writer spells a key of a flow collection with the fewest characters.
+    /// The layout has to fit the value and the style, and a plain or single-quoted scalar has to be able to stand in that
+    /// style here, which `canBePlain` and `canBeSingle` decide as they do for a scalar without a layout. `PlanScalar` and
+    /// `NodeNeedsLines` ask this one question, so a flow collection goes over several lines exactly when one of its scalars
+    /// does. The policy `Canonical` never asks: its branch of `PlanScalar` comes first, and it writes no flow collection with items.
+    member private _.LayoutHere(scalar: YamlScalar, flow: bool, multiOk: bool, atLineStart: bool, beforeColon: bool) : LayoutPiece[] option =
         match scalar.Layout with
-        | Some layout when multiOk && not compactFlow -> Layout.tryPlan layout scalar.Value scalar.Style
+        | Some layout when multiOk && not compactFlow ->
+            let value = scalar.Value
+            let holds =
+                match scalar.Style with
+                | ScalarStyle.Plain -> WriterText.canBePlain value flow multiOk atLineStart beforeColon
+                | ScalarStyle.SingleQuoted -> WriterText.canBeSingle value multiOk
+                | _ -> true
+            if holds then Layout.tryPlan layout value scalar.Style else None
         | _ -> None
 
     member private this.LayoutPlan(shape: Shape, pieces: LayoutPiece[]) : ScalarPlan = { this.ShapePlan shape with Pieces = pieces }
@@ -778,34 +789,36 @@ type internal Engine(options: WriterOptions) =
             else
                 this.LinePlan(WriterText.renderDouble value compactFlow)
         else
+            let layout = this.LayoutHere(scalar, flow, multiOk, atLineStart, beforeColon)
             match scalar.Style with
             | ScalarStyle.Plain ->
                 if value.Length = 0 then
                     this.ShapePlan Shape.Empty
+                elif layout.IsSome then
+                    this.LayoutPlan(Shape.PlainLayout, layout.Value)
                 elif WriterText.canBePlain value flow multiOk atLineStart beforeColon then
-                    match this.TryLayout(scalar, multiOk) with
-                    | Some pieces -> this.LayoutPlan(Shape.PlainLayout, pieces)
-                    | None -> if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.PlainLines else this.LinePlan value
+                    if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.PlainLines else this.LinePlan value
                 else
                     this.Fallback(value, "it cannot stand as a plain scalar here.")
             | ScalarStyle.SingleQuoted ->
-                if WriterText.canBeSingle value multiOk then
-                    match this.TryLayout(scalar, multiOk) with
-                    | Some pieces -> this.LayoutPlan(Shape.SingleLayout, pieces)
-                    | None -> if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.SingleLines else this.LinePlan(WriterText.renderSingle value)
+                if layout.IsSome then
+                    this.LayoutPlan(Shape.SingleLayout, layout.Value)
+                elif WriterText.canBeSingle value multiOk then
+                    if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.SingleLines else this.LinePlan(WriterText.renderSingle value)
                 else
                     this.Fallback(value, "it cannot stand in single quotes here.")
             | ScalarStyle.DoubleQuoted ->
-                match this.TryLayout(scalar, multiOk) with
-                | Some pieces -> this.LayoutPlan(Shape.DoubleLayout, pieces)
-                | None -> this.LinePlan(WriterText.renderDouble value compactFlow)
+                if layout.IsSome then
+                    this.LayoutPlan(Shape.DoubleLayout, layout.Value)
+                else
+                    this.LinePlan(WriterText.renderDouble value compactFlow)
             | ScalarStyle.Block (style, chomp, digit) ->
                 if not blockOk then
                     this.Fallback(value, "a block scalar cannot stand here.")
                 else
                     match this.TryBlock(value, (style = BlockScalarStyle.Literal), chomp, digit) with
                     | Some plan ->
-                        match plan.Shape, this.TryLayout(scalar, true) with
+                        match plan.Shape, layout with
                         | Shape.Block, Some pieces -> { plan with Pieces = pieces }
                         | _ -> plan
                     | None -> this.Fallback(value, "it holds a character that a block scalar cannot hold.")
@@ -1043,7 +1056,7 @@ type internal Engine(options: WriterOptions) =
 
     /// True when a node carries something that needs a line of its own: a comment, a property that is followed
     /// by a line break, a scalar over several lines or a block scalar that loses its header.
-    member private _.NodeNeedsLines(node: YamlNode) : bool =
+    member private this.NodeNeedsLines(node: YamlNode, beforeColon: bool) : bool =
         if node.TrailingComment.IsSome then
             true
         elif node.PropertyLayout
@@ -1055,17 +1068,21 @@ type internal Engine(options: WriterOptions) =
         else
             match node.Kind with
             | YamlNodeKind.Scalar scalar ->
-                let foldable =
-                    match scalar.Style with
-                    | ScalarStyle.Plain -> true
-                    | ScalarStyle.SingleQuoted -> true
-                    | _ -> false
+                let value = scalar.Value
+                // A plain or single-quoted scalar with a line feed goes over several lines when its style can hold the value
+                // in a flow collection, and PlanScalar asks the same questions. Otherwise it falls back to one quoted line.
+                let overLines =
+                    policy <> StylePolicy.Canonical
+                    && value.IndexOf('\n') >= 0
+                    && (match scalar.Style with
+                        | ScalarStyle.Plain -> WriterText.canBePlain value true true false beforeColon
+                        | ScalarStyle.SingleQuoted -> WriterText.canBeSingle value true
+                        | _ -> false)
                 let layout =
-                    match scalar.Style, scalar.Layout with
-                    | ScalarStyle.Block _, _ -> false
-                    | _, Some layout -> policy <> StylePolicy.Canonical && Layout.fits layout scalar.Value scalar.Style
-                    | _, None -> false
-                scalar.HeaderComment.IsSome || layout || (policy <> StylePolicy.Canonical && foldable && scalar.Value.IndexOf('\n') >= 0)
+                    match scalar.Style with
+                    | ScalarStyle.Block _ -> false
+                    | _ -> (this.LayoutHere(scalar, true, true, false, beforeColon)).IsSome
+                scalar.HeaderComment.IsSome || layout || overLines
             | _ -> false
 
     /// Sets the flag of every collection of the flow subtree: true when the collection or one below it needs one
@@ -1090,13 +1107,13 @@ type internal Engine(options: WriterOptions) =
                     for entry in collection.Items do
                         if not entry.Before.IsEmpty || this.Breaks entry.Question || this.Breaks (Some (this.FlowColon entry)) || not entry.BeforeColon.IsEmpty then
                             own <- true
-                        if this.NodeNeedsLines entry.Key || this.NodeNeedsLines entry.Value then own <- true
+                        if this.NodeNeedsLines(entry.Key, entry.Colon.IsSome) || this.NodeNeedsLines(entry.Value, false) then own <- true
                         if this.IsCollection entry.Key then children.Add entry.Key
                         if this.IsCollection entry.Value then children.Add entry.Value
                 | YamlNodeKind.Sequence collection ->
                     own <- collection.OpeningComment.IsSome || not collection.End.IsEmpty
                     for item in collection.Items do
-                        if not item.Before.IsEmpty || not (this.DashTrivia item.Dash).IsEmpty || this.NodeNeedsLines item.Node then
+                        if not item.Before.IsEmpty || not (this.DashTrivia item.Dash).IsEmpty || this.NodeNeedsLines(item.Node, false) then
                             own <- true
                         if this.IsCollection item.Node then children.Add item.Node
                 | _ -> ()
@@ -1881,8 +1898,8 @@ type internal Engine(options: WriterOptions) =
 /// unless the policy is `RequireStored`, which raises instead for a style. The policy `Canonical` rewrites the styles on
 /// purpose. A tree that the parser produced has one exception, which the paragraph on the empty root block scalar names.
 ///
-/// A plain, quoted or folded scalar that the parser read over several lines keeps those lines in its `Layout`, and the
-/// writer writes them again. A fold stands for one space of the value, so the writer ends the line at that space. The
+/// A scalar that the parser read over several lines keeps those lines in its `Layout`, and the writer writes them
+/// again. A fold stands for one space of the value, so the writer ends the line at that space. The
 /// layout fits while each boundary still stands at the text that it replaces and the lines next to a fold keep
 /// their text. A double-quoted scalar escapes a blank at the edge of a line, because the reader drops it there.
 /// The scalar has to stand where more than one line is possible. An implicit key never goes over several lines, and
