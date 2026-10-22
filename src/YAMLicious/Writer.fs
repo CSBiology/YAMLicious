@@ -56,18 +56,50 @@ module internal WriterText =
 
     let isLowSurrogate (c: char) = int c >= 0xDC00 && int c <= 0xDFFF
 
-    /// True for a character that can stand unescaped in a plain scalar or a block scalar, and in a single-quoted
-    /// scalar except for the byte order mark (`isSingleQuotable`). These are the printable characters of YAML 1.2.2
-    /// [1] except the line breaks, the byte order mark, the NEL character and the two Unicode line separators. A
-    /// surrogate half is no character of its own, so the writer checks the pairs apart.
-    let isRawChar (c: char) =
-        let code = int c
-        code = 0x09
-        || (code >= 0x20 && code <= 0x7E)
-        || (code >= 0xA0 && code <= 0x2027)
-        || (code >= 0x202A && code <= 0xD7FF)
-        || (code >= 0xE000 && code <= 0xFFFD && code <> 0xFEFF)
-        || code >= 0x10000
+    /// True for a character that can stand unescaped in a plain scalar, a block scalar and a comment: an nb-char
+    /// ([27]). These are the printable characters of YAML 1.2.2 [1] without the line breaks and the byte order mark.
+    /// NEL, NBSP and the two Unicode line separators are among them, because YAML 1.2 ends a line at a line feed or
+    /// a carriage return only. A surrogate half is no character of its own, so the writer checks the pairs apart.
+    let isRawChar (c: char) = Validate.isNbChar c
+
+    /// True for a character that can stand unescaped in a single-quoted scalar: the tab and every character from
+    /// U+0020 up, because a quoted scalar holds nb-json characters ([2], [118]) and single quotes have no escape
+    /// that could spell one. This includes DEL, the C1 controls, U+FFFE and the byte order mark.
+    let isQuotedChar (c: char) = c = '\t' || int c >= 0x20
+
+    /// U+FEFF. A line that holds only this mark is a blank line that ends a document body ([202], [211]).
+    let byteOrderMark: char = char 0xFEFF
+
+    /// The mark of a line behind the root scalar of a document that ends its body: a tab.
+    let tabMark: char = '\t'
+
+    /// No mark.
+    let noMark: char = char 0
+
+    /// The chomping that a block scalar gets for its value, and whether the stored chomping fits the value. The line
+    /// feeds at the end of the value decide: none give Strip, one gives Clip, and several, or a value of line feeds
+    /// only, give Keep. A value without a final line feed fits Clip and Keep only when the scalar ends the text
+    /// (`endsText`), where the writer leaves out the last line break ([165] b-chomped-last takes the end of the input
+    /// in place of a line feed). The result is the stored chomping when it fits and the one that the value needs
+    /// otherwise.
+    let blockChomping (value: string) (stored: ChompingMode) (endsText: bool) : ChompingMode * bool =
+        let n = value.Length
+        let mutable bodyEnd = n
+        while bodyEnd > 0 && value.[bodyEnd - 1] = '\n' do
+            bodyEnd <- bodyEnd - 1
+        let breaks = n - bodyEnd
+        let onlyBreaks = n > 0 && bodyEnd = 0
+        let derived =
+            if breaks = 0 then ChompingMode.Strip
+            elif onlyBreaks then ChompingMode.Keep
+            elif breaks = 1 then ChompingMode.Clip
+            else ChompingMode.Keep
+        let fits =
+            match stored with
+            | ChompingMode.Strip -> breaks = 0
+            | ChompingMode.Clip -> n = 0 || (breaks = 1 && not onlyBreaks) || endsText
+            | ChompingMode.Keep -> n = 0 || breaks >= 1 || endsText
+        ((if fits then stored else derived), fits)
 
     /// True when the text holds a surrogate half without its partner. A Python string never does.
     let hasLoneSurrogate (text: string) =
@@ -83,9 +115,9 @@ module internal WriterText =
                 i <- i + 1
         found
 
-    /// True when every character of the text except the line feed can stand raw, where `allowByteOrderMark` tells
-    /// whether U+FEFF counts as one. A surrogate pair counts as one printable character.
-    let private isPrintableText (allowByteOrderMark: bool) (text: string) =
+    /// True when every character of the text except the line feed passes `accept`. A surrogate pair counts as one
+    /// character that passes.
+    let private allExceptLineFeed (accept: char -> bool) (text: string) =
         let mutable ok = true
         let mutable i = 0
         while ok && i < text.Length do
@@ -96,19 +128,17 @@ module internal WriterText =
                 if i + 1 < text.Length && isLowSurrogate text.[i + 1] then i <- i + 2 else ok <- false
             elif isLowSurrogate c then
                 ok <- false
-            elif isRawChar c || (allowByteOrderMark && c = '\uFEFF') then
+            elif accept c then
                 i <- i + 1
             else
                 ok <- false
         ok
 
     /// True when every character of the text except the line feed can stand raw in a plain scalar or a block scalar.
-    let isRawText (text: string) = isPrintableText false text
+    let isRawText (text: string) = allExceptLineFeed isRawChar text
 
-    /// True when every character of the text except the line feed can stand raw in single quotes. A quoted scalar
-    /// holds nb-json characters ([107] and [118]), which include the byte order mark, and single quotes have no
-    /// escape that could spell it. A plain or a block scalar holds nb-char ([27]), which excludes it.
-    let isSingleQuotable (text: string) = isPrintableText true text
+    /// True when every character of the text except the line feed can stand raw in single quotes.
+    let isSingleQuotable (text: string) = allExceptLineFeed isQuotedChar text
 
     /// The number of code points of the text, which is the unit of the limit on an implicit key.
     let codePointLength (text: string) =
@@ -200,10 +230,14 @@ module internal WriterText =
             sb.Append(hexDigits.[(value >>> shift) &&& 0xF]) |> ignore
             shift <- shift - 4
 
-    /// The double-quoted spelling of a value with the shortest escapes. A line feed is the escape `\n`, so the
-    /// result is one line. NEL, NBSP and the two Unicode line separators get their named escapes, because other
-    /// readers take them for line breaks or for blanks.
-    let renderDouble (text: string) =
+    /// The double-quoted spelling of a value. A line feed becomes an escape, so the result is one line. A character
+    /// that an nb-double-char allows stands raw, the tab included. That leaves the escapes for the quote, the
+    /// backslash, the line breaks and the C0 controls, which have named escapes where YAML has them and a
+    /// hexadecimal escape otherwise.
+    /// The printable characters ([1]) stand raw. DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark get an
+    /// escape, so a reader that follows [1] and a person who reads the text see no control character. `verbatim`
+    /// leaves those characters raw as well, which is the shortest spelling that [2] allows.
+    let renderDouble (text: string) (verbatim: bool) =
         let sb = StringBuilder()
         sb.Append('"') |> ignore
         let mutable i = 0
@@ -213,7 +247,6 @@ module internal WriterText =
             if c = '"' then sb.Append("\\\"") |> ignore
             elif c = '\\' then sb.Append("\\\\") |> ignore
             elif c = '\n' then sb.Append("\\n") |> ignore
-            elif c = '\t' then sb.Append("\\t") |> ignore
             elif c = '\r' then sb.Append("\\r") |> ignore
             elif code = 0x00 then sb.Append("\\0") |> ignore
             elif code = 0x07 then sb.Append("\\a") |> ignore
@@ -221,14 +254,10 @@ module internal WriterText =
             elif code = 0x0B then sb.Append("\\v") |> ignore
             elif code = 0x0C then sb.Append("\\f") |> ignore
             elif code = 0x1B then sb.Append("\\e") |> ignore
-            elif code = 0x85 then sb.Append("\\N") |> ignore
-            elif code = 0xA0 then sb.Append("\\_") |> ignore
-            elif code = 0x2028 then sb.Append("\\L") |> ignore
-            elif code = 0x2029 then sb.Append("\\P") |> ignore
             elif isHighSurrogate c && i + 1 < text.Length && isLowSurrogate text.[i + 1] then
                 sb.Append(c).Append(text.[i + 1]) |> ignore
                 i <- i + 1
-            elif isRawChar c then sb.Append(c) |> ignore
+            elif isRawChar c || (verbatim && isQuotedChar c) then sb.Append(c) |> ignore
             elif code < 0x100 then
                 sb.Append("\\x") |> ignore
                 appendHex sb code 2
@@ -435,6 +464,8 @@ type internal FlowFrame(isMap: bool, multi: bool, closeCol: int, itemsCol: int, 
     member val Node = Placeholders.node with get, set
     /// True when a line break stands behind the last token, so the next token starts a line.
     member val LineBroken = false with get, set
+    /// True for a flow pair, the one-entry mapping that stands in a flow sequence without braces, as in `[a: b]`.
+    member val Bare = false with get, set
 
 /// The engine that holds the state of one write. The traversal keeps two explicit stacks, one for the block
 /// collections and one for the flow collection that is open inside the current entry, so a tree of any depth
@@ -458,10 +489,19 @@ type internal Engine(options: WriterOptions) =
     let mutable partPrefix = ""
     // True while the document in progress is the last part of the stream and nothing follows its root.
     let mutable tailOpen = false
-    // True while the document in progress has a comment line behind its root, which stands at the first column.
+    // True while the first line behind the root of the document in progress that is not blank is a comment line, which
+    // stands at the first column. The lines are the ones behind the root up to the next marker, the prelude of the next
+    // document included.
     let mutable commentFollowsRoot = false
     // True while the first line that the writer prints behind the root of the document in progress is a blank line.
     let mutable blankFollowsRoot = false
+    // True when the root of the document in progress is a block scalar written with the chomping Keep.
+    let mutable rootKept = false
+    // True while the last thing written is a block scalar with the chomping Keep, so a blank line next would belong to it.
+    let mutable keepTail = false
+    // True while the writer renders a flow collection that is an implicit key. Such a key takes the shortest spelling that
+    // the productions allow, because the limit of 1024 characters counts the spelling.
+    let mutable compactFlow = false
     // The number of open block frames that still have something to write behind the node in progress.
     let mutable blockers = 0
     // The trivia that a flow collection leaves behind when the policy writes it as a block collection that something
@@ -497,13 +537,8 @@ type internal Engine(options: WriterOptions) =
     // ---------------------------------------------------------------------------------------------
     // Comments and trivia
 
-    member private this.CheckComment(comment: YamlComment) =
-        if comment.Text.IndexOf('\n') >= 0 || comment.Text.IndexOf('\r') >= 0 then
-            this.Fail "A comment holds a line break, which would end the comment line."
-
-    /// A comment behind the text of the line.
+    /// A comment behind the text of the line. `Validate` has checked that the text holds nb-char characters only.
     member private this.PutComment(comment: YamlComment) =
-        this.CheckComment comment
         out.Put " #"
         out.Put comment.Text
 
@@ -522,13 +557,24 @@ type internal Engine(options: WriterOptions) =
         while not rest.IsEmpty do
             match rest.Head with
             | Trivia.FullLineComment comment ->
-                this.CheckComment comment
                 out.Spaces col
                 out.Put "#"
                 out.Put comment.Text
                 out.EndLine()
             | Trivia.BlankLine _ -> out.EndLine()
             rest <- rest.Tail
+
+    /// Writes the trivia behind a block scalar with the chomping Keep when only trivia and markers follow. The empty lines
+    /// behind a Keep scalar are part of its value, so a blank line at the start of the trivia is written as a line that
+    /// holds `mark`. The parser reads such a line as a blank line that ends the body. The mark is a tab behind the root
+    /// scalar of a document and a byte order mark behind a scalar in a collection, where a tab line is no blank line.
+    member private this.WriteTriviaBehindKeep(lines: Trivia list, col: int, mark: char) =
+        match lines with
+        | Trivia.BlankLine _ :: rest ->
+            out.PutChar mark
+            out.EndLine()
+            this.WriteTrivia(rest, col)
+        | _ -> this.WriteTrivia(lines, col)
 
     // ---------------------------------------------------------------------------------------------
     // Properties
@@ -554,23 +600,12 @@ type internal Engine(options: WriterOptions) =
                         else
                             this.Fail("The tag " + identifier + " has characters that a verbatim tag cannot hold, and no %TAG directive of the document gives it a handle.")
 
-    member private this.CheckName(what: string, name: string) =
-        let mutable ok = name.Length > 0
-        for c in name do
-            if WriterText.isBlank c || c = '\n' || c = '\r' || WriterText.isFlowIndicator c then ok <- false
-        if not ok then
-            this.Fail("The " + what + " name " + name + " holds a character that a name cannot hold.")
-
     member private this.PropertyText(node: YamlNode, property: PropertyName) : string =
         match property with
         | PropertyName.Tag ->
             if node.Properties.Tag.IsSome then this.TagText node.Properties.Tag.Value else ""
         | PropertyName.Anchor ->
-            if node.Properties.Anchor.IsSome then
-                this.CheckName("anchor", node.Properties.Anchor.Value)
-                "&" + node.Properties.Anchor.Value
-            else
-                ""
+            if node.Properties.Anchor.IsSome then "&" + node.Properties.Anchor.Value else ""
 
     /// The properties on one line, each followed by a blank. It is empty for a node without properties.
     member private this.InlinePropsText(node: YamlNode) : string =
@@ -664,7 +699,7 @@ type internal Engine(options: WriterOptions) =
         let mutable i = stack.Count - 1
         while not decided && i >= 0 do
             let frame = stack.[i]
-            if frame.IsMap && frame.Phase = BlockPhase.ColonNext && Validate.entryHasColon frame.Current then
+            if frame.IsMap && frame.Phase = BlockPhase.ColonNext && frame.Current.Colon.IsSome then
                 decided <- true
                 result <- Validate.startsWithBlankLine frame.Current.BeforeColon
             elif frame.IsMap && not frame.Entries.IsEmpty then
@@ -688,7 +723,7 @@ type internal Engine(options: WriterOptions) =
         if policy = StylePolicy.RequireStored then
             this.Fail("The stored style cannot express the value " + this.Preview value + ": " + reason)
         else
-            this.LinePlan(WriterText.renderDouble value)
+            this.LinePlan(WriterText.renderDouble value compactFlow)
 
     /// The header of a block scalar for the value. The chomping follows the line feeds at the end of the value
     /// and the indentation indicator is there when the first line starts with a blank. A value without a final line
@@ -700,27 +735,13 @@ type internal Engine(options: WriterOptions) =
             None
         else
             let n = value.Length
-            let mutable bodyEnd = n
-            while bodyEnd > 0 && value.[bodyEnd - 1] = '\n' do
-                bodyEnd <- bodyEnd - 1
-            let breaks = n - bodyEnd
-            let onlyBreaks = n > 0 && bodyEnd = 0
-            let derived =
-                if breaks = 0 then ChompingMode.Strip
-                elif onlyBreaks then ChompingMode.Keep
-                elif breaks = 1 then ChompingMode.Clip
-                else ChompingMode.Keep
-            let endsText = breaks = 0 && n > 0 && storedChomp <> ChompingMode.Strip && this.AtEndOfText()
-            let fits =
-                match storedChomp with
-                | ChompingMode.Strip -> breaks = 0
-                | ChompingMode.Clip -> n = 0 || (breaks = 1 && not onlyBreaks) || endsText
-                | ChompingMode.Keep -> n = 0 || breaks >= 1 || endsText
+            let endsText = n > 0 && value.[n - 1] <> '\n' && storedChomp <> ChompingMode.Strip && this.AtEndOfText()
+            let (chosen, fits) = WriterText.blockChomping value storedChomp endsText
             let chomp =
-                if fits then storedChomp
-                elif policy = StylePolicy.RequireStored then
+                if fits || policy <> StylePolicy.RequireStored then
+                    chosen
+                else
                     this.Fail("The stored chomping does not match the line feeds at the end of the value " + this.Preview value + ".")
-                else derived
             let mutable start = 0
             while start < n && value.[start] = '\n' do
                 start <- start + 1
@@ -734,9 +755,10 @@ type internal Engine(options: WriterOptions) =
                         this.Fail("The value " + this.Preview value + " starts with a blank, so the block scalar needs an indentation indicator that the stored style lacks.")
                     else min indent 9
             // The empty lines behind a Keep scalar belong to its value ([165] to [169]), so a blank line that the tree
-            // holds behind it would read as part of the value. No other chomping gives the same value, so the scalar
-            // takes the double-quoted style. A stored Keep never gets here, because Validate rejects the tree.
-            if chomp = ChompingMode.Keep && this.BlankLineFollows() then
+            // holds behind it would read as part of the value. No other chomping gives the same value, so a scalar that
+            // gets Keep from its value takes the double-quoted style. A stored Keep stays, because Validate lets a
+            // blank line follow it only where the writer prints that line so that it ends the body.
+            if chomp = ChompingMode.Keep && storedChomp <> ChompingMode.Keep && this.BlankLineFollows() then
                 Some(this.Fallback(value, "a blank line follows it, and the chomping Keep would read that line as part of the value."))
             else
                 Some
@@ -766,7 +788,7 @@ type internal Engine(options: WriterOptions) =
                  && (storedPlain || node.Properties.Tag.IsSome || not (CoreSchema.resolvesToNonString value)) then
                 this.LinePlan value
             else
-                this.LinePlan(WriterText.renderDouble value)
+                this.LinePlan(WriterText.renderDouble value compactFlow)
         else
             match scalar.Style with
             | ScalarStyle.Plain ->
@@ -781,7 +803,7 @@ type internal Engine(options: WriterOptions) =
                     if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.SingleLines else this.LinePlan(WriterText.renderSingle value)
                 else
                     this.Fallback(value, "it cannot stand in single quotes here.")
-            | ScalarStyle.DoubleQuoted -> this.LinePlan(WriterText.renderDouble value)
+            | ScalarStyle.DoubleQuoted -> this.LinePlan(WriterText.renderDouble value compactFlow)
             | ScalarStyle.Block (style, chomp, digit) ->
                 if not blockOk then
                     this.Fallback(value, "a block scalar cannot stand here.")
@@ -832,6 +854,8 @@ type internal Engine(options: WriterOptions) =
     /// the line, and every body line ends its line too.
     member private this.WriteBlockScalar(plan: ScalarPlan, scalar: YamlScalar, n: int) =
         let value = scalar.Value
+        keepTail <- plan.Chomp = ChompingMode.Keep
+        if n < 0 && keepTail then rootKept <- true
         out.Put(if plan.IsLiteral then "|" else ">")
         if plan.Digit > 0 then out.Put(string plan.Digit)
         match plan.Chomp with
@@ -886,16 +910,18 @@ type internal Engine(options: WriterOptions) =
             | YamlNodeKind.Scalar scalar -> scalar.HeaderComment
             | _ -> None
 
-    /// The plan of the block scalar at the root of a document that has a comment line behind it. Without an
-    /// indentation indicator the content of a root scalar starts at the first column, so a comment line behind a body
-    /// without content lines is content. An indicator of 1 puts the content at the column 1, and a comment line at the
-    /// first column is a comment behind the scalar then. Blank lines behind such a body are no problem, because the
-    /// parser reads them as trivia behind the root and they read as the same lines again.
+    /// The plan of the block scalar at the root of a document. Without an indentation indicator the content of a root
+    /// scalar starts at the first column, so a body without content lines takes the first line behind it as content
+    /// when that line is a comment line or the tab line that ends the body of a root scalar with the chomping Keep. An
+    /// indicator of 1 puts the content at the column 1, and a line at the first column is no content then. Blank lines
+    /// behind such a body are no problem, because the parser reads them as trivia behind the root and they read as the
+    /// same lines again. The comment line may stand in the prelude of the next document, which `commentFollowsRoot` and
+    /// `blankFollowsRoot` include.
     member private this.WithRootIndicator(plan: ScalarPlan, value: string, n: int) : ScalarPlan =
         match plan.Shape with
-        | Shape.Block when n < 0 && commentFollowsRoot && plan.Digit = 0 && value.Replace("\n", "").Length = 0 ->
+        | Shape.Block when n < 0 && plan.Digit = 0 && (commentFollowsRoot || (plan.Chomp = ChompingMode.Keep && blankFollowsRoot)) && value.Replace("\n", "").Length = 0 ->
             if policy = StylePolicy.RequireStored then
-                this.Fail "The block scalar has no content and a comment line follows it, so it needs an indentation indicator that the stored style lacks."
+                this.Fail "The block scalar has no content and a comment line or a tab line follows it, so it needs an indentation indicator that the stored style lacks."
             else
                 { plan with Digit = 1 }
         | _ -> plan
@@ -1015,9 +1041,27 @@ type internal Engine(options: WriterOptions) =
                     for i in children.Count - 1 .. -1 .. 0 do
                         probe.Add((children.[i], index, -1))
 
+    /// True when the one-entry mapping can stand in a flow sequence as a flow pair, `[a: b]`, which reads as the tree of
+    /// `[{a: b}]`. The entry is implicit and has a colon, and nothing stands in front of it, behind it or around the
+    /// mapping that needs a line of its own.
+    member private _.IsFlowPair(node: YamlNode, collection: Collection<MappingEntry>) : bool =
+        match collection.Items with
+        | [ entry ] ->
+            node.PropertyLayout.IsEmpty
+            && node.TrailingComment.IsNone
+            && collection.OpeningComment.IsNone
+            && collection.End.IsEmpty
+            && entry.Question.IsNone
+            && entry.Colon.IsSome
+            && entry.Before.IsEmpty
+            && entry.BeforeColon.IsEmpty
+        | _ -> false
+
     /// Opens the flow collection: writes the opener and, when the collection has items or needs lines, pushes its
     /// frame. Returns true when a frame was pushed. The items stand at `itemsCol` and the closer at `closeCol`.
-    member private this.OpenFlow(node: YamlNode, closeCol: int, itemsCol: int) : bool =
+    /// `pairOk` allows a one-entry mapping in a flow sequence to stand as a flow pair without braces, which is the
+    /// shortest spelling.
+    member private this.OpenFlow(node: YamlNode, closeCol: int, itemsCol: int, pairOk: bool) : bool =
         let index = flowCounter
         flowCounter <- flowCounter + 1
         let multi = flowFlags.[index]
@@ -1027,9 +1071,12 @@ type internal Engine(options: WriterOptions) =
                 out.Put "{}"
                 false
             else
-                out.Put "{"
+                let bare = pairOk && not multi && this.IsFlowPair(node, collection)
+                if not bare then out.Put "{"
                 if multi then this.EndLineWith collection.OpeningComment
-                flowStack.Add(FlowFrame(true, multi, closeCol, itemsCol, collection.Items, [], collection.End))
+                let frame = FlowFrame(true, multi, closeCol, itemsCol, collection.Items, [], collection.End)
+                frame.Bare <- bare
+                flowStack.Add frame
                 true
         | YamlNodeKind.Sequence collection ->
             if collection.Items.IsEmpty && not multi then
@@ -1046,7 +1093,7 @@ type internal Engine(options: WriterOptions) =
         if frame.Multi then
             this.WriteTrivia(frame.End, frame.ItemsCol)
             out.Spaces frame.CloseCol
-        out.Put(if frame.IsMap then "}" else "]")
+        if not frame.Bare then out.Put(if frame.IsMap then "}" else "]")
         flowStack.RemoveAt(flowStack.Count - 1)
 
     /// Writes the properties and the content of a node inside a flow collection. Returns true when the node is a
@@ -1074,7 +1121,6 @@ type internal Engine(options: WriterOptions) =
                     out.Spaces frame.ItemsCol
         match node.Kind with
         | YamlNodeKind.Alias name ->
-            this.CheckName("alias", name)
             out.Put("*" + name)
             false
         | YamlNodeKind.Scalar scalar ->
@@ -1097,10 +1143,10 @@ type internal Engine(options: WriterOptions) =
                 false
         | YamlNodeKind.Mapping _ ->
             this.CheckFlowChild node
-            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent)
+            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent, compactFlow && not frame.IsMap)
         | YamlNodeKind.Sequence _ ->
             this.CheckFlowChild node
-            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent)
+            this.OpenFlow(node, frame.ItemsCol, frame.ItemsCol + indent, false)
 
     /// A block collection inside a flow collection turns into a flow collection, unless the policy keeps the stored style.
     member private this.CheckFlowChild(node: YamlNode) =
@@ -1153,7 +1199,7 @@ type internal Engine(options: WriterOptions) =
                 this.WriteTrivia(item.Before @ this.DashTrivia item.Dash, frame.ItemsCol)
                 out.Spaces frame.ItemsCol
             elif frame.Index > 0 then
-                out.Put ", "
+                out.Put (if compactFlow then "," else ", ")
             frame.Phase <- FlowPhase.ItemWritten
             let pushed = this.FlowNode(item.Node, frame, false, true, false)
             if not pushed then this.FlowComplete frame
@@ -1163,7 +1209,7 @@ type internal Engine(options: WriterOptions) =
         let valueMissing = YamlNode.isMissingValue entry.Value
         let keyComment = this.TrailingOf entry.Key
         let mutable pushed = false
-        let hasColon = entry.Colon.IsSome || not valueMissing
+        let hasColon = entry.Colon.IsSome
         if hasColon then
             // A comment behind the key ends the line, so the colon stands on a later line, with or without a value.
             if frame.Multi && (not entry.BeforeColon.IsEmpty || keyComment.IsSome) then
@@ -1218,7 +1264,7 @@ type internal Engine(options: WriterOptions) =
                 this.WriteTrivia(entry.Before, frame.ItemsCol)
                 out.Spaces frame.ItemsCol
             elif frame.Index > 0 then
-                out.Put ", "
+                out.Put (if compactFlow then "," else ", ")
             // A key in a flow mapping may run over several lines, and so may a flow collection that is a key ([143] to [147]).
             // Only the key of a block mapping and of a flow pair stands on one line.
             if entry.Question.IsSome then
@@ -1232,7 +1278,7 @@ type internal Engine(options: WriterOptions) =
                     // [142] and [150] ask for a separation behind the question mark, even when the key is empty.
                     out.Put " "
             frame.Phase <- FlowPhase.AfterKey
-            let hasColon = entry.Colon.IsSome || not (YamlNode.isMissingValue entry.Value)
+            let hasColon = entry.Colon.IsSome
             let pushed = this.FlowNode(entry.Key, frame, true, true, hasColon)
             if not pushed then this.FlowAfterKey frame
 
@@ -1246,7 +1292,7 @@ type internal Engine(options: WriterOptions) =
     member private this.RunFlow(node: YamlNode, closeCol: int, itemsCol: int) =
         flowStack.Clear()
         flowCounter <- 0
-        this.OpenFlow(node, closeCol, itemsCol) |> ignore
+        this.OpenFlow(node, closeCol, itemsCol, false) |> ignore
         while flowStack.Count > 0 do
             this.StepFlow flowStack.[flowStack.Count - 1]
 
@@ -1318,26 +1364,41 @@ type internal Engine(options: WriterOptions) =
             carried.RemoveAt(carried.Count - 1)
             this.WriteTrivia(lines, col)
 
+    /// The trivia lines that a flow collection leaves in front of its first item when the policy writes it as a block
+    /// collection: the lines between its last property and its opener, and then the comment behind the opener. A
+    /// block collection holds the lines behind its last property in the Before of its first entry or item (R2).
+    member private _.LeadOfMoved(node: YamlNode, openingComment: YamlComment option) : Trivia list =
+        let following =
+            match List.tryLast node.PropertyLayout with
+            | Some placement ->
+                match placement.After with
+                | Separation.NewLine lineBreak -> lineBreak.Following
+                | Separation.Inline -> []
+            | None -> []
+        match openingComment with
+        | Some comment -> following @ [ Trivia.FullLineComment comment ]
+        | None -> following
+
     /// Pushes the frame of a block collection. A flow collection that the policy writes as a block collection
-    /// hands its opening comment to the trivia in front of its first item, and the comment behind its closer to the
-    /// trivia that follow the block.
+    /// hands the lines behind its last property and its opening comment to the trivia in front of its first item, and
+    /// the comment behind its closer to the trivia that follow the block.
     member private this.PushBlock(node: YamlNode, col: int, compact: bool) =
         match node.Kind with
         | YamlNodeKind.Mapping collection ->
             let moved = collection.Style = CollectionStyle.Flow
+            let lead = if moved then this.LeadOfMoved(node, collection.OpeningComment) else []
             let entries =
                 match collection.Items with
-                | first :: rest when moved && collection.OpeningComment.IsSome ->
-                    { first with Before = Trivia.FullLineComment collection.OpeningComment.Value :: first.Before } :: rest
+                | first :: rest when not lead.IsEmpty -> { first with Before = lead @ first.Before } :: rest
                 | items -> items
             let finish = this.EndOfMovedBlock(node, collection.End, moved)
             this.AddFrame(BlockFrame(true, col, entries, [], finish, compact))
         | YamlNodeKind.Sequence collection ->
             let moved = collection.Style = CollectionStyle.Flow
+            let lead = if moved then this.LeadOfMoved(node, collection.OpeningComment) else []
             let items =
                 match collection.Items with
-                | first :: rest when moved && collection.OpeningComment.IsSome ->
-                    { first with Before = Trivia.FullLineComment collection.OpeningComment.Value :: first.Before } :: rest
+                | first :: rest when not lead.IsEmpty -> { first with Before = lead @ first.Before } :: rest
                 | items -> items
             let finish = this.EndOfMovedBlock(node, collection.End, moved)
             this.AddFrame(BlockFrame(false, col, [], items, finish, compact))
@@ -1355,7 +1416,6 @@ type internal Engine(options: WriterOptions) =
         else
             match node.Kind with
             | YamlNodeKind.Alias name ->
-                this.CheckName("alias", name)
                 out.Put("*" + name)
                 this.EndLineWith node.TrailingComment
             | YamlNodeKind.Scalar scalar ->
@@ -1429,17 +1489,20 @@ type internal Engine(options: WriterOptions) =
             | None ->
                 let propsText = this.InlinePropsText key
                 match key.Kind with
-                | YamlNodeKind.Alias name ->
-                    this.CheckName("alias", name)
-                    Some("*" + name + " ")
+                | YamlNodeKind.Alias name -> Some("*" + name + " ")
                 | YamlNodeKind.Scalar scalar ->
                     if YamlNode.isMissingValue key then
                         Some ""
                     elif YamlNode.isPropertyOnly key then
                         Some propsText
                     else
-                        match (this.PlanScalar(key, scalar, false, false, false, (col = 0), true)).Shape with
-                        | Shape.Line spelling -> Some(propsText + spelling)
+                        match (this.PlanScalar(key, scalar, false, false, false, (col = 0 && propsText.Length = 0), true)).Shape with
+                        | Shape.Line spelling ->
+                            // A double-quoted key whose escapes pass the limit may meet it with the raw characters.
+                            if spelling.[0] = '"' && WriterText.codePointLength (propsText + spelling) > 1024 then
+                                Some(propsText + WriterText.renderDouble scalar.Value true)
+                            else
+                                Some(propsText + spelling)
                         | _ -> None
                 | _ ->
                     this.ProbeFlow key
@@ -1448,7 +1511,9 @@ type internal Engine(options: WriterOptions) =
                     else
                         let saved = out
                         out <- Out(newLine)
+                        compactFlow <- true
                         this.RunFlow(key, 0, indent)
+                        compactFlow <- false
                         let flowText = out.Text()
                         out <- saved
                         Some(propsText + flowText)
@@ -1466,8 +1531,10 @@ type internal Engine(options: WriterOptions) =
         text
 
     member private this.CloseBlock(frame: BlockFrame) =
-        if not frame.End.IsEmpty then this.WriteCarried frame.Col
-        this.WriteTrivia(frame.End, frame.Col)
+        if not frame.End.IsEmpty then
+            this.WriteCarried frame.Col
+            if keepTail then this.WriteTriviaBehindKeep(frame.End, frame.Col, WriterText.byteOrderMark) else this.WriteTrivia(frame.End, frame.Col)
+            keepTail <- false
         if frame.RulesOutEnd then blockers <- blockers - 1
         stack.RemoveAt(stack.Count - 1)
 
@@ -1476,9 +1543,10 @@ type internal Engine(options: WriterOptions) =
         frame.Phase <- BlockPhase.NextEntry
         this.RefreshFrame frame
         let col = frame.Col
-        if entry.Colon.IsNone && YamlNode.isMissingValue entry.Value then
+        if entry.Colon.IsNone then
             frame.PrevColonless <- true
         else
+            keepTail <- false
             frame.PrevColonless <- false
             this.WriteCarried col
             this.WriteTrivia(entry.BeforeColon, col)
@@ -1492,6 +1560,7 @@ type internal Engine(options: WriterOptions) =
         match frame.Entries with
         | [] -> this.CloseBlock frame
         | entry :: rest ->
+            keepTail <- false
             frame.Entries <- rest
             frame.Index <- frame.Index + 1
             frame.Current <- entry
@@ -1525,6 +1594,7 @@ type internal Engine(options: WriterOptions) =
         match frame.Items with
         | [] -> this.CloseBlock frame
         | item :: rest ->
+            keepTail <- false
             frame.Items <- rest
             frame.Index <- frame.Index + 1
             this.RefreshFrame frame
@@ -1561,15 +1631,55 @@ type internal Engine(options: WriterOptions) =
         | Some m -> this.PutOptionalComment m.TrailingComment
         | None -> ()
 
-    member private this.WriteDocument(document: YamlDocument, needsStart: bool, isLastPart: bool, next: YamlDocument option) =
+    /// True when a plain scalar with this value and the policy stands plain except for a `---` or `...` at the first
+    /// column. A text that starts with either of the two marks a document boundary there. Behind one blank it is text.
+    member private this.WantsPlainBehindBlank(node: YamlNode, scalar: YamlScalar, multiOk: bool, beforeColon: bool) : bool =
+        let value = scalar.Value
+        let storedPlain =
+            match scalar.Style with
+            | ScalarStyle.Plain -> true
+            | _ -> false
+        let wanted =
+            if policy = StylePolicy.Canonical then
+                WriterText.canBePlain value false false false beforeColon
+                && (storedPlain || node.Properties.Tag.IsSome || not (CoreSchema.resolvesToNonString value))
+            else
+                storedPlain && WriterText.canBePlain value false multiOk false beforeColon
+        value.Length > 0 && wanted && not (WriterText.canBePlain value false (multiOk && policy <> StylePolicy.Canonical) true beforeColon)
+
+    /// True when the root of a document has to stand one column in. A root plain scalar and the key of an entry of a
+    /// root mapping start at the first column, where the text `---` or `...` followed by a blank or the end of the text
+    /// reads as a document marker. One blank in front of the root makes the same text a plain scalar again, and the
+    /// parser reads the tree back without a change of style.
+    member private this.RootNeedsBlank(root: YamlNode, onMarkerLine: bool) : bool =
+        match root.Kind with
+        | YamlNodeKind.Scalar scalar ->
+            // A scalar on the line of the `---` marker or behind a property on its line is behind a blank already.
+            let startsLine =
+                match List.tryLast root.PropertyLayout with
+                | Some placement ->
+                    match placement.After with
+                    | Separation.NewLine _ -> true
+                    | Separation.Inline -> false
+                | None -> not onMarkerLine
+            startsLine && this.WantsPlainBehindBlank(root, scalar, true, false)
+        | YamlNodeKind.Mapping collection when this.IsBlockLike root ->
+            collection.Items
+            |> List.exists (fun entry ->
+                entry.Question.IsNone
+                && (match entry.Key.Kind with
+                    | YamlNodeKind.Scalar scalar -> not (this.HasProperties entry.Key) && this.WantsPlainBehindBlank(entry.Key, scalar, false, true)
+                    | _ -> false))
+        | _ -> false
+
+    /// Writes a document. `preludeMark` is the mark of the line that ends the block scalar with the chomping Keep at the end
+    /// of the previous document, or no mark: a blank line at the start of the prelude is written as such a line.
+    member private this.WriteDocument(document: YamlDocument, needsStart: bool, isLastPart: bool, next: YamlDocument option, preludeMark: char) =
         tailOpen <- isLastPart && document.AfterRoot.IsEmpty && document.EndMarker.IsNone
         blankFollowsRoot <- Validate.blankLineFollowsRoot document next
-        commentFollowsRoot <-
-            document.AfterRoot
-            |> List.exists (fun line ->
-                match line with
-                | Trivia.FullLineComment _ -> true
-                | Trivia.BlankLine _ -> false)
+        commentFollowsRoot <- Validate.commentFollowsRoot document next
+        rootKept <- false
+        keepTail <- false
         handlesByPrefix.Clear()
         declaredHandles.Clear()
         for item in document.Prelude do
@@ -1581,10 +1691,13 @@ type internal Engine(options: WriterOptions) =
                     if not (handlesByPrefix.ContainsKey prefix) then handlesByPrefix.[prefix] <- handle
                 | _ -> ()
             | PreludeItem.PreludeTrivia _ -> ()
+        let mutable first = true
         for item in document.Prelude do
             match item with
             | PreludeItem.Directive directive -> this.WriteDirective directive
-            | PreludeItem.PreludeTrivia trivia -> this.WriteTrivia([ trivia ], 0)
+            | PreludeItem.PreludeTrivia trivia ->
+                if first && preludeMark <> WriterText.noMark then this.WriteTriviaBehindKeep([ trivia ], 0, preludeMark) else this.WriteTrivia([ trivia ], 0)
+            first <- false
         let root = document.Root
         let missing = YamlNode.isMissingValue root
         let bare = this.IsBlockLike root && not (this.HasProperties root)
@@ -1596,13 +1709,20 @@ type internal Engine(options: WriterOptions) =
         if needsStart then
             this.WriteMarker("---", document.StartMarker)
             if not inlineRoot then out.EndLine()
-        this.WriteTrivia(document.BeforeRoot, 0)
+        // A root at the start of a line stands one column in when its first column would hold a document marker.
+        let rootCol = if not missing && this.RootNeedsBlank(root, inlineRoot) then 1 else 0
+        // The lines in front of a root block collection are the Before of its first entry or item (R2), so they stand in its column.
+        this.WriteTrivia(document.BeforeRoot, (if bare then rootCol else 0))
+        // The column of the trivia that follow a root collection.
+        let mutable behindCol = 0
         if not missing then
+            if this.IsBlockLike root then behindCol <- rootCol
             if inlineRoot then out.Put " "
-            if bare then this.PushBlock(root, 0, false) else this.EmitNode(root, -1, 0)
+            elif rootCol > 0 && not (this.IsBlockLike root) && not (this.HasProperties root) then out.Spaces rootCol
+            if bare then this.PushBlock(root, rootCol, false) else this.EmitNode(root, -1, rootCol)
             this.Drain()
-        this.WriteCarried 0
-        this.WriteTrivia(document.AfterRoot, 0)
+        this.WriteCarried behindCol
+        if rootKept then this.WriteTriviaBehindKeep(document.AfterRoot, 0, WriterText.tabMark) else this.WriteTrivia(document.AfterRoot, behindCol)
         if document.EndMarker.IsSome then
             this.WriteMarker("...", document.EndMarker)
             out.EndLine()
@@ -1610,6 +1730,9 @@ type internal Engine(options: WriterOptions) =
     member this.WriteStream(stream: YamlStream, prefixParts: bool) =
         let mutable open_ = false
         let mutable index = 0
+        // The mark of the line that ends a block scalar with the chomping Keep at the end of the previous part, when that
+        // part is a document without a marker and the scalar is its last node.
+        let mutable keepMark = WriterText.noMark
         let parts = List.toArray stream.Parts
         let total = parts.Length
         for part in parts do
@@ -1639,13 +1762,21 @@ type internal Engine(options: WriterOptions) =
                         | _ -> None
                     else
                         None
-                this.WriteDocument(document, needsStart, (index = total - 1), nextDocument)
+                this.WriteDocument(document, needsStart, (index = total - 1), nextDocument, (if hasDirective then WriterText.noMark else keepMark))
                 open_ <- document.EndMarker.IsNone
-            | StreamPart.Trivia trivia -> this.WriteTrivia([ trivia ], 0)
+                keepMark <-
+                    if not (document.AfterRoot.IsEmpty && document.EndMarker.IsNone) then WriterText.noMark
+                    elif rootKept then WriterText.tabMark
+                    elif keepTail then WriterText.byteOrderMark
+                    else WriterText.noMark
+            | StreamPart.Trivia trivia ->
+                this.WriteTrivia([ trivia ], 0)
+                keepMark <- WriterText.noMark
             | StreamPart.ExtraEndMarker marker ->
                 this.WriteMarker("...", Some marker)
                 out.EndLine()
                 open_ <- false
+                keepMark <- WriterText.noMark
             index <- index + 1
         partPrefix <- ""
 
@@ -1654,11 +1785,11 @@ type internal Engine(options: WriterOptions) =
 /// The writer. It turns a stream of documents or a single node into YAML text.
 ///
 /// The writer checks its input with `Validate` first and raises `YamlWriteException` with the messages of the
-/// validator when the tree breaks a rule. It then puts every comment and blank line back in the place that the
-/// parser reads into the same slot, so `Parser.parseStream` of the output gives a tree that is equal to the input
-/// except for the spans. A tree that a program built can differ in styles that the writer had to change, unless
-/// the policy is `RequireStored`, which raises instead. A tree that the parser produced has one exception, which
-/// the paragraph on the empty root block scalar names.
+/// validator when the tree breaks a rule. It then puts every comment and blank line back in the place where the
+/// reader puts it into the same slot, so `Reader.tryReadDocuments` of the output gives a tree that is equal to the
+/// input except for the spans. A tree that a program built can differ in styles that the writer had to change, unless
+/// the policy is `RequireStored`, which raises instead. The policy `Canonical` rewrites the styles on purpose. A tree
+/// that the parser produced has one exception, which the paragraph on the empty root block scalar names.
 ///
 /// The output ends every line with `WriterOptions.NewLine`, the last line included. One case differs: a block scalar
 /// with the chomping Clip or Keep whose value has no final line feed can only be the last node of the text. The
@@ -1668,15 +1799,39 @@ type internal Engine(options: WriterOptions) =
 ///
 /// A block scalar with the chomping Keep owns the empty lines behind it (l-chomped-empty, [165] to [169]), so a blank
 /// line that the tree holds directly behind it would read as part of the value. `Validate` rejects a stored Keep in
-/// that place. The writer picks Keep for a stored Strip or Clip when the value ends in several line feeds, and with a
-/// blank line behind it the scalar becomes double-quoted, because no other chomping gives the same value.
+/// front of more content. The writer picks Keep for a stored Strip or Clip when the value ends in several line feeds,
+/// and with a blank line behind it the scalar becomes double-quoted, because no other chomping gives the same value.
 /// `RequireStored` raises there already, since the stored chomping does not match the line feeds of the value. A
 /// comment line in between ends the empty lines (l-trail-comments), so the scalar stays a block scalar then.
+/// `endsWithKeptLines` tells a caller that puts a blank line behind a node whether the node ends in such a scalar.
 ///
-/// The one exception to the equal tree is an empty root block scalar without an indentation indicator that has a
-/// comment line behind it, which only a text with a byte order mark in front of the comment line produces. The
-/// content of a root block scalar starts at the first column, so the comment line would read as content. The writer
-/// writes the indicator 1, the tree that comes back has it, and `RequireStored` raises for the tree instead.
+/// Behind the last scalar of a document only trivia and markers follow, in the End of the last collection, in
+/// AfterRoot and in the prelude of the next document. A stored Keep scalar may have a blank line there, because the
+/// parser reads a line that holds a byte order mark as a blank line that ends the body of the scalar ([202], [211]),
+/// and a line that holds a tab does the same behind a root scalar. The writer prints the first blank line there as
+/// such a line, a tab line behind a root scalar and a byte order mark line behind a scalar in a collection.
+///
+/// The one exception to the equal tree is an empty root block scalar without an indentation indicator. Its body has
+/// no content lines, and the content of a root scalar starts at the first column, so the first line behind it that is
+/// not blank would read as content when it is a comment line, and so would the tab line behind a Keep scalar. Only a
+/// text with a byte order mark line behind the scalar produces such a tree. The writer writes the indicator 1, the
+/// tree that comes back has it, and `RequireStored` raises instead. The lines that count are the ones behind the
+/// root up to the next marker, the prelude of the next document included.
+///
+/// A character stands raw wherever the productions allow it. Plain and block scalars and comments hold nb-char
+/// characters ([27]), which include NEL, NBSP and the two Unicode line separators, because YAML 1.2 ends a line at a
+/// line feed or a carriage return only. Single quotes hold every nb-json character ([2], [118]) from U+0020 up and
+/// the tab, since they have no escape. Double quotes write the printable characters raw, the tab included, and escape
+/// the line breaks, the C0 controls, DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark.
+///
+/// A root plain scalar and the key of an entry of a root mapping start at the first column. When such a text begins
+/// with `---` or `...` and a blank or the end of the text follows, the writer puts the whole root one column in,
+/// where the text is a scalar and no document marker.
+///
+/// An implicit key is limited to 1024 characters. The writer measures the key as it writes it and spells it as short
+/// as the productions allow: a flow collection as a key has a `,` without a blank behind it and writes a one-entry
+/// mapping in a sequence as a flow pair, and a double-quoted key writes DEL, the C1 controls, U+FFFE, U+FFFF and the
+/// byte order mark raw when the escapes would pass the limit.
 ///
 /// The writer adds a `---` where the text would otherwise change the document count or lose the directives. That
 /// happens for a document with directives or trivia in its prelude and for a document that follows one without
@@ -1716,3 +1871,40 @@ module Writer =
     /// Writes a node as the root of a document without markers. A missing root gets a `---`, because an empty
     /// text holds no document.
     let writeNode (options: WriterOptions) (node: YamlNode) : string = write options (YamlDocument.create node)
+
+    /// True when the text of the node ends in a block scalar that the writer writes with the chomping Keep. A caller
+    /// that joins the text of several nodes leaves out the blank line behind such a node. The empty lines behind a Keep
+    /// scalar belong to its value, and a scalar that needs Keep because its value ends in several line feeds would
+    /// become a double-quoted scalar when a blank line followed it.
+    ///
+    /// The answer follows the last node of the text, which is the value of the last entry of a block mapping (its key
+    /// when no colon follows) and the node of the last item of a block sequence, one level after the other. It stops
+    /// at a collection that has trivia at its end, because those lines end the text and end the empty lines of the
+    /// scalar. It stops at a flow collection and at every scalar that is no block scalar. The chomping is the one that
+    /// the writer writes when more text follows the node: the stored chomping when it fits the value, and the one that
+    /// the value needs otherwise. The policy `RequireStored` raises where the stored chomping does not fit, so the
+    /// stored chomping counts there. The policy `Canonical` writes no block scalar, so the answer is false.
+    let endsWithKeptLines (options: WriterOptions) (node: YamlNode) : bool =
+        if options.Styles = StylePolicy.Canonical then
+            false
+        else
+            let mutable current = node
+            let mutable result = false
+            let mutable walking = true
+            while walking do
+                match current.Kind with
+                | YamlNodeKind.Scalar scalar ->
+                    walking <- false
+                    match scalar.Style with
+                    | ScalarStyle.Block (_, stored, _) when WriterText.isRawText scalar.Value ->
+                        let (chosen, fits) = WriterText.blockChomping scalar.Value stored false
+                        let chomp = if fits || options.Styles <> StylePolicy.RequireStored then chosen else stored
+                        result <- chomp = ChompingMode.Keep
+                    | _ -> ()
+                | YamlNodeKind.Mapping collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
+                    let last = List.last collection.Items
+                    current <- if last.Colon.IsSome then last.Value else last.Key
+                | YamlNodeKind.Sequence collection when collection.Style = CollectionStyle.Block && collection.End.IsEmpty && not collection.Items.IsEmpty ->
+                    current <- (List.last collection.Items).Node
+                | _ -> walking <- false
+            result

@@ -108,7 +108,8 @@ type ChompingMode =
 ///
 /// Rule R5 (blank lines behind a block scalar). A blank line behind the body of a block scalar with the
 /// chomping Clip or Strip is trivia under rule R4. With the chomping Keep it is content of the scalar and
-/// part of its value.
+/// part of its value. The root scalar of a document is the exception: a line that holds a tab or a byte order mark
+/// ends its body, and the parser reads that line as a blank line behind the root.
 [<RequireQualifiedAccess>]
 type ScalarStyle =
     | Plain

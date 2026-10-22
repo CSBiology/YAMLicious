@@ -696,14 +696,17 @@ let tests_keep_rule = testList "Slot rules: a blank line behind a Keep block sca
         Expect.stringContains problems.Head "[165]" "The production"
         Expect.equal (slotsOfDocument (YamlNode.mapping [ field "a" (keepScalar ""); next ])) [ "root.entries[0].Value.Style" ] "an empty value"
 
-    // yaml@2.6.1 reads `a: |+`, `  x` and an empty line as {"a":"x\n\n"}, and `- |+`, `  x` and an empty line as ["x\n\n"].
-    testCase "a blank line in the End of the collection is wrong" <| fun _ ->
+    // yaml@2.6.1 reads `a: |+`, `  x` and an empty line as {"a":"x\n\n"}. The parser of this library reads `a: |+`, `  x` and a line that holds a byte order mark as the value "x\n"
+    // and a blank line in the End of the mapping, because the mark ends the body and the document ([202], [211]). Only trivia and markers follow in the End of the last collection.
+    testCase "a blank line in the End of the last collection is valid" <| fun _ ->
         let keep = keepScalar "x\n"
-        Expect.equal (slotsOfDocument (withEnd [ blankLine ] (YamlNode.mapping [ field "a" keep ]))) [ "root.entries[0].Value.Style" ] "a mapping"
-        Expect.equal (slotsOfDocument (withEnd [ blankLine ] (YamlNode.sequence [ YamlNode.item keep ]))) [ "root.items[0].Node.Style" ] "a sequence"
+        expectValid (withEnd [ blankLine ] (YamlNode.mapping [ field "a" keep ])) "a mapping"
+        expectValid (withEnd [ blankLine ] (YamlNode.sequence [ YamlNode.item keep ])) "a sequence"
         // The End of the root is behind the last node of every collection on the path.
-        let nested = YamlNode.mapping [ field "a" (YamlNode.mapping [ field "b" keep ]) ] |> withEnd [ blankLine ]
-        Expect.equal (slotsOfDocument nested) [ "root.entries[0].Value.entries[0].Value.Style" ] "two levels deep"
+        expectValid (YamlNode.mapping [ field "a" (YamlNode.mapping [ field "b" keep ]) ] |> withEnd [ blankLine ]) "two levels deep"
+        // A key without a colon ends the text like a value.
+        let keyAlone = { field "k" YamlNode.empty with Question = Some Separation.Inline; Key = keep; Colon = None }
+        expectValid (withEnd [ blankLine ] (YamlNode.mapping [ keyAlone ])) "an explicit key without a colon"
 
     // yaml@2.6.1 reads `a:`, `  b:`, `    c: |+`, `      x`, an empty line and `d: 1` as {"a":{"b":{"c":"x\n\n"}},"d":1}.
     testCase "a blank line behind the last line of a collection that is nested in other collections is wrong" <| fun _ ->
@@ -729,17 +732,21 @@ let tests_keep_rule = testList "Slot rules: a blank line behind a Keep block sca
         let withColon = { field "k" (number "w") with Question = Some Separation.Inline; Key = keep }
         expectValid (YamlNode.mapping [ withColon; next ]) "the colon line follows the key"
 
-    // yaml@2.6.1 reads `|+`, `  x` and an empty line as "x\n\n", and `|+`, `  x`, an empty line, `--- y` as ["x\n\n","y"].
-    testCase "a blank line behind the root or in the prelude of the next document is wrong" <| fun _ ->
+    // yaml@2.6.1 reads `|+`, `  x` and an empty line as "x\n\n", and `|+`, `  x`, an empty line, `--- y` as ["x\n\n","y"]. The parser of this library reads a line that holds a tab
+    // behind a root scalar, or a line that holds a byte order mark, as a blank line in AfterRoot or in the prelude of the next document.
+    testCase "a blank line behind the root or in the prelude of the next document is valid" <| fun _ ->
         let keep = keepScalar "x\n"
-        Expect.equal (slotsOf (Validate.document { documentOf keep with AfterRoot = [ blankLine ] })) [ "root.Style" ] "AfterRoot"
+        expectValid keep "a root scalar"
+        Expect.equal (Validate.document { documentOf keep with AfterRoot = [ blankLine ] }) [] "AfterRoot"
         let second prelude = StreamPart.Document { documentOf (number "y") with Prelude = prelude; StartMarker = Some noMarker }
-        let stream (prelude: PreludeItem list) : YamlStream = { Parts = [ StreamPart.Document (documentOf keep); second prelude ] }
-        Expect.equal (slotsOf (Validate.stream (stream [ PreludeTrivia blankLine ]))) [ "Parts[0].root.Style" ] "the prelude of the next document"
+        let stream (root: YamlNode) (prelude: PreludeItem list) : YamlStream = { Parts = [ StreamPart.Document (documentOf root); second prelude ] }
+        Expect.equal (Validate.stream (stream keep [ PreludeTrivia blankLine ])) [] "the prelude behind a root scalar"
+        let collection = YamlNode.mapping [ field "a" keep ]
+        Expect.equal (Validate.stream (stream collection [ PreludeTrivia blankLine ])) [] "the prelude behind a collection"
         // The writer puts `...` in front of a prelude with a directive, and a comment line ends the empty lines.
         let directive = PreludeItem.Directive { Kind = DirectiveKind.YamlVersion (1, 2); TrailingComment = None; Span = None }
-        Expect.equal (Validate.stream (stream [ PreludeTrivia blankLine; directive ])) [] "a directive in the prelude"
-        Expect.equal (Validate.stream (stream [ PreludeTrivia (lineComment " c"); PreludeTrivia blankLine ])) [] "a comment first"
+        Expect.equal (Validate.stream (stream keep [ PreludeTrivia blankLine; directive ])) [] "a directive in the prelude"
+        Expect.equal (Validate.stream (stream keep [ PreludeTrivia (lineComment " c"); PreludeTrivia blankLine ])) [] "a comment first"
         let closed = StreamPart.Document { documentOf keep with EndMarker = Some noMarker }
         Expect.equal (Validate.stream { Parts = [ closed; second [ PreludeTrivia blankLine ] ] }) [] "an end marker in between"
 
@@ -819,11 +826,115 @@ let tests_line_break_rule = testList "Slot rules: a block collection starts on a
         expectValid (YamlNode.mapping [ field "k" withComment ]) "the value of an implicit entry"
 ]
 
+// Characters that a test needs and a source file cannot show: built at run time, so that no editor or compiler changes them.
+let private byteOrderMark = string (char 0xFEFF)
+let private nextLine = string (char 0x85)
+let private lineSeparator = string (char 0x2028)
+let private loneSurrogate = string (char 0xD800)
+
+let private directiveOf (kind: DirectiveKind) : PreludeItem =
+    PreludeItem.Directive { Kind = kind; TrailingComment = None; Span = None }
+
+/// The problems of a stream of one document whose prelude holds the items.
+let private slotsOfPrelude (items: PreludeItem list) : string list =
+    slotsOf (Validate.stream { Parts = [ StreamPart.Document { documentOf (number "a") with Prelude = items; StartMarker = Some { TrailingComment = None; Span = None } } ] })
+
+let tests_character_rules = testList "Slot rules: comments, names, entries and directives" [
+    // The text of a comment follows the `#` on the line of a comment, so it holds nb-char characters only ([27]): no line break, no control character, no byte order mark and no half of
+    // a surrogate pair. yaml@2.6.1 reads a comment line with NEL, a line separator, a tab or an emoji as a comment, and a comment line with a byte order mark or a control character as an error.
+    testCase "a comment holds nb-char characters only" <| fun _ ->
+        for text in [ " a\nb"; " a\rb"; " a" + byteOrderMark; " a\001b"; " a" + loneSurrogate; " a\127b" ] do
+            let bad = comment text
+            Expect.equal (slotsOfDocument (YamlNode.plain "v" |> YamlNode.withTrailingComment bad)) [ "root.TrailingComment" ] (sprintf "TrailingComment %A" text)
+            Expect.equal (slotsOfDocument (blockLiteral "x\n" |> YamlNode.withHeaderComment bad)) [ "root.HeaderComment" ] (sprintf "HeaderComment %A" text)
+            Expect.equal (slotsOfDocument (YamlNode.flowSequence [] |> YamlNode.withOpeningComment bad)) [ "root.OpeningComment" ] (sprintf "OpeningComment %A" text)
+        let bad = comment (" a" + byteOrderMark)
+        let line = FullLineComment bad
+        let entry = { field "a" (number "1") with Before = [ line ] }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ entry ])) [ "root.entries[0].Before[0]" ] "Before of an entry"
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ { YamlNode.item (number "1") with Before = [ blankLine; line ] } ])) [ "root.items[0].Before[1]" ] "Before of an item"
+        Expect.equal (slotsOfDocument (withEnd [ line ] (YamlNode.mapping [ field "a" (number "1") ]))) [ "root.End[0]" ] "End"
+        let explicitKey = { field "k" (number "v") with Question = Some (commented " q" [ line ]); BeforeColon = [ line ]; Colon = Some (commented " c" [ line ]) }
+        Expect.equal
+            (slotsOfDocument (YamlNode.mapping [ explicitKey ]))
+            [ "root.entries[0].Question.Following[0]"; "root.entries[0].BeforeColon[0]"; "root.entries[0].Colon.Following[0]" ]
+            "Question, BeforeColon and Colon"
+        Expect.equal (slotsOfDocument (YamlNode.sequence [ { YamlNode.item (number "1") with Dash = Some (commented (" a" + byteOrderMark) []) } ])) [ "root.items[0].Dash.Comment" ] "Dash"
+        let tagged = YamlNode.withTag (YamlTag.core "str") YamlNode.empty |> fun node -> { node with PropertyLayout = [ placement PropertyName.Tag (commented (" a" + byteOrderMark) []) ] }
+        Expect.equal (slotsOfDocument tagged) [ "root.PropertyLayout[0].After.Comment" ] "After of a property"
+        Expect.equal (slotsOf (Validate.document { documentOf (number "v") with BeforeRoot = [ line ]; AfterRoot = [ line ] })) [ "BeforeRoot[0]"; "AfterRoot[0]" ] "BeforeRoot and AfterRoot"
+        let marker: DocumentMarker = { TrailingComment = Some bad; Span = None }
+        Expect.equal (slotsOf (Validate.document { documentOf (number "v") with StartMarker = Some marker; EndMarker = Some marker })) [ "StartMarker.TrailingComment"; "EndMarker.TrailingComment" ] "Markers"
+        Expect.equal (slotsOf (Validate.stream { Parts = [ StreamPart.ExtraEndMarker marker; StreamPart.Trivia line ] })) [ "Parts[0].TrailingComment"; "Parts[1]" ] "ExtraEndMarker and StreamPart.Trivia"
+        let directiveWithComment = PreludeItem.Directive { Kind = DirectiveKind.ReservedDirective ("FOO", []); TrailingComment = Some bad; Span = None }
+        Expect.equal (slotsOfPrelude [ PreludeItem.PreludeTrivia line; directiveWithComment ]) [ "Parts[0].Prelude[0]"; "Parts[0].Prelude[1].TrailingComment" ] "Prelude"
+
+    testCase "a comment may hold a tab, NEL, the line separator and an astral character" <| fun _ ->
+        let text = " a\tb" + nextLine + lineSeparator + "\U0001F600"
+        expectValid (YamlNode.plain "v" |> YamlNode.withTrailingComment (comment text)) "TrailingComment"
+        expectValid (YamlNode.mapping [ { field "a" (number "1") with Before = [ FullLineComment (comment text) ] } ]) "Before"
+
+    // The name behind `&` or `*` is one or more ns-anchor-char characters ([102]): no blank, no line break, no flow indicator, no control character and no byte order mark.
+    // yaml@2.6.1 reads `&a` followed by a comma or a bracket as an anchor `a` and the rest as other tokens, so the name cannot hold them.
+    testCase "an anchor or an alias name holds ns-anchor-char characters only" <| fun _ ->
+        // The constructors reject an empty name, so the tests build the nodes as records.
+        let anchored (name: string) = { number "v" with Properties = { Tag = None; Anchor = Some name }; PropertyLayout = [ placement PropertyName.Anchor Separation.Inline ] }
+        let aliased (name: string) = { YamlNode.empty with Kind = YamlNodeKind.Alias name }
+        for name in [ ""; "a b"; "a\tb"; "a,b"; "a[b"; "a]b"; "a{b"; "a}b"; "a\nb"; "a" + byteOrderMark + "b"; "a\001"; "a" + loneSurrogate ] do
+            Expect.equal (slotsOfDocument (anchored name)) [ "root.Properties.Anchor" ] (sprintf "Anchor %A" name)
+            Expect.equal (slotsOfDocument (aliased name)) [ "root" ] (sprintf "Alias %A" name)
+        for name in [ "a"; "a-b_c"; "a:b"; string (char 0xE9); "a" + nextLine + "b"; "\U0001F600"; "a#b" ] do
+            expectValid (anchored name) (sprintf "Anchor %A" name)
+            expectValid (aliased name) (sprintf "Alias %A" name)
+
+    // Model.fs says that the colon is omitted behind a key without a value only. A flow mapping entry that is a key alone and an explicit key without a value have no colon.
+    testCase "an entry with a value has a colon" <| fun _ ->
+        let noColon = { field "k" (number "v") with Colon = None }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ noColon ])) [ "root.entries[0].Colon" ] "A block mapping"
+        Expect.equal (slotsOfDocument (YamlNode.flowMapping [ noColon ])) [ "root.entries[0].Colon" ] "A flow mapping"
+        let implicitAlone = { field "k" YamlNode.empty with Colon = None }
+        Expect.equal (slotsOfDocument (YamlNode.mapping [ implicitAlone ])) [ "root.entries[0].Colon" ] "An implicit entry of a block mapping without a value"
+        expectValid (YamlNode.flowMapping [ implicitAlone ]) "A flow key alone"
+        expectValid (YamlNode.mapping [ { implicitAlone with Question = Some Separation.Inline } ]) "An explicit key without a value"
+
+    testCase "a %YAML directive names a version 1.x and stands once" <| fun _ ->
+        Expect.equal (slotsOfPrelude [ directiveOf (DirectiveKind.YamlVersion (1, 2)) ]) [] "1.2"
+        Expect.equal (slotsOfPrelude [ directiveOf (DirectiveKind.YamlVersion (1, 1)) ]) [] "1.1"
+        Expect.equal (slotsOfPrelude [ directiveOf (DirectiveKind.YamlVersion (2, 0)) ]) [ "Parts[0].Prelude[0].Kind" ] "2.0"
+        Expect.equal (slotsOfPrelude [ directiveOf (DirectiveKind.YamlVersion (1, -1)) ]) [ "Parts[0].Prelude[0].Kind" ] "a negative minor number"
+        Expect.equal (slotsOfPrelude [ directiveOf (DirectiveKind.YamlVersion (1, 2)); directiveOf (DirectiveKind.YamlVersion (1, 2)) ]) [ "Parts[0].Prelude[1].Kind" ] "twice"
+
+    // yaml@2.6.1 reads `%TAG !e! tag:example.com,2000:` and rejects a handle without the exclamation marks and a second directive for the same handle.
+    testCase "a %TAG directive has a handle and a prefix that the productions allow" <| fun _ ->
+        let tag (handle: string) (prefix: string) = directiveOf (DirectiveKind.TagDirective (handle, prefix))
+        for handle in [ "!"; "!!"; "!e!"; "!a-1!" ] do
+            Expect.equal (slotsOfPrelude [ tag handle "tag:example.com,2000:" ]) [] (sprintf "Handle %s" handle)
+        for handle in [ "e"; "!e"; "e!"; "!!!"; "!e e!"; "" ] do
+            Expect.equal (slotsOfPrelude [ tag handle "tag:example.com,2000:" ]) [ "Parts[0].Prelude[0].Kind" ] (sprintf "Handle %s" handle)
+        for prefix in [ ""; ",a"; "[a"; "a b"; "a%2"; "a" + byteOrderMark ] do
+            Expect.equal (slotsOfPrelude [ tag "!e!" prefix ]) [ "Parts[0].Prelude[0].Kind" ] (sprintf "Prefix %A" prefix)
+        for prefix in [ "!"; "!local-"; "tag:example.com,2000:"; "a%20b"; "a!b" ] do
+            Expect.equal (slotsOfPrelude [ tag "!e!" prefix ]) [] (sprintf "Prefix %A" prefix)
+        Expect.equal (slotsOfPrelude [ tag "!e!" "a"; tag "!e!" "b" ]) [ "Parts[0].Prelude[1].Kind" ] "a handle twice"
+        Expect.equal (slotsOfPrelude [ tag "!e!" "a"; tag "!f!" "b" ]) [] "two handles"
+
+    // A reserved directive is a name and parameters of ns-char characters ([82], [83]). A parameter that starts with a `#` would begin a comment, and `YAML` and `TAG` are no reserved names.
+    testCase "a reserved directive has a name and parameters of ns-char characters" <| fun _ ->
+        let reserved (name: string) (arguments: string list) = directiveOf (DirectiveKind.ReservedDirective (name, arguments))
+        Expect.equal (slotsOfPrelude [ reserved "FOO" [ "a"; "b#c" ] ]) [] "valid"
+        Expect.equal (slotsOfPrelude [ reserved "FOO" [] ]) [] "no parameter"
+        for name in [ ""; "FOO BAR"; "F\tOO"; "FOO\n"; "YAML"; "TAG"; "F" + byteOrderMark ] do
+            Expect.equal (slotsOfPrelude [ reserved name [] ]) [ "Parts[0].Prelude[0].Kind" ] (sprintf "Name %A" name)
+        for argument in [ ""; "#c"; "a b"; "a\n"; "a\001"; "a" + byteOrderMark ] do
+            Expect.equal (slotsOfPrelude [ reserved "FOO" [ argument ] ]) [ "Parts[0].Prelude[0].Kind" ] (sprintf "Parameter %A" argument)
+]
+
 let Main = testList "Validate" [
     tests_node_checks
     tests_rule_checks
     tests_rules
     tests_end_rule
     tests_keep_rule
+    tests_character_rules
     tests_line_break_rule
 ]

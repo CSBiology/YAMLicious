@@ -4,6 +4,11 @@ module Tests.RoundTrip
 // the second write has to give the first text again. The contract holds for the indentations 2 and 4 and for the line breaks LF and
 // CRLF. It holds under PreferStored and under RequireStored, because a tree that the parser produced needs no change of style.
 //
+// The one exception is an empty root block scalar without an indentation indicator that has a comment line behind it, or a blank line when its
+// chomping is Keep. The first line behind such a body would be content, so the writer adds the indicator 1 and RequireStored raises. The lists below leave
+// that case out, and Tests.Writer tests it. The inputs for the other places hold the texts that the parser reads as a blank line behind a Keep scalar:
+// a line with a tab behind a root scalar and a line with a byte order mark behind a scalar.
+//
 // The block inputs come from the parser tests and from a frozen corpus. The corpus inputs are
 // short ones that show a feature of the model: comments in each slot, block scalars with each header, explicit keys, properties,
 // aliases, directives, several documents and blank lines.
@@ -14,6 +19,15 @@ open Fable.Pyxpecto
 open YAMLicious
 
 let private defaults = WriterOptions.defaults
+
+// Characters that a test needs and a source file cannot show: built at run time, so that no editor or compiler changes them.
+let private bom = string (char 0xFEFF)
+let private nel = string (char 0x85)
+let private nbsp = string (char 0xA0)
+let private lineSeparator = string (char 0x2028)
+let private paragraphSeparator = string (char 0x2029)
+let private del = string (char 0x7F)
+let private c1Control = string (char 0x81)
 
 let private fourSpaces: WriterOptions = { Indent = 4; NewLine = "\n"; Styles = PreferStored }
 
@@ -237,9 +251,45 @@ let private blockInputs: string list = [
     // A quoted scalar may hold U+FEFF ([107] and [118]). Single quotes have no escape for it, so the writer keeps it raw there.
     "'a\uFEFFb'"
     "k: 'x\uFEFF\n y'\n"
+    // The lines that end the body of a Keep scalar: a line with a tab behind a root scalar and a line with a byte order mark behind any scalar.
+    "|+\n  a\n\t\n"
+    "|1+\n" + bom + " \n\n"
+    "|+\n  a\n\t\n\n# c\n"
+    "|+\n  a\n\t\n---\ny\n"
+    "a: |+\n  x\n" + bom + "\n"
+    "a:\n  b: |+\n    x\n" + bom + "\n# c\n"
+    "- |+\n  x\n\n" + bom + "\n"
+    "a: |+\n  x\n" + bom + "\n---\ny\n"
+    // A root plain scalar or key that starts with a document marker, behind a blank or a tab in the text.
+    " --- a\n"
+    "  ...\n"
+    "\t... x\n"
+    " --- a\n\n  b\n"
+    " --- a: b\n"
+    " a: 1\n ... b: v\n"
+    "&x\n --- a\n"
+    "--- --- a\n"
+    // NEL, NBSP and the two Unicode separators in every style, and DEL and a C1 control in single quotes.
+    "a: b" + nel + "c\n"
+    "a: b" + nbsp + "c\n"
+    "b" + lineSeparator + ": v # x" + paragraphSeparator + "y\n"
+    "a: 'b" + nel + lineSeparator + "c'\n"
+    "a: \"b" + paragraphSeparator + "c\"\n"
+    "a: |\n  b" + lineSeparator + "c\n"
+    "a: 'b" + del + c1Control + "c'\n"
+    "a: \"b\tc\"\n"
+    // An implicit key within 1024 characters in its shortest spelling.
+    "\"" + String.replicate 1010 "a" + String.replicate 8 "\t" + "\": v\n"
+    "[" + String.concat "," (List.replicate 500 "a") + "]: v\n"
+    "[a: b]: v\n"
+    "[a:]: v\n"
+    "[a: b,c: d]: v\n"
+    "[{a: b,c: d}]: v\n"
 ]
 
 let private flowInputs: string list = [
+    "['\n\n" + nel + "']\n"
+    "[ a: b, 'c' ]\n"
     "[a, b]\n"
     "{a: 1, b: 2}\n"
     "[]\n"
@@ -438,11 +488,22 @@ let private constructedTests = testList "Constructed trees" [
     // The empty lines behind a Keep scalar are part of its value ([165] to [169]), so a BlankLine trivia directly behind a scalar that the writer would give the chomping
     // Keep reads back as part of the value. The writer double-quotes the scalar, and the tree that comes back has the same value, the double-quoted style and the same trivia.
     testCase "a scalar with two line feeds and a blank line behind it comes back double-quoted with the same value and trivia" <| fun _ ->
-        for (place, build, _) in Tests.Writer.keepPlaces do
+        for place in Tests.Writer.keepPlaces do
             for stored in [ ChompingMode.Clip; ChompingMode.Strip ] do
-                let written = Writer.writeDocuments defaults (build (blockScalar BlockScalarStyle.Literal stored None "x\n\n"))
-                Expect.streamEqual (parseOk written) (build (dq "x\n\n")) (sprintf "The tree read in %s from %A" place written)
-                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place)
+                let written = Writer.writeDocuments defaults (place.Build(blockScalar BlockScalarStyle.Literal stored None "x\n\n"))
+                Expect.streamEqual (parseOk written) (place.Build(dq "x\n\n")) (sprintf "The tree read in %s from %A" place.Name written)
+                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place.Name)
+
+    // A stored Keep scalar with a blank line where only trivia follow comes back as the same tree. The blank line is a byte order mark line behind a scalar in a collection and a
+    // tab line behind a root scalar, which the parser reads as a blank line that ends the body.
+    testCase "a stored Keep scalar with a blank line at the end of the text comes back equal" <| fun _ ->
+        for place in Tests.Writer.keepPlaces do
+            if place.Kept.IsSome then
+                let tree = place.Build(blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n")
+                for options in [ defaults; crlf; fourSpaces; required ] do
+                    let written = Writer.writeDocuments options tree
+                    Expect.streamEqual (parseOk written) tree (sprintf "The tree read in %s from %A" place.Name written)
+                    Expect.equal (Writer.writeDocuments options (parseOk written)) written (sprintf "The second write in %s" place.Name)
 
     // A comment line between the Keep scalar and the blank line ends the empty lines of the scalar (l-trail-comments), so the scalar stays a block scalar and the trivia come back.
     testCase "a Keep scalar with a comment line and a blank line behind it comes back equal" <| fun _ ->

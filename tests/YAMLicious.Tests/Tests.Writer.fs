@@ -21,6 +21,15 @@ open YAMLicious
 
 let private defaults = WriterOptions.defaults
 
+// Characters that a test needs and a source file cannot show: built at run time, so that no editor or compiler changes them.
+let private bom = string (char 0xFEFF)
+let private nel = string (char 0x85)
+let private nbsp = string (char 0xA0)
+let private lineSeparator = string (char 0x2028)
+let private paragraphSeparator = string (char 0x2029)
+let private del = string (char 0x7F)
+let private c1Control = string (char 0x81)
+
 let private withStyles (policy: StylePolicy) : WriterOptions = { defaults with Styles = policy }
 
 let private writeNode (node: YamlNode) : string = Writer.writeNode defaults node
@@ -351,12 +360,13 @@ let private slotTests = testList "Slots" [
         let inner = withNote " closer" (flowSeq [ withNote " x" (sc "a") ])
         expectNode (flowSeq [ inner; sc "b" ]) "[\n  [\n    a # x\n  ], # closer\n  b\n]\n"
 
-    // yaml@2.6.1 reads the expected texts as {"k":["a"]}, {"[\"a\",\"b\"]":"v"}.
+    // yaml@2.6.1 reads the expected texts as {"k":["a"]}, {"[\"a\",\"b\"]":"v"}. A flow collection as a key has the shortest spelling, because the key is limited
+    // to 1024 characters: a comma without a blank behind it.
     testCase "a flow collection with properties and a flow collection as a key" <| fun _ ->
         let tagged = YamlNode.withAnchor "x" (YamlNode.withTag (YamlTag.core "seq") (flowSeq [ sc "a" ]))
         expectNode (mapOf [ "k", tagged ]) "k: !!seq &x [a]\n"
         let keyed = YamlNode.mapping [ YamlNode.entry (flowSeq [ sc "a"; sc "b" ]) (sc "v") ]
-        expectNode keyed "[a, b]: v\n"
+        expectNode keyed "[a,b]: v\n"
 
     // yaml@2.6.1 reads the expected texts as ["","b"].
     // yaml@2.6.1 reads `{? }` as {"":null}, `{? , a}` as {"":null,"a":null} and `{? : v}` as {"":"v"}. The question mark needs a blank behind it,
@@ -422,7 +432,7 @@ let private scalarTests = testList "Scalar spellings" [
     testCase "a plain scalar that cannot stand plain becomes double-quoted" <| fun _ ->
         for text in plainIndicatorTexts do
             let written = writeNode (mapOf [ "k", sc text ])
-            let escaped = text.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\t", "\\t")
+            let escaped = text.Replace("\\", "\\\\").Replace("\"", "\\\"")
             Expect.equal written ("k: \"" + escaped + "\"\n") (sprintf "The text for %A" text)
             Expect.equal (valueJson (parseRoot written)) (valueJson (mapOf [ "k", dq text ])) (sprintf "The value for %A" text)
 
@@ -430,7 +440,7 @@ let private scalarTests = testList "Scalar spellings" [
     testCase "a plain scalar with a control character or a surrogate is escaped" <| fun _ ->
         expectNode (mapOf [ "k", sc "a\u0001b" ]) "k: \"a\\x01b\"\n"
         expectNode (mapOf [ "k", sc "\u007F" ]) "k: \"\\x7F\"\n"
-        expectNode (mapOf [ "k", sc "\u0085" ]) "k: \"\\N\"\n"
+        expectNode (mapOf [ "k", sc "\u0085" ]) ("k: " + nel + "\n")
         expectNode (mapOf [ "k", sc "\uFFFE" ]) "k: \"\\uFFFE\"\n"
         expectNode (mapOf [ "k", sc "a\r\nb" ]) "k: \"a\\r\\nb\"\n"
         expectNode (mapOf [ "k", sc "\uFEFFx" ]) "k: \"\\uFEFFx\"\n"
@@ -447,13 +457,29 @@ let private scalarTests = testList "Scalar spellings" [
         expectNode (mapOf [ "k", sc "\na" ]) "k: \"\\na\"\n"
         expectNode (mapOf [ "k", sc "a\n" ]) "k: \"a\\n\"\n"
 
-    // yaml@2.6.1 reads the expected texts as "--- a", "...", {"k":"--- a"}, {"--- a":"v"}, ["--- a"].
-    testCase "a plain scalar that starts with a document marker is quoted at the first column" <| fun _ ->
-        expectNode (sc "--- a") "\"--- a\"\n"
-        expectNode (sc "...") "\"...\"\n"
+    // yaml@2.6.1 reads the expected texts as "--- a", "...", {"k":"--- a"}, {"--- a":"v"}, {"a":"1","... b":"v"}, ["--- a"] and the other texts in the same way.
+    // A root plain scalar and the key of a root mapping start at the first column, where `---` and `...` mark a document. The writer puts the root one column in,
+    // and the same text is a plain scalar there. A double-quoted scalar and a scalar behind an indicator need nothing.
+    testCase "a root plain scalar that starts with a document marker stands one column in" <| fun _ ->
+        expectNode (sc "--- a") " --- a\n"
+        expectNode (sc "...") " ...\n"
+        expectNode (sc "--- a\nb") " --- a\n\n  b\n"
         expectNode (mapOf [ "k", sc "--- a" ]) "k: --- a\n"
-        expectNode (mapOf [ "--- a", sc "v" ]) "\"--- a\": v\n"
+        expectNode (mapOf [ "--- a", sc "v" ]) " --- a: v\n"
+        expectNode (mapOf [ "a", sc "1"; "... b", sc "v"; "c", mapOf [ "--- d", sc "w" ] ]) " a: 1\n ... b: v\n c:\n   --- d: w\n"
         expectNode (seqOf [ sc "--- a" ]) "- --- a\n"
+        expectNode (dq "--- a") "\"--- a\"\n"
+        expectNode (YamlNode.mapping [ YamlNode.entry (dq "--- a") (sc "v") ]) "\"--- a\": v\n"
+        // Behind the marker or a property on its line the scalar is not at the first column.
+        Expect.equal (Writer.write defaults { document (sc "--- a") with StartMarker = Some(marker None) }) "--- --- a\n" "Behind the start marker"
+        Expect.equal (writeNode (YamlNode.withAnchor "x" (sc "--- a"))) "&x --- a\n" "Behind an anchor"
+        // A property with a line break behind it leaves the scalar at the first column.
+        let onNextLine = withLayout [ placement PropertyName.Anchor (newLine None []) ] (YamlNode.withAnchor "x" (sc "--- a"))
+        expectNode onNextLine "&x\n --- a\n"
+        // RequireStored keeps the stored style, and Canonical writes the same text.
+        Expect.equal (Writer.writeNode (withStyles RequireStored) (sc "--- a")) " --- a\n" "RequireStored"
+        Expect.equal (Writer.writeNode (withStyles Canonical) (sc "--- a")) " --- a\n" "Canonical"
+        Expect.equal (Writer.writeNode (withStyles Canonical) (mapOf [ "--- a", sc "v" ])) " --- a: v\n" "Canonical key"
 
     // yaml@2.6.1 reads the expected texts as {"k":"it's"}, {"k":" x "}, {"k":""}, {"k":"a\nb"}, {"k":"a\n\nb"}, {"k":"\na"} and the other texts in the same way.
     testCase "a single-quoted scalar doubles its quote and folds its line feeds" <| fun _ ->
@@ -485,8 +511,8 @@ let private scalarTests = testList "Scalar spellings" [
     // yaml@2.6.1 reads each double-quoted text as the value on its left.
     testCase "a double-quoted scalar writes the shortest escape of each character" <| fun _ ->
         let cases =
-            [ "\"", "\\\""; "\\", "\\\\"; "\n", "\\n"; "\t", "\\t"; "\r", "\\r"; "\u0000", "\\0"; "\u0007", "\\a"; "\u0008", "\\b"
-              "\u000B", "\\v"; "\u000C", "\\f"; "\u001B", "\\e"; "\u0085", "\\N"; "\u00A0", "\\_"; "\u2028", "\\L"; "\u2029", "\\P"
+            [ "\"", "\\\""; "\\", "\\\\"; "\n", "\\n"; "\t", "\t"; "\r", "\\r"; "\u0000", "\\0"; "\u0007", "\\a"; "\u0008", "\\b"
+              "\u000B", "\\v"; "\u000C", "\\f"; "\u001B", "\\e"; "\u0085", "\u0085"; "\u00A0", "\u00A0"; "\u2028", "\u2028"; "\u2029", "\u2029"
               "\u0001", "\\x01"; "\u001F", "\\x1F"; "\u007F", "\\x7F"; "\u0080", "\\x80"; "\u009F", "\\x9F"; "\uFFFE", "\\uFFFE"; "\uFEFF", "\\uFEFF"
               "/", "/"; "\u00E9", "\u00E9"; "\u20AC", "\u20AC" ]
         for (value, escape) in cases do
@@ -1216,10 +1242,11 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
 
     // Tests.Escapes "A double-quoted scalar with a line break round-trips through the writer". yaml@2.6.1 reads the text as {"one \n\n  two \t":"v"}. The writer escapes the line breaks
     // and the tab, so the output never relies on folding.
-    testCase "a double-quoted key with line breaks and a tab is written with escapes" <| fun _ ->
+    testCase "a double-quoted key with line breaks and a tab is written with escapes for the line breaks only" <| fun _ ->
         let node = YamlNode.mapping [ YamlNode.entry (dq "one \n\n  two \t") (sc "v") ]
-        expectNode node "\"one \\n\\n  two \\t\": v\n"
-        Expect.nodeEqual (parseRoot "\"one \\n\\n  two \\t\": v\n") node "The text reads back as the same tree"
+        expectNode node "\"one \\n\\n  two \t\": v\n"
+        Expect.nodeEqual (parseRoot "\"one \\n\\n  two \\t\": v\n") node "The escaped text reads as the same tree"
+        Expect.nodeEqual (parseRoot "\"one \\n\\n  two \t\": v\n") node "The text with the raw tab reads as the same tree"
 
     // Tests.AdvancedFeatures "7.7 A writer round trip keeps the tag and the anchor of the scalars". yaml@2.6.1 reads the texts as {"k":"a b"}, {"k":"a"}, ["a b"], {"k":"x\n"} and ["y"].
     testCase "the tag and the anchor of a scalar with its value on a later line survive writing" <| fun _ ->
@@ -1260,59 +1287,117 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
         Expect.equal (Writer.writeDocuments defaults reparsed) written "The second write gives the first text"
 ]
 
-/// The places where a blank line can follow a scalar directly, as a tree built around the scalar, and the text that the writer
-/// gives when the scalar is the value "x" with two line feeds and becomes double-quoted because of the blank line.
-let keepPlaces: (string * (YamlNode -> YamlStream) * string) list =
+/// A place where a blank line can follow a scalar directly.
+type KeepPlace =
+    { Name: string
+      /// The tree around the scalar.
+      Build: YamlNode -> YamlStream
+      /// The text when the scalar is the value "x" with two line feeds and gets Keep from its value: the blank line behind it
+      /// makes the writer double-quote the scalar.
+      Quoted: string
+      /// The text when the scalar is a stored Keep with the value "x" and one line feed. It is None where more content follows
+      /// the blank line, which makes the tree invalid. Where only trivia follow, the blank line is written as a line that ends
+      /// the body: a byte order mark line behind a scalar in a collection and a tab line behind a root scalar.
+      Kept: string option }
+
+/// The places where a blank line can follow a scalar directly.
+let keepPlaces: KeepPlace list =
     let one (root: YamlNode) : YamlStream = { Parts = [ StreamPart.Document(document root) ] }
     let blankBefore (entry: MappingEntry) : MappingEntry = { entry with Before = [ blank ] }
     let secondDocument (prelude: PreludeItem list) : StreamPart =
         StreamPart.Document { document (sc "y") with Prelude = prelude; StartMarker = Some(marker None) }
-    [ "the Before of the next entry", (fun s -> one (YamlNode.mapping [ entryOf "a" s; blankBefore (entryOf "b" (sc "1")) ])), "a: \"x\\n\\n\"\n\nb: 1\n"
-      "the Before of the next item", (fun s -> one (YamlNode.sequence [ YamlNode.item s; itemBefore [ blank ] (sc "y") ])), "- \"x\\n\\n\"\n\n- y\n"
-      "the End of a mapping", (fun s -> one (withEnd [ blank ] (mapOf [ "a", s ]))), "a: \"x\\n\\n\"\n\n"
-      "the End of a sequence", (fun s -> one (withEnd [ blank ] (seqOf [ s ]))), "- \"x\\n\\n\"\n\n"
-      "the Before of an entry of the outer mapping, three levels deep",
-      (fun s -> one (YamlNode.mapping [ entryOf "a" (mapOf [ "b", mapOf [ "c", s ] ]); blankBefore (entryOf "d" (sc "1")) ])),
-      "a:\n  b:\n    c: \"x\\n\\n\"\n\nd: 1\n"
-      "the Before of an entry behind a sequence in a mapping",
-      (fun s -> one (YamlNode.mapping [ entryOf "a" (seqOf [ s ]); blankBefore (entryOf "d" (sc "1")) ])),
-      "a:\n  - \"x\\n\\n\"\n\nd: 1\n"
-      "the End of the root, two levels deep", (fun s -> one (withEnd [ blank ] (mapOf [ "a", mapOf [ "b", s ] ]))), "a:\n  b: \"x\\n\\n\"\n\n"
-      "the gap in front of the colon of an explicit key",
-      (fun s -> one (YamlNode.mapping [ { explicitEntry s (sc "w") with BeforeColon = [ blank ] } ])),
-      "? \"x\\n\\n\"\n\n: w\n"
-      "the Before of the entry behind an explicit key without a colon",
-      (fun s -> one (YamlNode.mapping [ explicitKeyOnly s; blankBefore (entryOf "d" (sc "1")) ])),
-      "? \"x\\n\\n\"\n\nd: 1\n"
-      "AfterRoot", (fun s -> { Parts = [ StreamPart.Document { document s with AfterRoot = [ blank ] } ] }), "\"x\\n\\n\"\n\n"
-      "the prelude of the next document",
-      (fun s -> { Parts = [ StreamPart.Document(document s); secondDocument [ PreludeItem.PreludeTrivia blank ] ] }),
-      "\"x\\n\\n\"\n\n--- y\n" ]
+    [ { Name = "the Before of the next entry"
+        Build = fun s -> one (YamlNode.mapping [ entryOf "a" s; blankBefore (entryOf "b" (sc "1")) ])
+        Quoted = "a: \"x\\n\\n\"\n\nb: 1\n"
+        Kept = None }
+      { Name = "the Before of the next item"
+        Build = fun s -> one (YamlNode.sequence [ YamlNode.item s; itemBefore [ blank ] (sc "y") ])
+        Quoted = "- \"x\\n\\n\"\n\n- y\n"
+        Kept = None }
+      { Name = "the End of a mapping"
+        Build = fun s -> one (withEnd [ blank ] (mapOf [ "a", s ]))
+        Quoted = "a: \"x\\n\\n\"\n\n"
+        Kept = Some("a: |+\n  x\n" + bom + "\n") }
+      { Name = "the End of a sequence"
+        Build = fun s -> one (withEnd [ blank ] (seqOf [ s ]))
+        Quoted = "- \"x\\n\\n\"\n\n"
+        Kept = Some("- |+\n  x\n" + bom + "\n") }
+      { Name = "the Before of an entry of the outer mapping, three levels deep"
+        Build = fun s -> one (YamlNode.mapping [ entryOf "a" (mapOf [ "b", mapOf [ "c", s ] ]); blankBefore (entryOf "d" (sc "1")) ])
+        Quoted = "a:\n  b:\n    c: \"x\\n\\n\"\n\nd: 1\n"
+        Kept = None }
+      { Name = "the Before of an entry behind a sequence in a mapping"
+        Build = fun s -> one (YamlNode.mapping [ entryOf "a" (seqOf [ s ]); blankBefore (entryOf "d" (sc "1")) ])
+        Quoted = "a:\n  - \"x\\n\\n\"\n\nd: 1\n"
+        Kept = None }
+      { Name = "the End of the root, two levels deep"
+        Build = fun s -> one (withEnd [ blank ] (mapOf [ "a", mapOf [ "b", s ] ]))
+        Quoted = "a:\n  b: \"x\\n\\n\"\n\n"
+        Kept = Some("a:\n  b: |+\n    x\n" + bom + "\n") }
+      { Name = "the gap in front of the colon of an explicit key"
+        Build = fun s -> one (YamlNode.mapping [ { explicitEntry s (sc "w") with BeforeColon = [ blank ] } ])
+        Quoted = "? \"x\\n\\n\"\n\n: w\n"
+        Kept = None }
+      { Name = "the Before of the entry behind an explicit key without a colon"
+        Build = fun s -> one (YamlNode.mapping [ explicitKeyOnly s; blankBefore (entryOf "d" (sc "1")) ])
+        Quoted = "? \"x\\n\\n\"\n\nd: 1\n"
+        Kept = None }
+      { Name = "the End of the collection behind an explicit key without a colon"
+        Build = fun s -> one (withEnd [ blank ] (YamlNode.mapping [ explicitKeyOnly s ]))
+        Quoted = "? \"x\\n\\n\"\n\n"
+        Kept = Some("? |+\n  x\n" + bom + "\n") }
+      { Name = "AfterRoot"
+        Build = fun s -> { Parts = [ StreamPart.Document { document s with AfterRoot = [ blank ] } ] }
+        Quoted = "\"x\\n\\n\"\n\n"
+        Kept = Some("|+\n  x\n\t\n") }
+      { Name = "the prelude of the next document"
+        Build = fun s -> { Parts = [ StreamPart.Document(document s); secondDocument [ PreludeItem.PreludeTrivia blank ] ] }
+        Quoted = "\"x\\n\\n\"\n\n--- y\n"
+        Kept = Some("|+\n  x\n\t\n--- y\n") }
+      { Name = "the prelude of the next document behind a collection"
+        Build = fun s -> { Parts = [ StreamPart.Document(document (mapOf [ "a", s ])); secondDocument [ PreludeItem.PreludeTrivia blank ] ] }
+        Quoted = "a: \"x\\n\\n\"\n\n--- y\n"
+        Kept = Some("a: |+\n  x\n" + bom + "\n--- y\n") } ]
 
 let private keepBlankTests = testList "A blank line behind a Keep block scalar" [
     // yaml@2.6.1 reads the texts of each place with the block scalar `|+` as the value with the empty line, for example {"a":"x\n\n","b":1} for the first place, and
     // reads the double-quoted texts of the next test as the same value. The empty lines behind a Keep scalar are part of its value ([165] to [169]).
-    testCase "a stored Keep scalar with a blank line directly behind it is an invalid tree in every place" <| fun _ ->
+    testCase "a stored Keep scalar with a blank line in front of more content is an invalid tree" <| fun _ ->
         let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
-        for (place, build, _) in keepPlaces do
-            for options in [ defaults; withStyles RequireStored; withStyles Canonical ] do
-                let error = writeError (fun () -> Writer.writeDocuments options (build keep))
-                Expect.stringContains error.Message "Keep" (sprintf "The chomping in %s" place)
-                Expect.stringContains error.Message "[165]" (sprintf "The production in %s" place)
-                Expect.stringContains error.Message ".Style" (sprintf "The slot in %s" place)
+        for place in keepPlaces do
+            if place.Kept.IsNone then
+                for options in [ defaults; withStyles RequireStored; withStyles Canonical ] do
+                    let error = writeError (fun () -> Writer.writeDocuments options (place.Build keep))
+                    Expect.stringContains error.Message "Keep" (sprintf "The chomping in %s" place.Name)
+                    Expect.stringContains error.Message "[165]" (sprintf "The production in %s" place.Name)
+                    Expect.stringContains error.Message ".Style" (sprintf "The slot in %s" place.Name)
+
+    // The parser reads `|+`, `  x` and a line that holds a byte order mark as the value "x\n" and a blank line behind it. The same holds for a line with a tab behind a root scalar.
+    // yaml@2.6.1 reads the byte order mark line in the middle of a document as the end of the document and the tab line as the end of the body. Only trivia and markers follow in these places.
+    testCase "a stored Keep scalar with a blank line where only trivia follow gets a line that ends its body" <| fun _ ->
+        let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        for place in keepPlaces do
+            match place.Kept with
+            | Some expected ->
+                for options in [ defaults; withStyles RequireStored ] do
+                    let written = Writer.writeDocuments options (place.Build keep)
+                    Expect.equal written expected (sprintf "The text in %s" place.Name)
+                    Expect.streamEqual (parseOk written) (place.Build keep) (sprintf "The tree read in %s" place.Name)
+                    Expect.equal (Writer.writeDocuments options (parseOk written)) written (sprintf "The second write in %s" place.Name)
+            | None -> ()
 
     // yaml@2.6.1 reads each expected text as the value "x\n\n" in the place of the scalar. A stored Clip or Strip cannot express the value, so the writer
     // picks Keep, and a blank line behind a Keep scalar reads as part of its value. No other chomping gives the value, so the scalar is double-quoted.
     testCase "a scalar that gets the chomping Keep is double-quoted when a blank line directly follows" <| fun _ ->
-        for (place, build, expected) in keepPlaces do
+        for place in keepPlaces do
             for stored in [ ChompingMode.Clip; ChompingMode.Strip ] do
-                let stream = build (blockScalar BlockScalarStyle.Literal stored None "x\n\n")
+                let stream = place.Build(blockScalar BlockScalarStyle.Literal stored None "x\n\n")
                 let written = Writer.writeDocuments defaults stream
-                Expect.equal written expected (sprintf "The text in %s with the stored chomping %A" place stored)
-                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place)
-            Expect.equal (Writer.writeDocuments (withStyles Canonical) (build (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"))) expected (sprintf "Canonical in %s" place)
-            let error = writeError (fun () -> Writer.writeDocuments (withStyles RequireStored) (build (blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n")))
-            Expect.stringContains error.Message "chomping" (sprintf "RequireStored in %s" place)
+                Expect.equal written place.Quoted (sprintf "The text in %s with the stored chomping %A" place.Name stored)
+                Expect.equal (Writer.writeDocuments defaults (parseOk written)) written (sprintf "The second write in %s" place.Name)
+            Expect.equal (Writer.writeDocuments (withStyles Canonical) (place.Build(blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"))) place.Quoted (sprintf "Canonical in %s" place.Name)
+            let error = writeError (fun () -> Writer.writeDocuments (withStyles RequireStored) (place.Build(blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n")))
+            Expect.stringContains error.Message "chomping" (sprintf "RequireStored in %s" place.Name)
 
     // yaml@2.6.1 reads the expected texts as {"a":"\n","b":1}, {"a":"x\n\n\n","b":1}, {"a":"x\n\n","b":1}, {"a":"x\n","b":1} and {"a":"x","b":1}. A value of line feeds only, more line feeds
     // and a folded scalar need the same rule, and a value that the stored chomping expresses needs none.
@@ -1349,6 +1434,231 @@ let private keepBlankTests = testList "A blank line behind a Keep block scalar" 
         Expect.equal (writeStream [ StreamPart.Document(document clipped); secondDocument ]) "|+\n  x\n\n...\n\n%YAML 1.2\n--- y\n" "A directive in the prelude"
         Expect.equal (Writer.write defaults { document clipped with EndMarker = Some(marker None) }) "|+\n  x\n\n...\n" "An end marker"
         Expect.equal (Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" clipped; entryOf "b" (sc "1") ])) "a: |+\n  x\n\nb: 1\n" "No trivia"
+]
+
+/// Writes the text with the policy Canonical, which has to give the expected text, and writes the tree of that text again, which has to give the same text.
+let private canonicalTwice (input: string) (expected: string) =
+    let write (text: string) = Writer.writeDocuments (withStyles Canonical) (parseOk text)
+    let once = write input
+    Expect.equal once expected (sprintf "The Canonical text of %A" input)
+    Expect.equal (write once) once (sprintf "The second Canonical write of %A" input)
+
+let private finalReviewTests = testList "Characters, root markers, key length and trivia of the final review" [
+    // yaml@2.6.1 reads the expected texts of this test as the value with the character in it, as a plain scalar, a single-quoted, a double-quoted and a block scalar, as a key,
+    // as an item of a flow sequence and as a character of a comment line. YAML 1.2 ends a line at a line feed or a carriage return only (b-char, [27]), so NEL, NBSP and the two
+    // Unicode line separators are nb-char characters and stand raw wherever a plain scalar, a block scalar or a comment may hold them.
+    testCase "NEL, NBSP and the line and paragraph separators stand raw in every style" <| fun _ ->
+        for c in [ nel; nbsp; lineSeparator; paragraphSeparator ] do
+            let word = "b" + c + "c"
+            expectNode (mapOf [ "a", sc word ]) ("a: " + word + "\n")
+            expectNode (mapOf [ "a", sq word ]) ("a: '" + word + "'\n")
+            expectNode (mapOf [ "a", dq word ]) ("a: \"" + word + "\"\n")
+            expectNode (mapOf [ "a", lit (word + "\n") ]) ("a: |\n  " + word + "\n")
+            expectNode (mapOf [ ("b" + c), sc "v" ]) ("b" + c + ": v\n")
+            expectNode (mapOf [ "a", withNote (" x" + c + "y") (sc "v") ]) ("a: v # x" + c + "y\n")
+            expectNode (flowSeq [ sc word ]) ("[" + word + "]\n")
+            expectStable ("a: " + word + "\n")
+            expectStable ("a: '" + word + "'\n")
+            expectStable ("a: |\n  " + word + "\n")
+            Expect.equal (Writer.writeNode (withStyles RequireStored) (mapOf [ "a", sq word ])) ("a: '" + word + "'\n") "RequireStored keeps single quotes"
+            Expect.equal (Writer.writeNode (withStyles Canonical) (mapOf [ "a", sq word ])) ("a: " + word + "\n") "Canonical writes plain"
+
+    // yaml@2.6.1 reads `'b` DEL `c'`, `'b` C1 `c'` and the other single-quoted texts as the values with the characters. Single quotes hold every nb-json character ([2], [118])
+    // and have no escape, so they keep DEL, the C1 controls and U+FFFE raw. The other styles have no place for them and escape them.
+    testCase "single quotes hold DEL, the C1 controls and U+FFFE raw, and the other styles escape them" <| fun _ ->
+        for (c, escape) in [ del, "\\x7F"; c1Control, "\\x81"; string (char 0x9F), "\\x9F"; string (char 0xFFFE), "\\uFFFE" ] do
+            let word = "b" + c + "c"
+            expectNode (mapOf [ "a", sq word ]) ("a: 'b" + c + "c'\n")
+            expectNode (mapOf [ "a", sc word ]) ("a: \"b" + escape + "c\"\n")
+            expectNode (mapOf [ "a", dq word ]) ("a: \"b" + escape + "c\"\n")
+            expectNode (mapOf [ "a", lit (word + "\n") ]) ("a: \"b" + escape + "c\\n\"\n")
+            Expect.equal (Writer.writeNode (withStyles RequireStored) (mapOf [ "a", sq word ])) ("a: 'b" + c + "c'\n") "RequireStored keeps single quotes"
+            Expect.stringContains (writeError (fun () -> Writer.writeNode (withStyles RequireStored) (mapOf [ "a", sc word ]))).Message "plain" "RequireStored refuses plain"
+            expectStable ("a: 'b" + c + "c'\n")
+
+    // The fuzzer found a flow sequence with a single-quoted scalar over several lines and a NEL that came back on one line. yaml@2.6.1 reads both texts as ["\n\u0085"].
+    testCase "a single-quoted scalar over several lines with NEL in a flow sequence is written the same way twice" <| fun _ ->
+        expectWritten ("['\n\n" + nel + "']\n") ("[\n  '\n\n  " + nel + "'\n]\n")
+
+    // yaml@2.6.1 reads the expected texts as {"a":"b\tc"} and the like. A raw tab is an nb-json character, so a double-quoted scalar writes it raw.
+    testCase "a double-quoted scalar writes the tab raw and escapes the line breaks and the C0 controls" <| fun _ ->
+        expectNode (mapOf [ "a", dq "b\tc" ]) "a: \"b\tc\"\n"
+        expectNode (mapOf [ "a", dq "b\r\nc\001" ]) "a: \"b\\r\\nc\\x01\"\n"
+
+    // yaml@2.6.1 reads the expected texts as the trees of the inputs. Canonical used to write the comment of the last property and drop the trivia lines between that property and the
+    // flow collection that it writes as a block collection. The lines go to the Before of the first entry or item, in front of the opening comment.
+    testCase "Canonical keeps the trivia lines between the last property and a flow collection" <| fun _ ->
+        canonicalTwice "- !a\n  # lost?\n  {a: b}\n" "- !a\n  # lost?\n  a: b\n"
+        canonicalTwice "k: &x\n  # lost too?\n  [1, 2]\n" "k: &x\n  # lost too?\n  - 1\n  - 2\n"
+        canonicalTwice "- !a\n\n  {!!str &a2 a: b}\n" "- !a\n\n  !!str &a2 a: b\n"
+        canonicalTwice "- !a # p\n  # f\n\n  [ # o\n  x]\n" "- !a # p\n  # f\n\n  # o\n  - x\n"
+        canonicalTwice "k: !a\n  # f\n  [x] # c\nj: 1\n" "k: !a\n  # f\n  - x\n# c\nj: 1\n"
+        // The comment lines and blank lines of a flow collection are not lost with PreferStored and RequireStored either.
+        expectStable "- !a\n  # f\n\n  {a: b}\n"
+        Expect.equal (Writer.writeDocuments (withStyles RequireStored) (parseOk "- !a\n  # f\n\n  {a: b}\n")) "- !a\n  # f\n\n  {a: b}\n" "RequireStored"
+
+    // yaml@2.6.1 reads both expected texts as {"a":1,"--- b":2}. The comment line in front of a root block mapping is the Before of its first entry (R2) and stands in the column of the
+    // entry. The first Canonical write put it in the first column in front of the root that stands one column in, and the second write moved it.
+    testCase "Canonical writes the lines in front of a root that stands one column in at its column" <| fun _ ->
+        canonicalTwice "# c1\n{a: 1, --- b: 2}\n" " # c1\n a: 1\n --- b: 2\n"
+        canonicalTwice "# c1\n\n[--- b, c]\n" "# c1\n\n- --- b\n- c\n"
+        expectWritten "# c1\na: 1\n" "# c1\na: 1\n"
+
+    // The first line behind the root decides whether an empty root block scalar needs the indicator, and the line may stand in the prelude of the next document. The parser produces such a
+    // tree from a text with a byte order mark line, which yaml@2.6.1 does not read, so the expected texts have no reference.
+    testCase "an empty root block scalar gets the indicator when the comment line is in the prelude of the next document" <| fun _ ->
+        let prelude (items: PreludeItem list) : StreamPart = StreamPart.Document { document nothing with Prelude = items; StartMarker = Some(marker None) }
+        let rootStream (scalar: YamlNode) (following: StreamPart) : YamlStream =
+            { Parts = [ StreamPart.Document { document scalar with StartMarker = Some(marker None) }; following ] }
+        let strip = blockScalar BlockScalarStyle.Literal ChompingMode.Strip None ""
+        let stream = rootStream strip (prelude [ PreludeItem.PreludeTrivia blank; PreludeItem.PreludeTrivia blank; PreludeItem.PreludeTrivia(note " k") ])
+        Expect.equal (Writer.writeDocuments defaults stream) "--- |1-\n\n\n# k\n---\n" "A comment behind two blank lines"
+        Expect.stringContains (writeError (fun () -> Writer.writeDocuments (withStyles RequireStored) stream)).Message "indentation indicator" "RequireStored"
+        let stored = blockScalar BlockScalarStyle.Literal ChompingMode.Strip (Some 1) ""
+        Expect.equal (Writer.writeDocuments (withStyles RequireStored) (rootStream stored (prelude [ PreludeItem.PreludeTrivia(note " k") ]))) "--- |1-\n# k\n---\n" "A stored indicator"
+        // Blank lines alone need nothing, and a directive puts a `...` in front of the prelude.
+        Expect.equal (Writer.writeDocuments defaults (rootStream strip (prelude [ PreludeItem.PreludeTrivia blank ]))) "--- |-\n\n---\n" "Blank lines only"
+        let withDirective = prelude [ PreludeItem.PreludeTrivia(note " k"); directive (DirectiveKind.YamlVersion(1, 2)) ]
+        Expect.equal (Writer.writeDocuments defaults (rootStream strip withDirective)) "--- |-\n...\n# k\n%YAML 1.2\n---\n" "A directive in the prelude"
+        // AfterRoot comes first, and a blank line in front of the comment does not matter.
+        Expect.equal (Writer.write defaults { document strip with AfterRoot = [ blank; note " c" ] }) "|1-\n\n# c\n" "AfterRoot"
+        // A text from the fuzzer.
+        let input = "|\n" + bom + "#\n---\n"
+        let written = Writer.writeDocuments defaults (parseOk input)
+        Expect.equal written "|1\n#\n---\n" "The text of the fuzzer"
+        Expect.equal (Writer.writeDocuments defaults (parseOk written)) written "The second write"
+
+    // A stored Keep scalar without content has a blank line behind it as a tab line or a byte order mark line, and the tab line would be content without an indicator.
+    testCase "an empty root Keep scalar with a blank line behind it gets the indicator" <| fun _ ->
+        let keep (value: string) = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None value
+        Expect.equal (Writer.write defaults { document (keep "") with AfterRoot = [ blank ] }) "|1+\n\t\n" "No value"
+        Expect.equal (Writer.write defaults { document (keep "\n") with AfterRoot = [ blank; blank ] }) "|1+\n\n\t\n\n" "A line feed"
+        Expect.stringContains (writeError (fun () -> Writer.write (withStyles RequireStored) { document (keep "") with AfterRoot = [ blank ] })).Message "tab line" "RequireStored"
+        let stored = blockScalar BlockScalarStyle.Literal ChompingMode.Keep (Some 1) ""
+        Expect.equal (Writer.write (withStyles RequireStored) { document stored with AfterRoot = [ blank ] }) "|1+\n\t\n" "A stored indicator"
+        // A scalar with content needs none.
+        Expect.equal (Writer.write defaults { document (keep "a\n") with AfterRoot = [ blank ] }) "|+\n  a\n\t\n" "Content"
+
+    // The parser reads a line that holds a tab behind a root scalar, and a line that holds a byte order mark behind any scalar, as a blank line that ends the body of a Keep scalar. yaml@2.6.1
+    // rejects these texts, so they have no reference. The writer writes the lines back, and the second write gives the same text.
+    testCase "the lines that end the body of a Keep scalar are written back" <| fun _ ->
+        let cases =
+            [ "|+\n  a\n\t\n", "|+\n  a\n\t\n"
+              "|1+\n" + bom + " \n\n", "|1+\n\t\n\n"
+              "|+\n  a\n" + bom + "\n", "|+\n  a\n\t\n"
+              "|+\n  a\n\t\n\n# c\n", "|+\n  a\n\t\n\n# c\n"
+              "|+\n  a\n\t\n---\ny\n", "|+\n  a\n\t\n--- y\n"
+              "a: |+\n  x\n" + bom + "\n", "a: |+\n  x\n" + bom + "\n"
+              "a:\n  b: |+\n    x\n" + bom + "\n# c\n", "a:\n  b: |+\n    x\n" + bom + "\n# c\n"
+              "- |+\n  x\n\n" + bom + "\n", "- |+\n  x\n\n" + bom + "\n"
+              "a: |+\n  x\n" + bom + "\n---\ny\n", "a: |+\n  x\n" + bom + "\n--- y\n" ]
+        for (input, expected) in cases do
+            expectWritten input expected
+            Expect.equal (Writer.writeDocuments (withStyles RequireStored) (parseOk input)) expected (sprintf "RequireStored for %A" input)
+
+    // yaml@2.6.1 reads the first three expected texts and the flow pairs as keys, and it rejects a double-quoted key of 1025 characters without a question mark. The key with the tabs has
+    // 1020 characters with the quotes, and the flow key with the commas has 1001. A parsed implicit key of up to 1024 characters stays implicit, so the writer measures the spelling that it
+    // writes and writes the shortest one: a raw tab in double quotes, a comma without a blank in a flow collection, a flow pair in a flow sequence, and the raw characters when the escapes
+    // pass the limit.
+    testCase "an implicit key that is within 1024 characters in its shortest spelling stays implicit" <| fun _ ->
+        let key = String.replicate 1010 "a" + String.replicate 8 "\t"
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (dq key) (sc "v") ])) ("\"" + key + "\": v\n") "Tabs in a double-quoted key"
+        let items = [ for _ in 1 .. 500 -> sc "a" ]
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (flowSeq items) (sc "v") ])) ("[" + String.concat "," [ for _ in 1 .. 500 -> "a" ] + "]: v\n") "Commas in a flow key"
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (flowSeq [ flowMap [ "a", sc "b" ] ]) (sc "v") ])) "[a: b]: v\n" "A flow pair in a flow key"
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (flowSeq [ YamlNode.flowMapping [ YamlNode.entry (sc "a") nothing ] ]) (sc "v") ])) "[a:]: v\n" "A flow pair without a value"
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (flowSeq [ flowMap [ "a", sc "b"; "c", sc "d" ] ]) (sc "v") ])) "[{a: b,c: d}]: v\n" "A mapping with two entries keeps its braces"
+        let marks = String.replicate 200 bom
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (dq marks) (sc "v") ])) ("\"" + marks + "\": v\n") "Raw marks when the escapes pass the limit"
+        Expect.equal (writeNode (YamlNode.mapping [ YamlNode.entry (dq (String.replicate 10 bom)) (sc "v") ])) ("\"" + String.replicate 10 "\\uFEFF" + "\": v\n") "Escapes below the limit"
+        // A value keeps the spelling with the blank and the braces, and a key over the limit needs a question mark.
+        Expect.equal (writeNode (mapOf [ "k", flowSeq [ sc "a"; sc "b" ] ])) "k: [a, b]\n" "A flow value"
+        Expect.equal (writeNode (mapOf [ "k", flowSeq [ flowMap [ "a", sc "b" ] ] ])) "k: [{a: b}]\n" "A flow value with a mapping"
+        Expect.isTrue ((writeNode (YamlNode.mapping [ YamlNode.entry (dq (String.replicate 1025 "a")) (sc "v") ])).StartsWith "? ") "A key over the limit"
+
+    // The parser reads the trees of these texts, and the writer gives the texts back.
+    testCase "the keys of the 1024 limit round trip" <| fun _ ->
+        let key = String.replicate 1010 "a" + String.replicate 8 "\t"
+        expectStable ("\"" + key + "\": v\n")
+        expectStable ("[" + String.concat "," [ for _ in 1 .. 500 -> "a" ] + "]: v\n")
+        expectWritten ("[ a : b ]: v\n") "[a: b]: v\n"
+        expectStable "[a: b,c: d]: v\n"
+
+    // The final review wrote these constructed trees with every policy and got text that the parser rejects or reads as another tree. Validate rejects them now, and the writer raises
+    // with its messages. yaml@2.6.1 rejects the texts of the comment and of the names and reads the others as other data.
+    testCase "a constructed tree that the productions do not allow is an error under every policy" <| fun _ ->
+        // The constructors reject a bad name, so the trees are built from the records.
+        let aliasOf (name: string) = { nothing with Kind = YamlNodeKind.Alias name }
+        let anchoredAs (name: string) (node: YamlNode) =
+            { node with
+                Properties = { node.Properties with Anchor = Some name }
+                PropertyLayout = [ { Property = PropertyName.Anchor; After = Separation.Inline; Span = None } ] }
+        let withPrelude (items: PreludeItem list) = StreamPart.Document { document (sc "a") with Prelude = items; StartMarker = Some(marker None) }
+        let cases =
+            [ "nb-char", (fun (options: WriterOptions) -> Writer.writeNode options (withNote (" a" + bom) (sc "v")))
+              "nb-char", (fun options -> Writer.writeNode options (withNote " a\001" (sc "v")))
+              "nb-char", (fun options -> Writer.writeNode options (mapOf [ "k", withHeader (" a" + bom) (lit "x\n") ]))
+              "ns-anchor-char", (fun options -> Writer.writeNode options (anchoredAs ("a" + bom + "b") (sc "v")))
+              "ns-anchor-char", (fun options -> Writer.writeNode options (seqOf [ YamlNode.withAnchor "a" (sc "v"); aliasOf ("a" + string (char 1)) ]))
+              "colon", (fun options -> Writer.writeNode options (YamlNode.mapping [ { entryOf "k" (sc "v") with Colon = None } ]))
+              "colon", (fun options -> Writer.writeNode options (YamlNode.flowMapping [ { entryOf "k" (sc "v") with Colon = None } ]))
+              "%YAML", (fun options -> Writer.writeDocuments options { Parts = [ withPrelude [ directive (DirectiveKind.YamlVersion(2, 0)) ] ] })
+              "%YAML", (fun options -> Writer.writeDocuments options { Parts = [ withPrelude [ directive (DirectiveKind.YamlVersion(1, 2)); directive (DirectiveKind.YamlVersion(1, 2)) ] ] })
+              "tag handle", (fun options -> Writer.writeDocuments options { Parts = [ withPrelude [ directive (DirectiveKind.TagDirective("e", "tag:example.com,2000:")) ] ] })
+              "reserved directive", (fun options -> Writer.writeDocuments options { Parts = [ withPrelude [ directive (DirectiveKind.ReservedDirective("FOO BAR", [])) ] ] })
+              "reserved directive", (fun options -> Writer.writeDocuments options { Parts = [ withPrelude [ directive (DirectiveKind.ReservedDirective("FOO", [ "#c" ])) ] ] }) ]
+        for (fragment, write) in cases do
+            for options in [ defaults; withStyles RequireStored; withStyles Canonical ] do
+                Expect.stringContains (writeError (fun () -> write options)).Message fragment (sprintf "The message for the fragment %s" fragment)
+        // The same trees without the fault are written.
+        Expect.equal (writeNode (withNote (" a\tb" + nel + lineSeparator) (sc "v"))) ("v # a\tb" + nel + lineSeparator + "\n") "A comment with a tab, NEL and a separator"
+        Expect.equal (writeStream [ withPrelude [ directive (DirectiveKind.YamlVersion(1, 1)); directive (DirectiveKind.TagDirective("!e!", "tag:example.com,2000:")) ] ]) "%YAML 1.1\n%TAG !e! tag:example.com,2000:\n--- a\n" "Directives"
+
+    // yaml@2.6.1 reads the answers of the function as the chomping of the scalar that the writer writes. The function follows the last node of the text.
+    testCase "endsWithKeptLines follows the last node of the text to a block scalar with the chomping Keep" <| fun _ ->
+        let keepOf (value: string) = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None value
+        let ends (node: YamlNode) = Writer.endsWithKeptLines defaults node
+        Expect.isTrue (ends (keepOf "x\n")) "A root scalar"
+        Expect.isTrue (ends (mapOf [ "a", sc "1"; "b", keepOf "x\n" ])) "The last value of a mapping"
+        Expect.isTrue (ends (seqOf [ sc "1"; keepOf "x\n" ])) "The last item of a sequence"
+        Expect.isTrue (ends (mapOf [ "a", seqOf [ mapOf [ "b", keepOf "x\n" ] ] ])) "Collections one in the other"
+        Expect.isTrue (ends (YamlNode.mapping [ explicitEntry (sc "k") (keepOf "x\n") ])) "The value of an explicit entry"
+        Expect.isTrue (ends (YamlNode.mapping [ explicitKeyOnly (keepOf "x\n") ])) "A key without a colon"
+        Expect.isFalse (ends (mapOf [ "a", keepOf "x\n"; "b", sc "1" ])) "A plain value behind the scalar"
+        Expect.isFalse (ends (YamlNode.mapping [ explicitEntry (keepOf "x\n") (sc "v") ])) "A Keep key with a value behind it"
+        Expect.isFalse (ends (withEnd [ note " c" ] (mapOf [ "a", keepOf "x\n" ]))) "Trivia at the end of the collection"
+        Expect.isFalse (ends (mapOf [ "a", flowSeq [ keepOf "x\n" ] ])) "A flow collection"
+        Expect.isFalse (ends (mapOf [ "a", sq "x" ])) "A quoted scalar"
+        Expect.isFalse (ends (mapOf [ "a", YamlNode.empty ])) "A missing value"
+        Expect.isFalse (ends (YamlNode.sequence [ YamlNode.item (keepOf ("a" + string (char 1) + "\n")) ])) "A value that no block scalar can hold"
+        // The chomping comes from the value when the stored one does not fit.
+        let blockOf (chomping: ChompingMode) (value: string) = blockScalar BlockScalarStyle.Literal chomping None value
+        Expect.isTrue (ends (blockOf ChompingMode.Clip "x\n\n")) "Clip with two line feeds"
+        Expect.isTrue (ends (blockOf ChompingMode.Strip "\n")) "Strip with a line feed only"
+        Expect.isFalse (ends (blockOf ChompingMode.Clip "x\n")) "Clip with one line feed"
+        Expect.isFalse (ends (blockOf ChompingMode.Strip "x")) "Strip"
+        Expect.isFalse (ends (keepOf "x")) "Keep without a final line feed, which the writer writes as Strip when text follows"
+        let strict = withStyles RequireStored
+        Expect.isTrue (Writer.endsWithKeptLines strict (keepOf "x")) "RequireStored counts the stored chomping"
+        Expect.isFalse (Writer.endsWithKeptLines strict (blockOf ChompingMode.Clip "x\n")) "RequireStored with Clip"
+        Expect.isFalse (Writer.endsWithKeptLines (withStyles Canonical) (keepOf "x\n")) "Canonical writes no block scalar"
+
+    // The answer is the chomping of the scalar that the writer writes when more text follows the node. The test writes the node in front of another entry and looks at the header.
+    testCase "endsWithKeptLines agrees with the header that the writer writes" <| fun _ ->
+        for style in [ BlockScalarStyle.Literal; BlockScalarStyle.Folded ] do
+            for stored in [ ChompingMode.Strip; ChompingMode.Clip; ChompingMode.Keep ] do
+                for value in [ ""; "x"; "x\n"; "x\n\n"; "\n"; "\n\n"; "x\ny\n\n\n" ] do
+                    let node = blockScalar style stored None value
+                    let text = Writer.writeNode defaults (YamlNode.mapping [ entryOf "a" node; entryOf "b" (sc "1") ])
+                    let header = text.Substring(3, text.IndexOf '\n' - 3)
+                    Expect.equal (Writer.endsWithKeptLines defaults node) (header.EndsWith "+") (sprintf "The header %s of %A with the stored chomping %A" header value stored)
+
+    // A tree nested 10000 levels deep ends in a Keep scalar, which the function finds without a recursion.
+    testCase "endsWithKeptLines walks 10000 levels without a recursion" <| fun _ ->
+        let mutable node = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "x\n"
+        for _ in 1 .. depth do
+            node <- YamlNode.sequence [ YamlNode.item (sc "a"); YamlNode.item node ]
+        Expect.isTrue (Writer.endsWithKeptLines defaults node) "The last item of every sequence"
 ]
 
 let private depthTests = testList "Deep trees and linear time" [
@@ -1423,4 +1733,4 @@ let private depthTests = testList "Deep trees and linear time" [
 ]
 
 let Main =
-    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; styleTests; invalidTreeTests; keepBlankTests; depthTests ]
+    testList "Writer" [ portedTests; slotTests; scalarTests; tagTests; documentTests; blockLayoutTests; policyTests; styleTests; invalidTreeTests; keepBlankTests; finalReviewTests; depthTests ]
