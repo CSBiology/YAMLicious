@@ -29,9 +29,9 @@ let private mappingTests = testList "Block mappings" [
         // A value on a later line has a line break behind the colon (rule R2).
         expectRoot
             "\nMy Key:\n  My Value1\n  My Value2\n  My Value3\n"
-            (withFirstBefore [ blank ] (YamlNode.mapping [ entryOnNewLine "My Key" (sc "My Value1 My Value2 My Value3") ]))
-        expectRoot "\nMy Key: My Value1\n  My Value2\n" (withFirstBefore [ blank ] (mapOf [ "My Key", sc "My Value1 My Value2" ]))
-        expectRoot "\nMy Value1\n  My Value2\n" (sc "My Value1 My Value2")
+            (withFirstBefore [ blank ] (YamlNode.mapping [ entryOnNewLine "My Key" (scLines [ "My Value1"; "My Value2"; "My Value3" ]) ]))
+        expectRoot "\nMy Key: My Value1\n  My Value2\n" (withFirstBefore [ blank ] (mapOf [ "My Key", scLines [ "My Value1"; "My Value2" ] ]))
+        expectRoot "\nMy Value1\n  My Value2\n" (scLines [ "My Value1"; "My Value2" ])
 
     // Tests.YamlRead "Nested mapping accepts structural blank line before child block". yaml@2.6.1: {"inputs":{"a":{"type":"string"},"b":{"type":"string"}}}.
     // The blank line belongs to the Before of the first entry of the child mapping (rules R2 and R4).
@@ -109,7 +109,7 @@ let private mappingTests = testList "Block mappings" [
     // Tests.YamlRead "Deeper lines and comment lines stay valid among the entries of a block mapping". yaml@2.6.1: {"a":"1 b"},
     // {"a":1,"b":2}. The comment line goes to the Before of the next entry.
     testCase "a deeper line continues the value and a comment line stands in front of the next entry" <| fun _ ->
-        expectRoot "a: 1\n  b" (mapOf [ "a", sc "1 b" ])
+        expectRoot "a: 1\n  b" (mapOf [ "a", scLines [ "1"; "b" ] ])
         expectRoot "a: 1\n# c\nb: 2" (YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); entryBefore [ note " c" ] (sc "b") (sc "2") ])
 
     // Tests.YamlRead "A plain key may hold braces and brackets" (the block part). yaml@2.6.1: {"/participants/{id}.json":{"get":1}},
@@ -142,7 +142,7 @@ let private mappingTests = testList "Block mappings" [
         let yaml =
             "requirements:\n  EnvVarRequirement:\n    envDef:\n      # Runner writes logs\n      TOOL_RUN_SETTINGS: >-\n        -Da\n        -Db\n  InitialWorkDirRequirement:\n    listing:\n      # Make an editable copy\n      - entryname: src_data\n        writable: true"
         let envDef =
-            YamlNode.mapping [ entryBefore [ note " Runner writes logs" ] (sc "TOOL_RUN_SETTINGS") (blockScalar BlockScalarStyle.Folded ChompingMode.Strip None "-Da -Db") ]
+            YamlNode.mapping [ entryBefore [ note " Runner writes logs" ] (sc "TOOL_RUN_SETTINGS") (withFolds [ 3 ] (blockScalar BlockScalarStyle.Folded ChompingMode.Strip None "-Da -Db")) ]
         let listing =
             YamlNode.sequence [ itemBefore [ note " Make an editable copy" ] (mapOf [ "entryname", sc "src_data"; "writable", sc "true" ]) ]
         expectRoot
@@ -156,8 +156,8 @@ let private sequenceTests = testList "Block sequences" [
     testCase "a sequence with a scalar over several lines" <| fun _ ->
         // The blank line at the top of the old inputs is the Before of the first entry or item (rules R3 and R4).
         expectRoot "\n- My Value 1\n- My Value 2\n- My Value 3\n" (withFirstBefore [ blank ] (seqOf [ sc "My Value 1"; sc "My Value 2"; sc "My Value 3" ]))
-        expectRoot "\n- My Value 1\n  My Value 2\n- My Value 3\n" (withFirstBefore [ blank ] (seqOf [ sc "My Value 1 My Value 2"; sc "My Value 3" ]))
-        expectRoot "\nMy Key:\n- My Value1\n  My Value2\n- My Value3\n" (withFirstBefore [ blank ] (mapOf [ "My Key", seqOf [ sc "My Value1 My Value2"; sc "My Value3" ] ]))
+        expectRoot "\n- My Value 1\n  My Value 2\n- My Value 3\n" (withFirstBefore [ blank ] (seqOf [ scLines [ "My Value 1"; "My Value 2" ]; sc "My Value 3" ]))
+        expectRoot "\nMy Key:\n- My Value1\n  My Value2\n- My Value3\n" (withFirstBefore [ blank ] (mapOf [ "My Key", seqOf [ scLines [ "My Value1"; "My Value2" ]; sc "My Value3" ] ]))
 
     // Tests.YamlRead "SequenceSameIndentAsMapping" and "SequenceSameIndentAsMappingAndComment". yaml@2.6.1: {"My Key":["My Value1","My Value2","My Value3"]}
     // twice. The sequence stands at the column of its key, and the comment goes to the Before of the item behind it.
@@ -333,13 +333,13 @@ let private explicitKeyTests = testList "Explicit keys" [
     // {"a b":"v"} for the double-quoted key, {"a\nb":"v"}, {"a\nb\n":"v"} and {"a b\n":"v"}.
     testCase "a scalar over several lines folds as an explicit key" <| fun _ ->
         let single (key: YamlNode) = YamlNode.mapping [ explicitEntry key (sc "v") ]
-        expectRoot "? a\n  b\n: v" (single (sc "a b"))
-        expectRoot "?\n  a\n  b\n: v" (YamlNode.mapping [ { explicitEntry (sc "a b") (sc "v") with Question = Some(newLine None []) } ])
-        expectRoot "? a\n  b\n\n  c\n: v" (single (sc "a b\nc"))
-        expectRoot "? \"a\n  b\"\n: v" (single (dq "a b"))
+        expectRoot "? a\n  b\n: v" (single (scLines [ "a"; "b" ]))
+        expectRoot "?\n  a\n  b\n: v" (YamlNode.mapping [ { explicitEntry (scLines [ "a"; "b" ]) (sc "v") with Question = Some(newLine None []) } ])
+        expectRoot "? a\n  b\n\n  c\n: v" (single (withFolds [ 1 ] (sc "a b\nc")))
+        expectRoot "? \"a\n  b\"\n: v" (single (dqLines [ "a"; "b" ]))
         expectRoot "? 'a\n\n  b'\n: v" (single (sq "a\nb"))
         expectRoot "? |\n  a\n  b\n: v" (single (lit "a\nb\n"))
-        expectRoot "? >\n  a\n  b\n: v" (single (fold "a b\n"))
+        expectRoot "? >\n  a\n  b\n: v" (single (withFolds [ 1 ] (fold "a b\n")))
 
     // Tests.YamlRead "A block collection on the line of its key is an error that the Reader reports", the valid part. yaml@2.6.1 reads `- - a` as [["a"]].
     // A compact collection behind a dash, a question mark and a colon of an explicit entry is valid.
@@ -644,7 +644,7 @@ let private errorTests = testList "Parser errors" [
         expectRoot "k: \"a\tb\"" (mapOf [ "k", dq "a\tb" ])
         expectRoot "k: |\n  a\tb\n  \tc\n" (mapOf [ "k", lit "a\tb\n\tc\n" ])
         expectRoot "-\tv" (seqOf [ sc "v" ])
-        expectRoot "k: a\n  \tb" (mapOf [ "k", sc "a b" ])
+        expectRoot "k: a\n  \tb" (mapOf [ "k", scLines [ "a"; "b" ] ])
         expectRoot "?\tk" (YamlNode.mapping [ explicitKeyOnly (sc "k") ])
         expectRoot "\tv" (sc "v")
         expectRoot "---\tv" (sc "v")
@@ -731,7 +731,7 @@ let private errorTests = testList "Parser errors" [
         expectRoot "a: \"b￿c\"" (mapOf [ "a", dq "b￿c" ])
         expectRoot "a: |\n  b c\n" (mapOf [ "a", lit "b c\n" ])
         expectRoot "a: b # \u0085 " (mapOf [ "a", withNote " \u0085 " (sc "b") ])
-        expectRoot "a: \"b\n  \u0085c\"" (mapOf [ "a", dq "b \u0085c" ])
+        expectRoot "a: \"b\n  \u0085c\"" (mapOf [ "a", dqLines [ "b"; "\u0085c" ] ])
 ]
 
 let private spanText (span: SourceSpan option) : string =
@@ -1227,11 +1227,11 @@ let private advancedTests = testList "Advanced features" [
             (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); { explicitEntry (sc "a") (mapOf [ "m", dq "v" ]) with Colon = Some(newLine None []) } ])
         expectRoot "k: \"q\"\n? a\n: |\n  <c f=0/>\n" (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (sc "a") (lit "<c f=0/>\n") ])
         // The explicit key over several lines and the explicit value over several lines.
-        expectRoot "k: \"q\"\n? a\n  b\n: \"x\"" (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (sc "a b") (dq "x") ])
+        expectRoot "k: \"q\"\n? a\n  b\n: \"x\"" (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (scLines [ "a"; "b" ]) (dq "x") ])
         expectRoot
             "k: \"q\"\n?\n  a\n  b\n: \"x\""
-            (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); { explicitEntry (sc "a b") (dq "x") with Question = Some(newLine None []) } ])
-        expectRoot "k: \"q\"\n? a\n: c\n  d" (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (sc "a") (sc "c d") ])
+            (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); { explicitEntry (scLines [ "a"; "b" ]) (dq "x") with Question = Some(newLine None []) } ])
+        expectRoot "k: \"q\"\n? a\n: c\n  d" (YamlNode.mapping [ YamlNode.entry (sc "k") (dq "q"); explicitEntry (sc "a") (scLines [ "c"; "d" ]) ])
 
     // Tests.AdvancedFeatures "Long explicit keys with quoted values between plain entries read their own values". yaml@2.6.1 reads one entry per line pair with the values "1641",
     // "1665", "1669" and "1687".
@@ -1254,7 +1254,7 @@ let private advancedTests = testList "Advanced features" [
 
     // Tests.AdvancedFeatures "7.1 Properties on their own line belong to the plain scalar behind them". yaml@2.6.1: {"k":"a b"} twice, {"k":"a"} and ["a b"].
     testCase "properties on their own line belong to the plain scalar behind them" <| fun _ ->
-        let multiline = tagOnOwnLine strTag (sc "a b")
+        let multiline = tagOnOwnLine strTag (scLines [ "a"; "b" ])
         expectRoot "k: !!str\n  a\n  b" (mapOf [ "k", multiline ])
         expectRoot "k:\n  !!str\n  a\n  b" (YamlNode.mapping [ entryOnNewLine "k" multiline ])
         expectRoot "k: &x\n  a" (mapOf [ "k", anchorOnOwnLine "x" (sc "a") ])
@@ -1479,8 +1479,8 @@ let private moreTests = testList "More ports" [
     testCase "a multiline plain scalar expression is one scalar" <| fun _ ->
         expectRoot
             "valueFrom:\n  ${\n    var picks = null;\n    if (this !== null) { picks = [this]; }\n    return picks;\n  }"
-            (YamlNode.mapping [ entryOnNewLine "valueFrom" (sc "${ var picks = null; if (this !== null) { picks = [this]; } return picks; }") ])
-        expectRoot "valueFrom: ${\n  var picks = null;\n  return picks;\n  }" (mapOf [ "valueFrom", sc "${ var picks = null; return picks; }" ])
+            (YamlNode.mapping [ entryOnNewLine "valueFrom" (scLines [ "${"; "var picks = null;"; "if (this !== null) { picks = [this]; }"; "return picks;"; "}" ]) ])
+        expectRoot "valueFrom: ${\n  var picks = null;\n  return picks;\n  }" (mapOf [ "valueFrom", scLines [ "${"; "var picks = null;"; "return picks;"; "}" ] ])
 
     // Tests.YamlRead "Key followed by blank lines and unindented sequence", "Key followed by blank lines, comments, and unindented sequence" and "Blank lines between sequence items do not
     // split the sequence". yaml@2.6.1: {"root":["a","b"]} for each.
@@ -1527,14 +1527,15 @@ let private moreTests = testList "More ports" [
         let yaml =
             "\nclassDiagram\n    Animal <|-- Duck\n    Animal <|-- Fish\n    Animal <|-- Zebra\n    class Duck{\n      +String beakColor\n      +swim()\n      +quack()\n    }\n"
             + "    class Fish{\n      -int sizeInFeet\n      -canEat()\n    }\n    class Zebra{\n      +bool is_wild\n      +run()\n    }\n"
-        let text =
-            "classDiagram Animal <|-- Duck Animal <|-- Fish Animal <|-- Zebra class Duck{ +String beakColor +swim() +quack() } class Fish{ -int sizeInFeet -canEat() } class Zebra{ +bool is_wild +run() }"
-        expectDocument yaml { YamlDocument.create (sc text) with BeforeRoot = [ blank ] }
+        let lines =
+            [ "classDiagram"; "Animal <|-- Duck"; "Animal <|-- Fish"; "Animal <|-- Zebra"; "class Duck{"; "+String beakColor"; "+swim()"; "+quack()"; "}"
+              "class Fish{"; "-int sizeInFeet"; "-canEat()"; "}"; "class Zebra{"; "+bool is_wild"; "+run()"; "}" ]
+        expectDocument yaml { YamlDocument.create (scLines lines) with BeforeRoot = [ blank ] }
 
     // Tests.YamlGenericRead "Example Comment + String". yaml@2.6.1: {"My Key":"My Value1 \"# This is not a comment!\" My Value3"}. The lines below the key are one plain scalar. The comment behind the key
     // goes to the separation of the colon (rule R1), the comment behind the last line to the scalar (rule R8), and a quote inside the scalar is text.
     testCase "a plain scalar with a quote and a hash, between two comments" <| fun _ ->
-        let value = withNote " :::: \"This is also a comment\"" (sc "My Value1 \"# This is not a comment!\" My Value3")
+        let value = withNote " :::: \"This is also a comment\"" (scLines [ "My Value1"; "\"# This is not a comment!\""; "My Value3" ])
         let entry = { YamlNode.entry (sc "My Key") value with Colon = Some(newLine (Some " This is a comment") []); Before = [ blank ] }
         expectRoot "\nMy Key: # This is a comment\n  My Value1 \n  \"# This is not a comment!\"\n  My Value3 # :::: \"This is also a comment\"" (YamlNode.mapping [ entry ])
 

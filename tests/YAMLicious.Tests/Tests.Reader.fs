@@ -227,7 +227,7 @@ let private streamTests = testList "Streams" [
         Expect.equal (List.length stream.Parts) 4 "A document, a comment, an extra end marker and a document"
         let documents = Reader.documents stream
         Expect.equal (List.length documents) 2 "Two documents"
-        Expect.nodeEqual documents.Head.Root (sc "Bare document") "The first root"
+        Expect.nodeEqual documents.Head.Root (scLines [ "Bare"; "document" ]) "The first root"
         Expect.nodeEqual documents.Tail.Head.Root (lit "%!PS-Adobe-2.0 # Not the first line\n") "The second root"
 
     testCase "a byte order mark stands in front of the first document and of a later one" <| fun _ ->

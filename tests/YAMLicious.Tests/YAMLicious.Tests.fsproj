@@ -25,6 +25,7 @@
     <Compile Include="Tests.Reader.fs" />
     <Compile Include="Tests.Writer.fs" />
     <Compile Include="Tests.RoundTrip.fs" />
+    <Compile Include="Tests.Layout.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

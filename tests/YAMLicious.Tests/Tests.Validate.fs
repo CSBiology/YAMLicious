@@ -108,7 +108,7 @@ let tests_node_checks = testList "Validate: nodes" [
         Expect.equal (slotsOfDocument { blockLiteral "a\n" with TrailingComment = Some (comment " c") }) [ "root.TrailingComment" ] "trailing comment"
 
     testCase "only a block scalar has a header comment" <| fun _ ->
-        let content: YamlScalar = { Value = "a"; Style = ScalarStyle.Plain; HeaderComment = Some (comment " h") }
+        let content: YamlScalar = { Value = "a"; Style = ScalarStyle.Plain; HeaderComment = Some (comment " h"); Layout = None }
         Expect.equal (slotsOfDocument { YamlNode.plain "a" with Kind = YamlNodeKind.Scalar content }) [ "root.HeaderComment" ] "plain scalar"
         Expect.equal (slotsOfDocument { YamlNode.plain "a" with Kind = YamlNodeKind.Scalar { content with Style = ScalarStyle.DoubleQuoted } }) [ "root.HeaderComment" ] "double-quoted scalar"
 

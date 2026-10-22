@@ -29,7 +29,8 @@ module YamlNode =
         let content: YamlScalar =
             { Value = value
               Style = style
-              HeaderComment = None }
+              HeaderComment = None
+              Layout = None }
         create (YamlNodeKind.Scalar content)
 
     /// A plain scalar. The text is not checked, so the writer must quote a text that cannot stand plain.
@@ -239,6 +240,36 @@ module YamlNode =
         | YamlNodeKind.Scalar content when isBlockScalar content ->
             { node with Kind = YamlNodeKind.Scalar { content with HeaderComment = Some comment } }
         | _ -> failwith ("Only a block scalar has a header comment, not " + describe node + ".")
+
+    /// The node with another text in its scalar. Properties, comments and the style stay, and the span goes, because
+    /// it no longer describes the text. The same text gives the node back unchanged.
+    ///
+    /// The layout of the scalar (see `ScalarLayout`) stays when it fits the new text at the same indexes of the
+    /// boundaries. It never moves a boundary and never looks for a nearby space, so an edit that keeps the length of
+    /// each line keeps the lines, and any other edit that moves a boundary drops them. A plain scalar whose new text a
+    /// core schema reader takes for null, a bool, an int or a float gets the style that `Encode.string` picks, unless
+    /// the node has an explicit tag, and it loses its layout then. A caller that decodes a string, edits it and
+    /// writes it again keeps the decoded node next to the string and calls this function with the edited string, so
+    /// the lines of the author survive an edit that leaves them in place.
+    ///
+    /// Fails on a node that is no scalar.
+    let withScalarValue (value: string) (node: YamlNode) : YamlNode =
+        match node.Kind with
+        | YamlNodeKind.Scalar content ->
+            if content.Value = value then
+                node
+            else
+                let restyled =
+                    content.Style = ScalarStyle.Plain && node.Properties.Tag.IsNone && CoreSchema.resolvesToNonString value
+                let style = if restyled then (CoreSchema.stringContent value).Style else content.Style
+                let layout =
+                    match content.Layout with
+                    | Some kept when not restyled && Layout.fits kept value style -> Some kept
+                    | _ -> None
+                { node with
+                    Kind = YamlNodeKind.Scalar { content with Value = value; Style = style; Layout = layout }
+                    Span = None }
+        | _ -> failwith ("Only a scalar has a text, not " + describe node + ".")
 
     /// The node with the comment behind the opener of a flow collection, as in `[ # c`. Only a flow
     /// collection has an opener. A comment replaces the earlier one.

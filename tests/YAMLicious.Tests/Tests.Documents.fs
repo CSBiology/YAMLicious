@@ -77,8 +77,8 @@ let private singleTests = testList "Single documents" [
             "--- !!str |\n  x\n--- &a |\n  y\n"
             [ document (explicitDocument (YamlNode.withTag (YamlTag.core "str") (lit "x\n")))
               document (explicitDocument (YamlNode.withAnchor "a" (lit "y\n"))) ]
-        expectStream "--- >\n x\n y\n" [ document (explicitDocument (fold "x y\n")) ]
-        expectStream "--- 'a\n  b'" [ document (explicitDocument (sq "a b")) ]
+        expectStream "--- >\n x\n y\n" [ document (explicitDocument (withFolds [ 1 ] (fold "x y\n"))) ]
+        expectStream "--- 'a\n  b'" [ document (explicitDocument (sqLines [ "a"; "b" ])) ]
 
     // Tests.YamlRead "KeyValue plain continuation..." in a document: `---` followed by a block collection on the next line.
     testCase "a block collection starts on the line behind the start marker" <| fun _ ->
@@ -130,7 +130,7 @@ let private multipleTests = testList "Several documents" [
     testCase "multiline quotes and block scalars stay inside their own documents" <| fun _ ->
         expectStream
             "a: 'x\n  y'\n---\nb: |\n  \"hi\"\n---\nc: \"z\"\n"
-            [ document (plainDocument (mapOf [ "a", sq "x y" ]))
+            [ document (plainDocument (mapOf [ "a", sqLines [ "x"; "y" ] ]))
               document (explicitDocument (mapOf [ "b", lit "\"hi\"\n" ]))
               document (explicitDocument (mapOf [ "c", dq "z" ])) ]
 
@@ -285,7 +285,7 @@ let private suffixTests = testList "End markers without a document" [
     testCase "example 9.3 has two documents, a comment and an extra end marker" <| fun _ ->
         expectStream
             "Bare\ndocument\n...\n# No document\n...\n|\n%!PS-Adobe-2.0 # Not the first line\n"
-            [ document (closed (plainDocument (sc "Bare document")))
+            [ document (closed (plainDocument (scLines [ "Bare"; "document" ])))
               StreamPart.Trivia(note " No document")
               StreamPart.ExtraEndMarker(marker None)
               document (plainDocument (lit "%!PS-Adobe-2.0 # Not the first line\n")) ]
@@ -429,8 +429,8 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
         expectRoot "k: \"\uFEFF\"" (mapOf [ "k", dq "\uFEFF" ])
         expectRoot "[\"a\uFEFFb\", 'c\uFEFF']" (flowSeq [ dq "a\uFEFFb"; sq "c\uFEFF" ])
         expectRoot "{\"\uFEFF\": 1}" (YamlNode.flowMapping [ YamlNode.entry (dq "\uFEFF") (sc "1") ])
-        expectRoot "\"a\n\uFEFFb\"" (dq "a \uFEFFb")
-        expectRoot "- \"a\n  \uFEFFb\"" (seqOf [ dq "a \uFEFFb" ])
+        expectRoot "\"a\n\uFEFFb\"" (dqLines [ "a"; "\uFEFFb" ])
+        expectRoot "- \"a\n  \uFEFFb\"" (seqOf [ dqLines [ "a"; "\uFEFFb" ] ])
         expectStream "\"a\uFEFF\"\n--- b" [ document (plainDocument (dq "a\uFEFF")); document (explicitDocument (sc "b")) ]
         // A mark that starts a continuation line is content, so it is no indentation.
         Expect.equal (parseErrorOf "k: \"a\n\uFEFFb\"") "quoted-indent@2" "The mark does not indent the line"
@@ -455,7 +455,7 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
         Expect.equal (parseErrorOf "--- a\n\uFEFF%YAML 1.2\n---\nb") "content-after-byte-order-mark@2" "A directive behind an explicit document"
         let error = parseError "a\n\uFEFF%YAML 1.2\n---\nb"
         Expect.equal (error.Related |> List.map showSpan) [ "2:1-2:2" ] "The mark is the related span"
-        expectStream "a\n%YAML 1.2\n---\nb" [ document (plainDocument (sc "a %YAML 1.2")); document (explicitDocument (sc "b")) ]
+        expectStream "a\n%YAML 1.2\n---\nb" [ document (plainDocument (scLines [ "a"; "%YAML 1.2" ])); document (explicitDocument (sc "b")) ]
         expectStream
             "a\n...\n\uFEFF%YAML 1.2\n---\nb"
             [ document (closed (plainDocument (sc "a"))); document (withPrelude [ versionDirective 1 2 ] (explicitDocument (sc "b"))) ]

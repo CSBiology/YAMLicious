@@ -286,7 +286,7 @@ let private r8Tests = testList "R8 the trailing comment of a node" [
         expectRoot "? key # c\n: v" (YamlNode.mapping [ explicitEntry (withNote " c" (sc "key")) (sc "v") ])
         expectRoot "k: &a v\nj: *a # c" (mapOf [ "k", YamlNode.withAnchor "a" (sc "v"); "j", withNote " c" (YamlNode.alias "a") ])
         // The comment behind the last line of a plain scalar over several lines.
-        expectRoot "k: a\n  b # c" (mapOf [ "k", withNote " c" (sc "a b") ])
+        expectRoot "k: a\n  b # c" (mapOf [ "k", withNote " c" (scLines [ "a"; "b" ]) ])
 
     // yaml@2.6.1 reads `k: | # c` followed by `  x` as {"k":"x\n"}. A block scalar keeps the comment behind its header as the header comment and never has a trailing comment.
     testCase "a comment behind a block scalar header is the header comment" <| fun _ ->
@@ -515,7 +515,7 @@ let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
     testCase "a hash behind a blank starts a comment, a hash inside a word is text, and the comment keeps its payload" <| fun _ ->
         expectRoot
             "My Key: # This is a comment\n  My Value1\n  <s f=0/>\n  My Value3 # :::: \"This is also a comment\""
-            (YamlNode.mapping [ { YamlNode.entry (sc "My Key") (withNote " :::: \"This is also a comment\"" (sc "My Value1 <s f=0/> My Value3")) with Colon = Some(newLine (Some " This is a comment") []) } ])
+            (YamlNode.mapping [ { YamlNode.entry (sc "My Key") (withNote " :::: \"This is also a comment\"" (scLines [ "My Value1"; "<s f=0/>"; "My Value3" ])) with Colon = Some(newLine (Some " This is a comment") []) } ])
         expectRoot "a: x <c f=0/>\nb: 1 # real\n" (mapOf [ "a", sc "x <c f=0/>"; "b", withNote " real" (sc "1") ])
         expectRoot "a: tool.cwl#main # real" (mapOf [ "a", withNote " real" (sc "tool.cwl#main") ])
         expectRoot

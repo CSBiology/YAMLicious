@@ -191,15 +191,17 @@ module internal WriterText =
     /// hexadecimal escape. DEL, the C1 controls, U+FFFE, U+FFFF and the byte order mark get one too, so a reader that
     /// follows [1] and a person who reads the text see no control character. The remaining printable characters ([1])
     /// stand raw. `verbatim` leaves NEL, NBSP, the separators and those controls raw, which is the shortest spelling
-    /// that [2] allows.
-    let renderDouble (text: string) (verbatim: bool) =
-        let sb = StringBuilder()
-        sb.Append('"') |> ignore
-        let mutable i = 0
-        while i < text.Length do
+    /// that [2] allows. `escapeFirst` and `escapeLast` escape a blank at the start or at the end of the range, because
+    /// a line break in a double-quoted scalar discards the blanks at the end of the line in front of it and at the start
+    /// of the line behind it.
+    let appendDoubleRange (sb: StringBuilder) (text: string) (first: int) (finish: int) (verbatim: bool) (escapeFirst: bool) (escapeLast: bool) =
+        let mutable i = first
+        while i < finish do
             let c = text.[i]
             let code = int c
-            if c = '"' then sb.Append("\\\"") |> ignore
+            if (c = ' ' || c = '\t') && ((escapeFirst && i = first) || (escapeLast && i = finish - 1)) then
+                sb.Append(if c = ' ' then "\\ " else "\\t") |> ignore
+            elif c = '"' then sb.Append("\\\"") |> ignore
             elif c = '\\' then sb.Append("\\\\") |> ignore
             elif c = '\n' then sb.Append("\\n") |> ignore
             elif c = '\r' then sb.Append("\\r") |> ignore
@@ -224,6 +226,12 @@ module internal WriterText =
                 sb.Append("\\u") |> ignore
                 appendHex sb code 4
             i <- i + 1
+
+    /// The double-quoted spelling of a value, see `appendDoubleRange`.
+    let renderDouble (text: string) (verbatim: bool) =
+        let sb = StringBuilder()
+        sb.Append('"') |> ignore
+        appendDoubleRange sb text 0 text.Length verbatim false false
         sb.Append('"') |> ignore
         sb.ToString()
 
@@ -312,6 +320,12 @@ type internal Shape =
     | PlainLines
     /// A single-quoted scalar over several lines.
     | SingleLines
+    /// A plain scalar that goes back to the lines of its layout.
+    | PlainLayout
+    /// A single-quoted scalar that goes back to the lines of its layout.
+    | SingleLayout
+    /// A double-quoted scalar that goes back to the lines of its layout.
+    | DoubleLayout
     /// A literal or folded block scalar.
     | Block
 
@@ -323,7 +337,9 @@ type internal ScalarPlan =
       Digit: int
       /// True when the last line of a block scalar with the chomping Clip or Keep has no line break, because the
       /// value has no final line feed and the scalar is the last node of the text.
-      Unterminated: bool }
+      Unterminated: bool
+      /// The pieces of the layout that the writer replays, or none. A folded block scalar holds its folds in them too.
+      Pieces: LayoutPiece[] }
 
 /// The output buffer. It counts the width of the current line, so no code asks the builder for its length.
 type internal Out(newLine: string) =
@@ -620,7 +636,8 @@ type internal Engine(options: WriterOptions) =
           IsLiteral = false
           Chomp = ChompingMode.Clip
           Digit = 0
-          Unterminated = false }
+          Unterminated = false
+          Pieces = [||] }
 
     member private this.LinePlan(text: string) : ScalarPlan = this.ShapePlan(Shape.Line text)
 
@@ -726,7 +743,18 @@ type internal Engine(options: WriterOptions) =
                       IsLiteral = isLiteral
                       Chomp = chomp
                       Digit = digit
-                      Unterminated = endsText && fits }
+                      Unterminated = endsText && fits
+                      Pieces = [||] }
+
+    /// The pieces of the layout of the scalar when the writer replays them here, and None otherwise. A scalar written in one
+    /// line cannot go over several lines: that is an implicit key and the key of a flow collection that stands on one line.
+    /// The layout has to fit the value and the style. The caller has checked the rest, that the style can hold the value here.
+    member private _.TryLayout(scalar: YamlScalar, multiOk: bool) : LayoutPiece[] option =
+        match scalar.Layout with
+        | Some layout when multiOk && not compactFlow -> Layout.tryPlan layout scalar.Value scalar.Style
+        | _ -> None
+
+    member private this.LayoutPlan(shape: Shape, pieces: LayoutPiece[]) : ScalarPlan = { this.ShapePlan shape with Pieces = pieces }
 
     /// Plans a scalar that is neither missing nor a property alone.
     ///
@@ -755,21 +783,31 @@ type internal Engine(options: WriterOptions) =
                 if value.Length = 0 then
                     this.ShapePlan Shape.Empty
                 elif WriterText.canBePlain value flow multiOk atLineStart beforeColon then
-                    if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.PlainLines else this.LinePlan value
+                    match this.TryLayout(scalar, multiOk) with
+                    | Some pieces -> this.LayoutPlan(Shape.PlainLayout, pieces)
+                    | None -> if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.PlainLines else this.LinePlan value
                 else
                     this.Fallback(value, "it cannot stand as a plain scalar here.")
             | ScalarStyle.SingleQuoted ->
                 if WriterText.canBeSingle value multiOk then
-                    if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.SingleLines else this.LinePlan(WriterText.renderSingle value)
+                    match this.TryLayout(scalar, multiOk) with
+                    | Some pieces -> this.LayoutPlan(Shape.SingleLayout, pieces)
+                    | None -> if value.IndexOf('\n') >= 0 then this.ShapePlan Shape.SingleLines else this.LinePlan(WriterText.renderSingle value)
                 else
                     this.Fallback(value, "it cannot stand in single quotes here.")
-            | ScalarStyle.DoubleQuoted -> this.LinePlan(WriterText.renderDouble value compactFlow)
+            | ScalarStyle.DoubleQuoted ->
+                match this.TryLayout(scalar, multiOk) with
+                | Some pieces -> this.LayoutPlan(Shape.DoubleLayout, pieces)
+                | None -> this.LinePlan(WriterText.renderDouble value compactFlow)
             | ScalarStyle.Block (style, chomp, digit) ->
                 if not blockOk then
                     this.Fallback(value, "a block scalar cannot stand here.")
                 else
                     match this.TryBlock(value, (style = BlockScalarStyle.Literal), chomp, digit) with
-                    | Some plan -> plan
+                    | Some plan ->
+                        match plan.Shape, this.TryLayout(scalar, true) with
+                        | Shape.Block, Some pieces -> { plan with Pieces = pieces }
+                        | _ -> plan
                     | None -> this.Fallback(value, "it holds a character that a block scalar cannot hold.")
 
     // ---------------------------------------------------------------------------------------------
@@ -789,26 +827,73 @@ type internal Engine(options: WriterOptions) =
             for k in first .. finish - 1 do
                 out.PutChar value.[k]
 
-    /// Writes the lines of a plain or single-quoted value. A run of `m` line feeds becomes `m` empty lines, so `m + 1`
-    /// line breaks stand between the two lines of text. The text starts at the cursor.
-    member private this.WriteFoldedLines(value: string, contentCol: int, quoted: bool) =
-        let n = value.Length
-        if quoted then out.Put "'"
-        let mutable i = 0
-        while i < n do
+    /// Writes the text from `first` up to `finish` of a plain or single-quoted value. A run of `m` line feeds becomes `m`
+    /// empty lines, so `m + 1` line breaks stand between the two lines of text. The text starts at the cursor.
+    member private this.WriteFoldedRange(value: string, first: int, finish: int, contentCol: int, quoted: bool) =
+        let mutable i = first
+        while i < finish do
             let mutable j = i
-            while j < n && value.[j] <> '\n' do
+            while j < finish && value.[j] <> '\n' do
                 j <- j + 1
             this.PutSegment(value, i, j, quoted)
             let mutable k = j
-            while k < n && value.[k] = '\n' do
+            while k < finish && value.[k] = '\n' do
                 k <- k + 1
             if k > j then
                 for _ in 0 .. k - j do
                     out.EndLine()
                 out.Spaces contentCol
             i <- k
+
+    /// Writes the lines of a plain or single-quoted value.
+    member private this.WriteFoldedLines(value: string, contentCol: int, quoted: bool) =
         if quoted then out.Put "'"
+        this.WriteFoldedRange(value, 0, value.Length, contentCol, quoted)
+        if quoted then out.Put "'"
+
+    /// Ends the line at a break of a layout and starts the next line at `contentCol`.
+    member private this.PutLayoutBreak(contentCol: int) =
+        out.EndLine()
+        out.Spaces contentCol
+
+    /// Writes the pieces of a plain or single-quoted scalar, one line for each piece. The reader folds the break between
+    /// two pieces into the space that the layout names, and the line feeds inside a piece stand as empty lines.
+    member private this.WriteLayoutLines(value: string, pieces: LayoutPiece[], contentCol: int, quoted: bool) =
+        if quoted then out.Put "'"
+        for piece in pieces do
+            this.WriteFoldedRange(value, piece.First, piece.Limit, contentCol, quoted)
+            if piece.Behind.IsSome then this.PutLayoutBreak contentCol
+        if quoted then out.Put "'"
+
+    /// Writes the pieces of a double-quoted scalar. A fold ends the line of a piece, and the blank at its end would go
+    /// away, so the piece escapes it. A piece behind a break escapes the blank at its start for the same reason. An
+    /// escaped break keeps the blanks in front of it. A fold with empty lines and an escaped break with empty lines
+    /// write one empty line for each of them. A line feed inside a piece stays an escape.
+    member private this.WriteDoubleLayout(value: string, pieces: LayoutPiece[], contentCol: int) =
+        out.Put "\""
+        let sb = StringBuilder()
+        for p in 0 .. pieces.Length - 1 do
+            let piece = pieces.[p]
+            let folds =
+                match piece.Behind with
+                | Some (LayoutKind.Fold _) -> true
+                | _ -> false
+            sb.Clear() |> ignore
+            WriterText.appendDoubleRange sb value piece.First piece.Limit false (p > 0) folds
+            out.Put(sb.ToString())
+            match piece.Behind with
+            | Some kind ->
+                let emptyLines =
+                    match kind with
+                    | LayoutKind.Fold lines -> lines
+                    | LayoutKind.EscapedBreak lines ->
+                        out.Put "\\"
+                        lines
+                for _ in 0 .. emptyLines do
+                    out.EndLine()
+                out.Spaces contentCol
+            | None -> ()
+        out.Put "\""
 
     /// Writes the header and the body of a block scalar. The cursor stands behind the properties. The header ends
     /// the line, and every body line ends its line too.
@@ -829,6 +914,7 @@ type internal Engine(options: WriterOptions) =
         while bodyEnd > 0 && value.[bodyEnd - 1] = '\n' do
             bodyEnd <- bodyEnd - 1
         let trailing = len - bodyEnd
+        let mutable foldIndex = 0
         if bodyEnd = 0 then
             for _ in 1 .. trailing do
                 out.EndLine()
@@ -844,7 +930,12 @@ type internal Engine(options: WriterOptions) =
                 let more = value.[i] = ' ' || value.[i] = '\t'
                 out.Spaces contentCol
                 for k in i .. j - 1 do
-                    out.PutChar value.[k]
+                    // The space of a fold is the line break of the layout.
+                    if foldIndex < plan.Pieces.Length - 1 && plan.Pieces.[foldIndex].Limit = k then
+                        this.PutLayoutBreak contentCol
+                        foldIndex <- foldIndex + 1
+                    else
+                        out.PutChar value.[k]
                 let mutable k = j
                 while k < bodyEnd && value.[k] = '\n' do
                     k <- k + 1
@@ -899,6 +990,15 @@ type internal Engine(options: WriterOptions) =
             this.EndLineWith(this.TrailingOf node)
         | Shape.SingleLines ->
             this.WriteFoldedLines(scalar.Value, this.ContentCol n, true)
+            this.EndLineWith(this.TrailingOf node)
+        | Shape.PlainLayout ->
+            this.WriteLayoutLines(scalar.Value, plan.Pieces, this.ContentCol n, false)
+            this.EndLineWith(this.TrailingOf node)
+        | Shape.SingleLayout ->
+            this.WriteLayoutLines(scalar.Value, plan.Pieces, this.ContentCol n, true)
+            this.EndLineWith(this.TrailingOf node)
+        | Shape.DoubleLayout ->
+            this.WriteDoubleLayout(scalar.Value, plan.Pieces, this.ContentCol n)
             this.EndLineWith(this.TrailingOf node)
         | Shape.Block -> this.WriteBlockScalar(plan, scalar, n)
 
@@ -960,7 +1060,12 @@ type internal Engine(options: WriterOptions) =
                     | ScalarStyle.Plain -> true
                     | ScalarStyle.SingleQuoted -> true
                     | _ -> false
-                scalar.HeaderComment.IsSome || (policy <> StylePolicy.Canonical && foldable && scalar.Value.IndexOf('\n') >= 0)
+                let layout =
+                    match scalar.Style, scalar.Layout with
+                    | ScalarStyle.Block _, _ -> false
+                    | _, Some layout -> policy <> StylePolicy.Canonical && Layout.fits layout scalar.Value scalar.Style
+                    | _, None -> false
+                scalar.HeaderComment.IsSome || layout || (policy <> StylePolicy.Canonical && foldable && scalar.Value.IndexOf('\n') >= 0)
             | _ -> false
 
     /// Sets the flag of every collection of the flow subtree: true when the collection or one below it needs one
@@ -1098,6 +1203,9 @@ type internal Engine(options: WriterOptions) =
                 | Shape.Line text -> out.Put text
                 | Shape.PlainLines -> this.WriteFoldedLines(scalar.Value, frame.ItemsCol, false)
                 | Shape.SingleLines -> this.WriteFoldedLines(scalar.Value, frame.ItemsCol, true)
+                | Shape.PlainLayout -> this.WriteLayoutLines(scalar.Value, plan.Pieces, frame.ItemsCol, false)
+                | Shape.SingleLayout -> this.WriteLayoutLines(scalar.Value, plan.Pieces, frame.ItemsCol, true)
+                | Shape.DoubleLayout -> this.WriteDoubleLayout(scalar.Value, plan.Pieces, frame.ItemsCol)
                 | Shape.Empty -> ()
                 | Shape.Block -> this.Fail "A block scalar cannot stand inside a flow collection."
                 false
@@ -1769,9 +1877,20 @@ type internal Engine(options: WriterOptions) =
 /// The writer checks its input with `Validate` first and raises `YamlWriteException` with the messages of the
 /// validator when the tree breaks a rule. It then puts every comment and blank line back in the place where the
 /// reader puts it into the same slot, so `Reader.tryReadDocuments` of the output gives a tree that is equal to the
-/// input except for the spans. A tree that a program built can differ in styles that the writer had to change, unless
-/// the policy is `RequireStored`, which raises instead. The policy `Canonical` rewrites the styles on purpose. A tree
-/// that the parser produced has one exception, which the paragraph on the empty root block scalar names.
+/// input except for the spans. A tree that a program built can differ in styles and layouts that the writer had to change,
+/// unless the policy is `RequireStored`, which raises instead for a style. The policy `Canonical` rewrites the styles on
+/// purpose. A tree that the parser produced has one exception, which the paragraph on the empty root block scalar names.
+///
+/// A plain, quoted or folded scalar that the parser read over several lines keeps those lines in its `Layout`, and the
+/// writer writes them again. A fold stands for one space of the value, so the writer ends the line at that space. The
+/// layout fits while each boundary still stands at the text that it replaces and the lines next to a fold keep
+/// their text. A double-quoted scalar escapes a blank at the edge of a line, because the reader drops it there.
+/// The scalar has to stand where more than one line is possible. An implicit key never goes over several lines, and
+/// neither does a flow collection that the writer keeps on one line. A flow collection with a scalar over several lines
+/// puts each item on a line of its own. `PreferStored` and `RequireStored` write the normal spelling where the layout
+/// does not fit, and `RequireStored` raises only where the stored style cannot express the value. `Canonical` ignores
+/// the layout. The continuation lines stand one indentation step deeper than the parent, and the lines of a folded block
+/// scalar stand at the indentation of its body. The output does not keep the indentation of the author.
 ///
 /// The output ends every line with `WriterOptions.NewLine`, the last line included. One case differs: a block scalar
 /// with the chomping Clip or Keep whose value has no final line feed can only be the last node of the text. The

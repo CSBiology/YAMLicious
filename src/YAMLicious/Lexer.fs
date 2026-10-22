@@ -18,7 +18,9 @@ open System.Text
 /// Only an error path asks for a mark behind the tracker, which restarts the tracker at the start of the
 /// text once. A scalar is materialized once, with one `StringBuilder` where it needs
 /// folding or escapes, and no routine uses `Substring`, because in Fable Python every call costs time
-/// proportional to the length of the whole text.
+/// proportional to the length of the whole text. A scalar that folds records the place of each line break that
+/// turned into its value as an index of the value, which is its layout. The builder counts its characters for that,
+/// because `StringBuilder.Length` costs time proportional to the length in Fable Python.
 ///
 /// Characters. A routine checks the character production of its place in the loop that reads the text, and no
 /// routine makes a pass of its own for it. Plain scalars, block scalar bodies, comments, directive lines and
@@ -179,6 +181,52 @@ module internal Lexer =
             sb.Append(System.Char.ConvertFromUtf32 codePoint) |> ignore
 #endif
 #endif
+
+    /// The number of characters that `appendCodePoint` adds to a string, counted in the unit that a string indexes by.
+    let private codePointUnits (codePoint: int) =
+#if FABLE_COMPILER_PYTHON
+        1
+#else
+        if codePoint < 0x10000 then 1 else 2
+#endif
+
+    /// The cooked value of a scalar under construction, with the line breaks that folding turned into the value. It counts
+    /// the characters that it holds, because the boundaries of the layout name an index of the value and
+    /// `StringBuilder.Length` costs time proportional to the length in Fable Python. The count is the unit of `Value.[i]`
+    /// on the target: a UTF-16 code unit on .NET and JavaScript, and a code point on Python.
+    [<Sealed; AllowNullLiteral>]
+    type private Cooked() =
+        let sb = StringBuilder()
+        let mutable length = 0
+        let mutable marks: ResizeArray<LayoutBoundary> = null
+
+        member _.AppendChar(c: char) =
+            sb.Append(c) |> ignore
+            length <- length + 1
+
+        member _.AppendRange(text: string, first: int, finish: int) =
+            for k in first .. finish - 1 do
+                sb.Append(text.[k]) |> ignore
+            if finish > first then length <- length + (finish - first)
+
+        member _.AppendLineFeeds(count: int) =
+            for _ in 1 .. count do
+                sb.Append('\n') |> ignore
+            if count > 0 then length <- length + count
+
+        member _.AppendCodePoint(codePoint: int) =
+            appendCodePoint sb codePoint
+            length <- length + codePointUnits codePoint
+
+        /// Records a line break that turns into the text at the current end of the value.
+        member _.Mark(kind: LayoutKind) =
+            if isNull marks then marks <- ResizeArray<LayoutBoundary>()
+            marks.Add { At = length; Kind = kind }
+
+        member _.Layout: ScalarLayout option =
+            if isNull marks then None else Some { Boundaries = List.ofSeq marks }
+
+        member _.Text = sb.ToString()
 
     /// The value of a hexadecimal digit, or -1.
     let private hexValue (c: char) =
@@ -522,14 +570,14 @@ module internal Lexer =
     /// indented deeper than the parent, does not start a document marker, a comment or a character that is no nb-char, and does not start
     /// with a colon that ends the scalar or, in a flow collection, a flow indicator. The empty lines in
     /// between fold into line feeds, and a single line break folds into a space.
-    let private scanPlain (ctx: LexContext) (cursor: Cursor) (start: int) : string * int =
+    let private scanPlain (ctx: LexContext) (cursor: Cursor) (start: int) : string * int * ScalarLayout option =
         let text = cursor.Text
         let n = text.Length
         let flow = isFlowGrammar ctx.Grammar
         let singleLine = ctx.SimpleKey || isKeyGrammar ctx.Grammar
         let firstEnd, firstStop = plainLine text start flow
         let mutable textEnd = firstEnd
-        let mutable builder: StringBuilder = null
+        let mutable builder: Cooked = null
         let mutable stop = firstStop
         let mutable more = (not singleLine) && (stop >= n || isBreak text.[stop])
         while more do
@@ -574,15 +622,19 @@ module internal Lexer =
                     else
                         let lineTextEnd, lineStop = plainLine text contentAt flow
                         if isNull builder then
-                            builder <- StringBuilder()
-                            appendRange builder text start firstEnd
-                        if empties = 0 then builder.Append(' ') |> ignore else appendLineFeeds builder empties
-                        appendRange builder text contentAt lineTextEnd
+                            builder <- Cooked()
+                            builder.AppendRange(text, start, firstEnd)
+                        if empties = 0 then
+                            builder.Mark(LayoutKind.Fold 0)
+                            builder.AppendChar ' '
+                        else
+                            builder.AppendLineFeeds empties
+                        builder.AppendRange(text, contentAt, lineTextEnd)
                         textEnd <- lineTextEnd
                         stop <- lineStop
                         more <- stop >= n || isBreak text.[stop]
-        let value = if isNull builder then copyRange text start firstEnd else builder.ToString()
-        value, textEnd
+        let value = if isNull builder then copyRange text start firstEnd else builder.Text
+        value, textEnd, (if isNull builder then None else builder.Layout)
 
     // ---------------------------------------------------------------------------------------------
     // Quoted scalars
@@ -637,7 +689,7 @@ module internal Lexer =
     /// Decodes the escape that starts with the backslash at `p` in a double-quoted scalar and appends its
     /// text. Returns the index behind the escape. An escaped line break returns the index of the next
     /// character with content.
-    let private scanEscape (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (sb: StringBuilder) (p: int) (singleLine: bool) : int =
+    let private scanEscape (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (sb: Cooked) (p: int) (singleLine: bool) : int =
         let text = cursor.Text
         let n = text.Length
         if p + 1 >= n then
@@ -650,29 +702,29 @@ module internal Lexer =
             )
         let e = text.[p + 1]
         match e with
-        | '0' -> sb.Append('\u0000') |> ignore; p + 2
-        | 'a' -> sb.Append('\u0007') |> ignore; p + 2
-        | 'b' -> sb.Append('\u0008') |> ignore; p + 2
-        | 't' -> sb.Append('\t') |> ignore; p + 2
-        | '\t' -> sb.Append('\t') |> ignore; p + 2
-        | 'n' -> sb.Append('\n') |> ignore; p + 2
-        | 'v' -> sb.Append('\u000B') |> ignore; p + 2
-        | 'f' -> sb.Append('\u000C') |> ignore; p + 2
-        | 'r' -> sb.Append('\r') |> ignore; p + 2
-        | 'e' -> sb.Append('\u001B') |> ignore; p + 2
-        | ' ' -> sb.Append(' ') |> ignore; p + 2
-        | '"' -> sb.Append('"') |> ignore; p + 2
-        | '/' -> sb.Append('/') |> ignore; p + 2
-        | '\\' -> sb.Append('\\') |> ignore; p + 2
-        | 'N' -> sb.Append('\u0085') |> ignore; p + 2
-        | '_' -> sb.Append('\u00A0') |> ignore; p + 2
-        | 'L' -> sb.Append('\u2028') |> ignore; p + 2
-        | 'P' -> sb.Append('\u2029') |> ignore; p + 2
+        | '0' -> sb.AppendChar('\u0000') |> ignore; p + 2
+        | 'a' -> sb.AppendChar('\u0007') |> ignore; p + 2
+        | 'b' -> sb.AppendChar('\u0008') |> ignore; p + 2
+        | 't' -> sb.AppendChar('\t') |> ignore; p + 2
+        | '\t' -> sb.AppendChar('\t') |> ignore; p + 2
+        | 'n' -> sb.AppendChar('\n') |> ignore; p + 2
+        | 'v' -> sb.AppendChar('\u000B') |> ignore; p + 2
+        | 'f' -> sb.AppendChar('\u000C') |> ignore; p + 2
+        | 'r' -> sb.AppendChar('\r') |> ignore; p + 2
+        | 'e' -> sb.AppendChar('\u001B') |> ignore; p + 2
+        | ' ' -> sb.AppendChar(' ') |> ignore; p + 2
+        | '"' -> sb.AppendChar('"') |> ignore; p + 2
+        | '/' -> sb.AppendChar('/') |> ignore; p + 2
+        | '\\' -> sb.AppendChar('\\') |> ignore; p + 2
+        | 'N' -> sb.AppendChar('\u0085') |> ignore; p + 2
+        | '_' -> sb.AppendChar('\u00A0') |> ignore; p + 2
+        | 'L' -> sb.AppendChar('\u2028') |> ignore; p + 2
+        | 'P' -> sb.AppendChar('\u2029') |> ignore; p + 2
         | 'x' ->
             let value = readHex text (p + 2) 2
             if value < 0 then
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\x needs two hexadecimal digits." p (min n (p + 4)) [ opening ]
-            sb.Append(char value) |> ignore
+            sb.AppendChar(char value) |> ignore
             p + 4
         | 'u' ->
             let value = readHex text (p + 2) 4
@@ -681,13 +733,13 @@ module internal Lexer =
             // Two escapes that spell a surrogate pair are one code point on every target.
             let low = if value >= 0xD800 && value <= 0xDBFF && p + 11 < n && text.[p + 6] = '\\' && text.[p + 7] = 'u' then readHex text (p + 8) 4 else -1
             if low >= 0xDC00 && low <= 0xDFFF then
-                appendCodePoint sb (0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00))
+                sb.AppendCodePoint (0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00))
                 p + 12
             elif value >= 0xD800 && value <= 0xDFFF then
                 // A lone surrogate is no character, and a Python string cannot hold it through a StringBuilder.
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\u names a surrogate that no second escape completes to a character." p (p + 6) [ opening ]
             else
-                sb.Append(char value) |> ignore
+                sb.AppendChar(char value) |> ignore
                 p + 6
         | 'U' ->
             let value = readHex text (p + 2) 8
@@ -695,13 +747,14 @@ module internal Lexer =
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\U needs eight hexadecimal digits." p (min n (p + 10)) [ opening ]
             if value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF) then
                 fail cursor YamlErrorCode.InvalidEscape "The escape \\U does not name a Unicode scalar value." p (p + 10) [ opening ]
-            appendCodePoint sb value
+            sb.AppendCodePoint value
             p + 10
         | '\n' | '\r' ->
             if singleLine then
                 fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." p (p + 2) []
             let empties, next = foldBreak ctx cursor opening (p + 1)
-            appendLineFeeds sb empties
+            sb.Mark(LayoutKind.EscapedBreak empties)
+            sb.AppendLineFeeds empties
             next
         | _ ->
             fail cursor YamlErrorCode.InvalidEscape "The backslash starts an escape that YAML does not define." p (p + 2) [ opening ]
@@ -713,14 +766,14 @@ module internal Lexer =
     /// away, and the break becomes a space or, with empty lines behind it, one line feed for each empty
     /// line. Only the literal blanks in front of a break go away, so a blank that an escape produced stays.
     /// A byte order mark is content of the scalar, like every other character of nb-json.
-    let private scanQuoted (ctx: LexContext) (cursor: Cursor) (q: int) : string * int =
+    let private scanQuoted (ctx: LexContext) (cursor: Cursor) (q: int) : string * int * ScalarLayout option =
         let text = cursor.Text
         let n = text.Length
         let quote = text.[q]
         let isDouble = quote = '"'
         let opening = cursor.SpanOf(q, q + 1)
         let singleLine = ctx.SimpleKey || isKeyGrammar ctx.Grammar
-        let sb = StringBuilder()
+        let sb = Cooked()
         let mutable p = q + 1
         let mutable runStart = p
         let mutable closed = false
@@ -730,21 +783,21 @@ module internal Lexer =
             let c = text.[p]
             if c = quote then
                 if (not isDouble) && p + 1 < n && text.[p + 1] = '\'' then
-                    appendRange sb text runStart p
-                    sb.Append('\'') |> ignore
+                    sb.AppendRange(text, runStart, p)
+                    sb.AppendChar '\''
                     p <- p + 2
                     runStart <- p
                 else
-                    appendRange sb text runStart p
+                    sb.AppendRange(text, runStart, p)
                     closed <- true
             elif isDouble && c = '\\' then
-                appendRange sb text runStart p
+                sb.AppendRange(text, runStart, p)
                 p <- scanEscape ctx cursor opening sb p singleLine
                 runStart <- p
             elif isBlank c then
                 let r = skipBlanks text p
                 if r < n && isBreak text.[r] then
-                    appendRange sb text runStart p
+                    sb.AppendRange(text, runStart, p)
                     p <- r
                     runStart <- r
                 else
@@ -752,16 +805,21 @@ module internal Lexer =
             elif isBreak c then
                 if singleLine then
                     fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." q p []
-                appendRange sb text runStart p
+                sb.AppendRange(text, runStart, p)
                 let empties, next = foldBreak ctx cursor opening p
-                if empties = 0 then sb.Append(' ') |> ignore else appendLineFeeds sb empties
+                if empties = 0 then
+                    sb.Mark(LayoutKind.Fold 0)
+                    sb.AppendChar ' '
+                else
+                    if isDouble then sb.Mark(LayoutKind.Fold empties)
+                    sb.AppendLineFeeds empties
                 p <- next
                 runStart <- next
             elif isJsonChar text p then
                 p <- p + 1
             else
                 failChar cursor p
-        sb.ToString(), p
+        sb.Text, p, sb.Layout
 
     // ---------------------------------------------------------------------------------------------
     // Block scalars
@@ -866,7 +924,7 @@ module internal Lexer =
 
         // The body. The lines are cooked while they are read. `empties` counts the empty lines since the last
         // content line, and the line feeds that the end of the value owes depend on it and on the chomping.
-        let sb = StringBuilder()
+        let sb = Cooked()
         let mutable r = bodyStart
         let mutable hasContent = false
         let mutable empties = 0
@@ -917,16 +975,17 @@ module internal Lexer =
                     let moreIndented = first < le && (text.[first] = ' ' || text.[first] = '\t')
                     if literal then
                         // Every line owes the value a line feed, and the empty lines in front of this one have been owed too.
-                        appendLineFeeds sb (if hasContent then empties + 1 else empties)
+                        sb.AppendLineFeeds (if hasContent then empties + 1 else empties)
                     elif not hasContent then
-                        appendLineFeeds sb empties
+                        sb.AppendLineFeeds empties
                     elif previousMoreIndented || moreIndented then
-                        appendLineFeeds sb (empties + 1)
+                        sb.AppendLineFeeds (empties + 1)
                     elif empties = 0 then
-                        sb.Append(' ') |> ignore
+                        sb.Mark(LayoutKind.Fold 0)
+                        sb.AppendChar ' '
                     else
-                        appendLineFeeds sb empties
-                    appendRange sb text first le
+                        sb.AppendLineFeeds empties
+                    sb.AppendRange(text, first, le)
                     hasContent <- true
                     previousMoreIndented <- moreIndented
                     lastContentEnd <- le
@@ -942,16 +1001,17 @@ module internal Lexer =
             | ChompingMode.Strip -> 0
             | ChompingMode.Clip -> if hasContent && lastLineBroken then 1 else 0
             | ChompingMode.Keep -> if hasContent then (if lastLineBroken then empties + 1 else 0) else empties
-        appendLineFeeds sb feeds
+        sb.AppendLineFeeds feeds
         // The scalar ends at its last content line, or at its header when it has no content.
         let finishMark = if hasContent then cursor.MarkAt lastContentEnd else headerMark
         cursor.Index <- (if chomping = ChompingMode.Keep then r else afterContent)
         cursor.LineBegin <- true
         let style = if literal then BlockScalarStyle.Literal else BlockScalarStyle.Folded
         let indicator = if digit > 0 then Some digit else None
-        { Value = sb.ToString()
+        { Value = sb.Text
           Style = ScalarStyle.Block(style, chomping, indicator)
-          HeaderComment = headerComment },
+          HeaderComment = headerComment
+          Layout = (if literal then None else sb.Layout) },
         finishMark
 
     // ---------------------------------------------------------------------------------------------
@@ -1040,7 +1100,7 @@ module internal Lexer =
             { Value = Lexeme.Scalar scalar
               Span = { Start = start; Finish = finishMark } }
         elif c = '\'' || c = '"' then
-            let value, closing = scanQuoted ctx cursor q
+            let value, closing, layout = scanQuoted ctx cursor q
             cursor.Index <- closing + 1
             cursor.JsonLikeEnd <- closing + 1
             let finish = cursor.MarkAt(closing + 1)
@@ -1051,7 +1111,8 @@ module internal Lexer =
                 Lexeme.Scalar
                     { Value = value
                       Style = style
-                      HeaderComment = None }
+                      HeaderComment = None
+                      Layout = layout }
               Span = { Start = start; Finish = finish } }
         elif c = '%' then
             if atLineStart cursor q && cursor.InPrelude then
@@ -1072,7 +1133,7 @@ module internal Lexer =
         elif not (isNbChar text q) then
             failChar cursor q
         else
-            let value, finish = scanPlain ctx cursor q
+            let value, finish, layout = scanPlain ctx cursor q
             cursor.Index <- finish
             let finishMark = cursor.MarkAt finish
             if (ctx.SimpleKey || isKeyGrammar ctx.Grammar) && finishMark.Column - start.Column > MaxKeyLength then
@@ -1081,7 +1142,8 @@ module internal Lexer =
                 Lexeme.Scalar
                     { Value = value
                       Style = ScalarStyle.Plain
-                      HeaderComment = None }
+                      HeaderComment = None
+                      Layout = layout }
               Span = { Start = start; Finish = finishMark } }
 
     /// Handles the start of a line that the lexer has not looked at yet, behind the byte order marks that

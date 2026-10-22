@@ -179,4 +179,5 @@ module CoreSchema =
         let style = if resolvesToNonString text then ScalarStyle.DoubleQuoted else ScalarStyle.Plain
         { Value = text
           Style = style
-          HeaderComment = None }
+          HeaderComment = None
+          Layout = None }

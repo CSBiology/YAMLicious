@@ -2,8 +2,8 @@ namespace YAMLicious
 
 // The node model. It describes the serialization tree of a YAML stream: values,
 // properties, scalar and collection styles, the place of every comment, directives and document boundaries.
-// It keeps none of the original spacing, quote escapes, line wrapping of scalars or indentation of
-// collections.
+// It keeps none of the original spacing, quote escapes or indentation of collections. A plain, quoted or
+// folded scalar keeps the line breaks that its folding turned into the value, in an opaque `ScalarLayout`.
 //
 // Two pairs of spellings read the same, and the writer picks one form of each. A flow pair such as
 // `[a: b]` and the one-entry flow mapping `[{a: b}]` give the same tree. So do an indentless block
@@ -169,17 +169,50 @@ type PropertyPlacement =
       After: Separation
       Span: SourceSpan option }
 
+/// The way a line break of a scalar turned into its value. A boundary sits at an index of `Value`, which is the
+/// index that `Value.[i]` uses on the target. A `Fold` is a line break that folding turned into text. With no empty
+/// line behind the break it is one space at the index. With `k` empty lines it is `k` line feeds from the index.
+/// An `EscapedBreak` is a backslash at the end of a line of a double-quoted scalar. It adds nothing to the value
+/// when no empty line follows and `k` line feeds when `k` empty lines follow.
+[<RequireQualifiedAccess>]
+type internal LayoutKind =
+    | Fold of emptyLines: int
+    | EscapedBreak of emptyLines: int
+
+/// One line break of a scalar, see `LayoutKind`.
+type internal LayoutBoundary = { At: int; Kind: LayoutKind }
+
+/// The line breaks of a plain, quoted or folded scalar, so that the writer can write the lines of the author
+/// again. The boundaries stand in the order of the value, and a layout has at least one. Only the library
+/// creates a layout, and a program compares it with `YamlNode.equalIgnoringSpans`, copies it with the scalar
+/// and drops it when the value no longer fits it.
+///
+/// A plain scalar and a single-quoted scalar keep the breaks that fold into one space, because the line feeds
+/// of the value tell the empty lines already. A double-quoted scalar keeps the breaks that fold into a space
+/// or into line feeds, and the escaped breaks, because a line feed escape in the value is another spelling
+/// than an empty line. A folded block scalar keeps the breaks that fold into one space. A literal block scalar
+/// has no layout, because its lines are the lines of the value. The layout does not keep the indentation of the
+/// continuation lines, the blanks that folding discards at the end and the start of a line, the spelling of an
+/// escape or the bytes of a line break.
+type ScalarLayout = internal { Boundaries: LayoutBoundary list }
+
 /// The cooked value of a scalar and its spelling.
 ///
 /// `Value` is the text after the escapes, the line folding and the chomping, so nothing downstream folds
 /// it again. An empty scalar has the value "". A missing value, as in `k:` or in an empty sequence item, is
 /// a plain scalar with the value "" and a zero-width span. The spellings null and ~ stay plain scalars with
 /// that text, and the core schema decides what they mean.
+///
+/// `Layout` is None on a scalar that a program constructed and on a scalar without a line break that folded. The
+/// parser sets it for the other plain, quoted and folded scalars. The writer writes the lines of the layout again
+/// where they fit the value, the style and the place of the scalar, and it writes its normal spelling otherwise.
 type YamlScalar =
     { Value: string
       Style: ScalarStyle
       /// The comment behind the header of a block scalar, as in `| # c`. It is None for every other style.
-      HeaderComment: YamlComment option }
+      HeaderComment: YamlComment option
+      /// The line breaks that the folding of the text turned into the value.
+      Layout: ScalarLayout option }
 
 /// The shared part of a mapping and a sequence. An empty collection is always a flow collection.
 ///

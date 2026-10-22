@@ -53,7 +53,7 @@ module internal NodeComparison =
         a.Property = b.Property && separationEqual a.After b.After
 
     let private scalarEqual (a: YamlScalar) (b: YamlScalar) =
-        a.Value = b.Value && a.Style = b.Style && commentsEqual a.HeaderComment b.HeaderComment
+        a.Value = b.Value && a.Style = b.Style && commentsEqual a.HeaderComment b.HeaderComment && a.Layout = b.Layout
 
     let private collectionEqual (a: Collection<'Item>) (b: Collection<'Item>) =
         a.Style = b.Style
@@ -185,6 +185,19 @@ module internal NodeComparison =
     let private showTriviaList (items: Trivia list) =
         "[" + String.Join("; ", items |> List.map showTrivia) + "]"
 
+    /// The line breaks of a scalar: `f@4` is a fold into the space at index 4, `f2@9` a fold into two line feeds from
+    /// index 9, and `e@12` and `e1@15` are escaped breaks without and with one empty line.
+    let private showBreaks (layout: ScalarLayout) =
+        let parts =
+            layout.Boundaries
+            |> List.map (fun boundary ->
+                match boundary.Kind with
+                | LayoutKind.Fold 0 -> "f@" + string boundary.At
+                | LayoutKind.Fold lines -> "f" + string lines + "@" + string boundary.At
+                | LayoutKind.EscapedBreak 0 -> "e@" + string boundary.At
+                | LayoutKind.EscapedBreak lines -> "e" + string lines + "@" + string boundary.At)
+        "[" + String.Join("; ", parts) + "]"
+
     let private showSeparation (separation: Separation) =
         match separation with
         | Separation.Inline -> "inline"
@@ -254,6 +267,9 @@ module internal NodeComparison =
             sb.Append(" layout=[").Append(String.Join("; ", node.PropertyLayout |> List.map showLayout)).Append(']') |> ignore
         match node.Kind with
         | YamlNodeKind.Scalar scalar ->
+            match scalar.Layout with
+            | Some breaks -> sb.Append(" breaks=").Append(showBreaks breaks) |> ignore
+            | None -> ()
             match scalar.HeaderComment with
             | Some comment -> sb.Append(" header=").Append(showComment comment) |> ignore
             | None -> ()

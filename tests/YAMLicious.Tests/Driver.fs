@@ -323,6 +323,32 @@ let lit (value: string) : YamlNode = YamlNode.scalar (ScalarStyle.Block(BlockSca
 /// A folded block scalar with the chomping Clip.
 let fold (value: string) : YamlNode = YamlNode.scalar (ScalarStyle.Block(BlockScalarStyle.Folded, ChompingMode.Clip, None)) value
 
+/// The node with a layout of folds into one space at the indexes of the spaces. A test names the indexes of the spaces
+/// that the parser read from a line break.
+let withFolds (indexes: int list) (node: YamlNode) : YamlNode =
+    match node.Kind with
+    | YamlNodeKind.Scalar content ->
+        let layout = { Boundaries = [ for index in indexes -> { At = index; Kind = LayoutKind.Fold 0 } ] }
+        { node with Kind = YamlNodeKind.Scalar { content with Layout = Some layout } }
+    | _ -> failwith "A scalar was expected."
+
+/// The indexes of the spaces that join the lines into one text.
+let foldsOfLines (lines: string list) : int list =
+    let mutable at = -1
+    [ for line in lines do
+          at <- at + 1 + line.Length
+          yield at ]
+    |> List.take (max 0 (List.length lines - 1))
+
+/// A plain scalar that folding joined from the lines, with the layout of its line breaks.
+let scLines (lines: string list) : YamlNode = withFolds (foldsOfLines lines) (sc (String.concat " " lines))
+
+/// A single-quoted scalar that folding joined from the lines, with the layout of its line breaks.
+let sqLines (lines: string list) : YamlNode = withFolds (foldsOfLines lines) (sq (String.concat " " lines))
+
+/// A double-quoted scalar that folding joined from the lines, with the layout of its line breaks.
+let dqLines (lines: string list) : YamlNode = withFolds (foldsOfLines lines) (dq (String.concat " " lines))
+
 /// A block scalar with the given style, chomping and indentation indicator.
 let blockScalar (style: BlockScalarStyle) (chomping: ChompingMode) (indicator: int option) (value: string) : YamlNode =
     YamlNode.scalar (ScalarStyle.Block(style, chomping, indicator)) value

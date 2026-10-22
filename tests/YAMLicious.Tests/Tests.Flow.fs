@@ -384,7 +384,7 @@ let private pairTests = testList "Flow pairs" [
         expectRoot "[? ]" (flowSeq [ YamlNode.flowMapping [ { explicitFlowEntry nothing nothing with Colon = None } ] ])
         expectRoot "[? a : b, ? c]" (flowSeq [ YamlNode.flowMapping [ explicitFlowEntry (sc "a") (sc "b") ]; YamlNode.flowMapping [ { explicitFlowEntry (sc "c") nothing with Colon = None } ] ])
         // The key of a pair behind a question mark may span lines, because [143] ns-flow-map-explicit-entry has no limit on it.
-        expectRoot "[\n? foo\n bar : baz\n]" (flowSeq [ YamlNode.flowMapping [ explicitFlowEntry (sc "foo bar") (sc "baz") ] ])
+        expectRoot "[\n? foo\n bar : baz\n]" (flowSeq [ YamlNode.flowMapping [ explicitFlowEntry (scLines [ "foo"; "bar" ]) (sc "baz") ] ])
 
     // [148] and [149]: a colon behind a quoted scalar or a flow collection takes its value without a blank, and blanks, comments and line breaks may stand
     // between the node and the colon. yaml@2.6.1: [{"a":"b"}], [{"a":"b"}], [{"a":"b"}] and [{"[ a ]":"b"}].
@@ -467,9 +467,9 @@ let private entryTests = testList "Entries of a flow mapping" [
     // Tests.YamlRead "The key of an entry in a flow mapping or behind a question mark may span lines". yaml@2.6.1: {"matches %":20} (spec 9.4), {"a b":"c"},
     // {"a b c":null} and {"a":"b"}.
     testCase "the key of an entry may span lines" <| fun _ ->
-        expectRoot "{ matches\n% : 20 }" (flowMap [ "matches %", sc "20" ])
-        expectRoot "{a\n b : c}" (flowMap [ "a b", sc "c" ])
-        expectRoot "{? a\n b\n c}" (YamlNode.flowMapping [ { explicitFlowEntry (sc "a b c") nothing with Colon = None } ])
+        expectRoot "{ matches\n% : 20 }" (YamlNode.flowMapping [ YamlNode.entry (scLines [ "matches"; "%" ]) (sc "20") ])
+        expectRoot "{a\n b : c}" (YamlNode.flowMapping [ YamlNode.entry (scLines [ "a"; "b" ]) (sc "c") ])
+        expectRoot "{? a\n b\n c}" (YamlNode.flowMapping [ { explicitFlowEntry (scLines [ "a"; "b"; "c" ]) nothing with Colon = None } ])
         expectRoot "{a\n: b}" (flowMap [ "a", sc "b" ])
         expectRoot "{\"a\"\n: b}" (YamlNode.flowMapping [ YamlNode.entry (dq "a") (sc "b") ])
 
@@ -486,9 +486,9 @@ let private entryTests = testList "Entries of a flow mapping" [
 let private scalarTests = testList "Scalars inside a flow collection" [
     // Tests.YamlRead "A plain scalar over several lines in a flow collection folds". yaml@2.6.1: ["a b"], ["a\nb"], {"k":["a b","c d"]} and ["a b","c"].
     testCase "a plain scalar folds over the lines of a collection and ends at a flow indicator" <| fun _ ->
-        expectRoot "[\n  a\n  b\n]" (flowSeq [ sc "a b" ])
+        expectRoot "[\n  a\n  b\n]" (flowSeq [ scLines [ "a"; "b" ] ])
         expectRoot "[a\n\n b]" (flowSeq [ sc "a\nb" ])
-        expectRoot "[a\n b, c]" (flowSeq [ sc "a b"; sc "c" ])
+        expectRoot "[a\n b, c]" (flowSeq [ scLines [ "a"; "b" ]; sc "c" ])
         expectRoot "[a b]" (flowSeq [ sc "a b" ])
         expectRoot "[a,b]" (flowSeq [ sc "a"; sc "b" ])
         expectRoot "[a ,b]" (flowSeq [ sc "a"; sc "b" ])
@@ -616,7 +616,7 @@ let private propertyTests = testList "Properties in a flow collection" [
             (mapOf [ "k", flowSeq [ YamlNode.withTag (YamlTag.core "seq") (flowSeq [ sc "a" ]); YamlNode.withAnchor "m" (flowMap [ "b", sc "c" ]) ] ])
         expectRoot "k: [!!int \"2\", &a \"x\"]" (mapOf [ "k", flowSeq [ YamlNode.withTag intTag (dq "2"); YamlNode.withAnchor "a" (dq "x") ] ])
         expectRoot "k: {&a \"q\": !t \"v\"}" (mapOf [ "k", YamlNode.flowMapping [ YamlNode.entry (YamlNode.withAnchor "a" (dq "q")) (YamlNode.withTag (YamlTag.local "t") (dq "v")) ] ])
-        expectRoot "k: [!!str a\n  b]" (mapOf [ "k", flowSeq [ YamlNode.withTag (YamlTag.core "str") (sc "a b") ] ])
+        expectRoot "k: [!!str a\n  b]" (mapOf [ "k", flowSeq [ YamlNode.withTag (YamlTag.core "str") (scLines [ "a"; "b" ]) ] ])
         expectRoot "k: [!!str , a]" (mapOf [ "k", flowSeq [ YamlNode.withTag (YamlTag.core "str") nothing; sc "a" ] ])
         expectRoot "{&a : b}" (YamlNode.flowMapping [ YamlNode.entry (YamlNode.withAnchor "a" nothing) (sc "b") ])
         expectRoot "k: {a: &x}" (mapOf [ "k", YamlNode.flowMapping [ YamlNode.entry (sc "a") (YamlNode.withAnchor "x" nothing) ] ])

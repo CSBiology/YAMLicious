@@ -738,7 +738,7 @@ type internal YamlParser(cursor: Cursor) =
     /// A `:` at the start of a node is an entry with an empty key.
     member private this.StartEmptyKey(colon: Tok) =
         let key =
-            { Lexeme = Lexeme.Scalar { Value = ""; Style = ScalarStyle.Plain; HeaderComment = None }
+            { Lexeme = Lexeme.Scalar { Value = ""; Style = ScalarStyle.Plain; HeaderComment = None; Layout = None }
               Span = spanAt colon.Span.Start
               Tab = false }
         this.AddKeyEntry(key, colon)
@@ -1314,7 +1314,7 @@ type internal YamlParser(cursor: Cursor) =
             this.FlowUnread delimiter
             this.FlowDeliver(
                 top,
-                { Kind = YamlNodeKind.Scalar { Value = ""; Style = ScalarStyle.Plain; HeaderComment = None }
+                { Kind = YamlNodeKind.Scalar { Value = ""; Style = ScalarStyle.Plain; HeaderComment = None; Layout = None }
                   Properties = nodeProps
                   PropertyLayout = layout
                   TrailingComment = None

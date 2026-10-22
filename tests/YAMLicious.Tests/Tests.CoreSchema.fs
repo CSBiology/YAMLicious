@@ -6,7 +6,8 @@ open YAMLicious
 let private scalarWith (style: ScalarStyle) (text: string) : YamlScalar =
     { Value = text
       Style = style
-      HeaderComment = None }
+      HeaderComment = None
+      Layout = None }
 
 let private plain (text: string) = scalarWith ScalarStyle.Plain text
 let private doubleQuoted (text: string) = scalarWith ScalarStyle.DoubleQuoted text

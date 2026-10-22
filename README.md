@@ -141,6 +141,20 @@ printfn "%b" (Writer.write WriterOptions.defaults document = yaml)
 true
 ```
 
+A plain, quoted or folded scalar over several lines keeps its lines as well, because the tree holds the line breaks that folding turned into the text.
+
+```fsharp
+let wrapped = "description: >\n  Reads the input table and writes\n  one summary for each group.\n"
+
+printfn "%b" (Writer.write WriterOptions.defaults (Reader.read wrapped) = wrapped)
+```
+
+```
+true
+```
+
+A program that changes the text of such a scalar calls `YamlNode.withScalarValue`. The lines stay while the new text keeps each line break at the same index, and the writer writes the normal spelling otherwise.
+
 To add a comment to a tree that you build, use `YamlNode.withTrailingComment` for a comment behind a value. The text of a comment is everything behind the `#`.
 
 ```fsharp

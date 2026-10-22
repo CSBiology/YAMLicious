@@ -20,7 +20,8 @@ let all =
           Tests.Encode.Main
           Tests.Reader.Main
           Tests.Writer.Main
-          Tests.RoundTrip.Main ]
+          Tests.RoundTrip.Main
+          Tests.Layout.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

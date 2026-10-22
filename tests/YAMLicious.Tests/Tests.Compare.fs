@@ -44,7 +44,7 @@ let private templateWith (text: string) (spans: bool) (slot: string) : YamlNode 
         YamlNodeKind.Scalar
             { Value = text
               Style = style
-              HeaderComment = header }
+              HeaderComment = header; Layout = None }
     let plainNode (text: string) (trailing: YamlComment option) =
         make (scalarKind ScalarStyle.Plain text None) noProperties [] trailing
     let placement (property: PropertyName) (after: Separation) : PropertyPlacement =

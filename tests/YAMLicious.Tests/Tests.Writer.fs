@@ -506,7 +506,7 @@ let private scalarTests = testList "Scalar spellings" [
         expectNode (mapOf [ "k", sc "a\uFEFFb" ]) "k: \"a\\uFEFFb\"\n"
         expectNode (mapOf [ "k", lit "a\uFEFFb\n" ]) "k: \"a\\uFEFFb\\n\"\n"
         expectStable "k: 'a\uFEFFb'\n"
-        expectWritten "k: 'x\uFEFF\n y'\n" "k: 'x\uFEFF y'\n"
+        expectWritten "k: 'x\uFEFF\n y'\n" "k: 'x\uFEFF\n  y'\n"
 
     // yaml@2.6.1 reads each double-quoted text as the value on its left.
     testCase "a double-quoted scalar writes the shortest escape of each character" <| fun _ ->
@@ -1110,9 +1110,9 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
     // Tests.ScalarStyles "Writer preserves plain multiline sequence style on read-write-read" and "Writer preserves plain multiline mapping style on read-write-read".
     // yaml@2.6.1 reads the inputs as ["My Value 1 My Value 2","My Value 3"] and {"note":"line1 line2"}. The old tree kept the lines of the source and the writer wrote them
     // again. The new tree holds the folded text, so the text comes back on one line.
-    testCase "a plain scalar that the parser folded is written on one line" <| fun _ ->
-        expectWritten "- My Value 1\n  My Value 2\n- My Value 3\n" "- My Value 1 My Value 2\n- My Value 3\n"
-        expectWritten "note: line1\n  line2\n" "note: line1 line2\n"
+    testCase "a plain scalar that the parser folded is written on its lines" <| fun _ ->
+        expectStable "- My Value 1\n  My Value 2\n- My Value 3\n"
+        expectStable "note: line1\n  line2\n"
 
     // Tests.ScalarStyles "Explicit indentation indicator round-trip preserves semantic value" and "Explicit indentation indicator round-trip keeps a sequence item scalar".
     // yaml@2.6.1 reads the texts as {"doc":"explicit\n"} and [" explicit\n"].

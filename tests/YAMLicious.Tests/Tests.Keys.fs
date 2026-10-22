@@ -183,7 +183,7 @@ let private explicitKeyTests = testList "Explicit keys with block content" [
     // yaml@2.6.1: {"t\n":"c"}. The body of a block scalar belongs to the key, and the colon stands on its own line.
     testCase "a block scalar is an explicit key" <| fun _ ->
         expectRoot "? |\n  t\n: c" (YamlNode.mapping [ explicitEntry (lit "t\n") (sc "c") ])
-        expectRoot "? >-\n  a\n  b\n: c" (YamlNode.mapping [ explicitEntry (blockScalar BlockScalarStyle.Folded ChompingMode.Strip None "a b") (sc "c") ])
+        expectRoot "? >-\n  a\n  b\n: c" (YamlNode.mapping [ explicitEntry (withFolds [ 1 ] (blockScalar BlockScalarStyle.Folded ChompingMode.Strip None "a b")) (sc "c") ])
 
     // Tests.AdvancedFeatures "An explicit value reads a flow sequence with a quoted item", "An explicit value that starts a block scalar keeps its body as written" and
     // "An explicit key on several lines and a multiline explicit value read from the document". yaml@2.6.1: {"k":"q","a":["x","y"]}, {"k":"q","a":"<c f=0/>\n"}, {"k":"q","a b":"x"}
