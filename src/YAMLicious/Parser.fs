@@ -1791,14 +1791,15 @@ type internal YamlParser(cursor: Cursor) =
 
 /// The parser. It reads the whole syntax: block and flow collections, scalars, aliases,
 /// properties and the documents of a stream.
-module Parser =
+module internal Parser =
 
     /// Parses the text from the cursor on. A cursor that has been used does not start at the beginning.
-    let internal parseCursor (cursor: Cursor) : Result<YamlStream, YamlError> =
+    let parseCursor (cursor: Cursor) : Result<YamlStream, YamlError> =
         try
             Ok (YamlParser(cursor).Run())
         with ParseFailure error ->
             Error { error with Message = sprintf "Line %d: %s" error.Span.Start.Line error.Message }
 
-    /// Parses a whole text into a stream. The text may start with a byte order mark.
+    /// Parses a whole text into a stream. The text may start with a byte order mark. `Reader.tryReadDocuments`
+    /// is the public entry and calls this.
     let parseStream (text: string) : Result<YamlStream, YamlError> = parseCursor (Cursor(text))

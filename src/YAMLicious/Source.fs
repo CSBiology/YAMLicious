@@ -1,13 +1,13 @@
 namespace YAMLicious
 
-/// A value together with the range of the input that it came from.
-type Located<'T> =
+/// A value together with the range of the input that it came from. Only the lexer and the tests use it.
+type internal Located<'T> =
     { Value: 'T
       Span: SourceSpan }
 
 /// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer, and the
-/// parser raises four of them too: `InvalidTag`, `TabIndentation`, `ImplicitKeyLength` and
-/// `ImplicitKeyMultiline`. The other cases come from the parser only, except `MultipleDocuments`, which the
+/// parser raises five of them too: `InvalidTag`, `TabIndentation`, `ImplicitKeyLength`, `ImplicitKeyMultiline`
+/// and `InvalidCharacter`. The other cases come from the parser only, except `MultipleDocuments`, which the
 /// reader raises. `YamlErrorCode.name` gives each case a stable text, which the failure projection and the
 /// tests use.
 [<RequireQualifiedAccess>]
@@ -34,8 +34,13 @@ type YamlErrorCode =
     | InvalidDirective
     | EmptyAnchor
     | EmptyAlias
-    /// A byte order mark anywhere but inside a quoted scalar and at the start of a line outside a flow
-    /// collection. The parser reports it too when a mark stands between a directive and the `---` behind it.
+    /// A character that YAML does not allow at its place in a scalar, a comment, a name or a directive. A control
+    /// character, a surrogate without its partner, U+FFFE and U+FFFF are invalid ([1] c-printable, [27] nb-char),
+    /// and so are DEL and the C1 controls except U+0085. A quoted scalar is wider ([2] nb-json). It takes DEL, the
+    /// C1 controls, U+FFFE, U+FFFF and the byte order mark, and it refuses the C0 controls (the tab excepted) and
+    /// a surrogate without its partner. A byte order mark is valid inside a quoted scalar and at the start of a
+    /// line outside a flow collection, and invalid anywhere else. The parser reports the code too when a mark
+    /// stands between a directive and the `---` behind it.
     | InvalidCharacter
     // The parser.
     /// A line that is deeper than the open block collections allow, or shallower than the node it ends but

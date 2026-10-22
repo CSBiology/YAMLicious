@@ -691,6 +691,47 @@ let private errorTests = testList "Parser errors" [
             Expect.equal (error.Related |> List.map showSpan) related (sprintf "The related spans of %A" input)
         Expect.stringContains (parseError "a:\n    b: 1\n  c: 2").Message "matches the indentation of no open collection" "A line between two indentations"
         Expect.stringContains (parseError "k: \"q\"\n  x").Message "deeper than the node in front of it" "A line deeper than the node that ended"
+
+    // yaml@2.6.1 checks no character class and accepts every input of this test. [1] c-printable and [27] nb-char exclude the C0 controls except the tab, DEL, the C1 controls except U+0085,
+    // U+FFFE and U+FFFF, and a surrogate without its partner is no character. The error names the line of the character.
+    testCase "a character outside the productions is an error with its line" <| fun _ ->
+        expectError "a: b\u0001c" "invalid-character@1"
+        expectError "a: 1\nb: c\u007Fd" "invalid-character@2"
+        expectError "a: b\n  c\u0081" "invalid-character@2"
+        expectError "b\u0002: c" "invalid-character@1"
+        expectError "[a, b￾c]" "invalid-character@1"
+        expectError "a: b # x\u0001y" "invalid-character@1"
+        expectError "a: b\n# x\u0001y" "invalid-character@2"
+        expectError "a: &x\u0001 b" "invalid-character@1"
+        expectError "a: &x b\nc: *x\u0001" "invalid-character@2"
+        expectError "a: |\n  b\n  c\u0001d\n" "invalid-character@3"
+        expectError "a: 'b\u0001c'" "invalid-character@1"
+        expectError "a: \"b\n  c\u0007d\"" "invalid-character@2"
+        expectError "%FOO a\u0001\n---\nx" "invalid-character@1"
+        expectError "---\na: b\n...\n%FOO a\u0001\n---\nx" "invalid-character@4"
+        expectError ("a: b" + string (char 0xD800) + "c") "invalid-character@1"
+        expectError ("a: \"b" + string (char 0xDC00) + "c\"") "invalid-character@1"
+        // The error is the first of the text, whatever follows it.
+        expectError "a: b\u0001c\nd: 'e\u0007f'" "invalid-character@1"
+
+    // yaml@2.6.1 reads each of these without an error and keeps the characters. [27] nb-char includes U+0085, U+2028, U+2029 and U+00A0 and every character above U+FFFF. [2] nb-json lets
+    // a quoted scalar hold DEL, the C1 controls, U+FFFE and U+FFFF as raw characters.
+    testCase "the characters that the productions allow stay in the values" <| fun _ ->
+        expectRoot "a: b\u0085c" (mapOf [ "a", sc "b\u0085c" ])
+        expectRoot "a: b c" (mapOf [ "a", sc "b c" ])
+        expectRoot "a: b c" (mapOf [ "a", sc "b c" ])
+        expectRoot "a: b c" (mapOf [ "a", sc "b c" ])
+        expectRoot "a: b\tc" (mapOf [ "a", sc "b\tc" ])
+        expectRoot "a: b\U0001F600c" (mapOf [ "a", sc "b\U0001F600c" ])
+        expectRoot "a: b\U0010FFFFc" (mapOf [ "a", sc "b\U0010FFFFc" ])
+        expectRoot "\u0085: x" (mapOf [ "\u0085", sc "x" ])
+        expectRoot "a: 'b\u0081c'" (mapOf [ "a", sq "b\u0081c" ])
+        expectRoot "a: \"b\u007Fc\"" (mapOf [ "a", dq "b\u007Fc" ])
+        expectRoot "a: 'b￾c'" (mapOf [ "a", sq "b￾c" ])
+        expectRoot "a: \"b￿c\"" (mapOf [ "a", dq "b￿c" ])
+        expectRoot "a: |\n  b c\n" (mapOf [ "a", lit "b c\n" ])
+        expectRoot "a: b # \u0085 " (mapOf [ "a", withNote " \u0085 " (sc "b") ])
+        expectRoot "a: \"b\n  \u0085c\"" (mapOf [ "a", dq "b \u0085c" ])
 ]
 
 let private spanText (span: SourceSpan option) : string =

@@ -1,5 +1,5 @@
 [<RequireQualifiedAccessAttribute>]
-module YAMLicious.PyInterop
+module internal YAMLicious.PyInterop
 
 #if FABLE_COMPILER_PYTHON
 open Fable.Core.PyInterop

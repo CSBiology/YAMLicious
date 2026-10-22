@@ -20,6 +20,12 @@ open System.Text
 /// folding or escapes, and no routine uses `Substring`, because in Fable Python every call costs time
 /// proportional to the length of the whole text.
 ///
+/// Characters. A routine checks the character production of its place in the loop that reads the text, and no
+/// routine makes a pass of its own for it. Plain scalars, block scalar bodies, comments, directive lines and
+/// names take [27] nb-char, and a quoted scalar takes [2] nb-json. A character outside the production is an
+/// `InvalidCharacter` error that points at the character, a surrogate counts when it belongs to a pair, and
+/// a plain scalar stops in front of the character so that the next lexeme reports it.
+///
 /// Errors. A routine raises `LexFailure` and `next` turns it into `Error`. After an error the cursor is in
 /// no defined state, and the parser stops.
 module internal Lexer =
@@ -37,6 +43,53 @@ module internal Lexer =
     /// that byte order marks are allowed inside quoted scalars.
     [<Literal>]
     let private byteOrderMark = '\uFEFF'
+
+    /// True when the surrogate at `k` belongs to a pair: a high surrogate with a low one behind it, or a low one
+    /// with a high one in front of it. A pair is one character above U+FFFF on .NET and JavaScript. A surrogate
+    /// on its own is no character. A Python string indexes by code point and holds a character above U+FFFF as
+    /// one character, so every surrogate in it stands alone.
+    let private pairedSurrogate (text: string) (k: int) =
+#if FABLE_COMPILER_PYTHON
+        false
+#else
+        if int text.[k] < 0xDC00 then
+            k + 1 < text.Length && int text.[k + 1] >= 0xDC00 && int text.[k + 1] < 0xE000
+        else
+            k > 0 && int text.[k - 1] >= 0xD800 && int text.[k - 1] < 0xDC00
+#endif
+
+    /// True when the character at `k` is an [27] nb-char. That is c-printable ([1]) without the line breaks and
+    /// the byte order mark: the tab, U+0020 to U+007E, U+0085, U+00A0 to U+D7FF, U+E000 to U+FFFD and the
+    /// characters above U+FFFF. U+0085, U+2028 and U+2029 are text in YAML 1.2, and U+00A0 is no blank. The
+    /// check is a pair of comparisons for the printable ASCII range that most text consists of.
+    let private isNbChar (text: string) (k: int) : bool =
+        let c = text.[k]
+        if c >= ' ' && c <= '~' then
+            true
+        elif c = '\t' then
+            true
+        else
+            let code = int c
+            if code < 0xA0 then code = 0x85
+            elif code < 0xD800 then true
+            elif code < 0xE000 then pairedSurrogate text k
+            else code <> 0xFEFF && (code < 0xFFFE || code > 0xFFFF)
+
+    /// True when the character at `k` is an [2] nb-json: the tab and every character from U+0020 up, which
+    /// includes DEL, the C1 controls, the byte order mark and U+FFFE. A quoted scalar takes these characters
+    /// ([107] and [118]). A surrogate counts when it belongs to a pair. A line break is no nb-json, so a caller
+    /// that scans a quoted scalar looks for the break first.
+    let private isJsonChar (text: string) (k: int) : bool =
+        let c = text.[k]
+        if c >= ' ' && c <= '~' then
+            true
+        elif c = '\t' then
+            true
+        else
+            let code = int c
+            if code < 0x20 then false
+            elif code >= 0xD800 && code < 0xE000 then pairedSurrogate text k
+            else true
 
     let private isFlowIndicator (c: char) =
         c = ',' || c = '[' || c = ']' || c = '{' || c = '}'
@@ -173,24 +226,67 @@ module internal Lexer =
                   Related = [] }
         )
 
-    /// Fails at the first byte order mark among the characters from `first` up to but excluding `finish`.
-    let private checkNoBom (cursor: Cursor) (first: int) (finish: int) =
+    /// The four hexadecimal digits of a code unit, as in the `U+0001` of a message.
+    let private hex4 (code: int) =
+        let digits = "0123456789ABCDEF"
+        StringBuilder()
+            .Append(digits.[(code >>> 12) &&& 15])
+            .Append(digits.[(code >>> 8) &&& 15])
+            .Append(digits.[(code >>> 4) &&& 15])
+            .Append(digits.[code &&& 15])
+            .ToString()
+
+    /// Raises the error for the character at `position`, which no production of the place allows: a control
+    /// character, DEL, a C1 control, U+FFFE, U+FFFF or a surrogate without its partner. The byte order mark has
+    /// its own message in `failBom`. The span covers the one code unit, because a pair is always valid.
+    let private failChar (cursor: Cursor) (position: int) : 'a =
+        let code = int cursor.Text.[position]
+        let message =
+            if code >= 0xD800 && code < 0xE000 then
+                "A surrogate without its partner is no character, so YAML text cannot hold it."
+            else
+                sprintf "U+%s cannot stand in YAML text at this place. A double-quoted scalar can spell it as an escape." (hex4 code)
+        fail cursor YamlErrorCode.InvalidCharacter message position (position + 1) []
+
+    /// Fails at the first character among the units from `first` up to but excluding `finish` that is no
+    /// nb-char. The text of a line holds no line break, so the range is the text of one line.
+    let private checkNbChars (cursor: Cursor) (first: int) (finish: int) =
         let text = cursor.Text
         let mutable k = first
         while k < finish do
-            if text.[k] = byteOrderMark then failBom cursor k
+            if not (isNbChar text k) then
+                if text.[k] = byteOrderMark then failBom cursor k else failChar cursor k
             k <- k + 1
+
+    /// The end of the comment line that starts at `from`: the line break, or the end of the text. A comment
+    /// holds nb-char only, and the scan fails at the first character that is none.
+    let private commentLineEnd (cursor: Cursor) (from: int) : int =
+        let text = cursor.Text
+        let mutable p = from
+        while p < text.Length && not (isBreak text.[p]) do
+            if not (isNbChar text p) then
+                if text.[p] = byteOrderMark then failBom cursor p else failChar cursor p
+            p <- p + 1
+        p
 
     // ---------------------------------------------------------------------------------------------
     // Properties and aliases
 
     /// The end of the anchor or alias name that starts at `from`. A name runs to a blank, a line break, a
-    /// flow indicator or a byte order mark and may hold every other character, quotes, hashes and colons
-    /// included.
-    let private nameEnd (text: string) (from: int) =
+    /// flow indicator or a byte order mark and may hold every other [102] ns-anchor-char, quotes, hashes and
+    /// colons included. The scan fails at a character that is no nb-char.
+    let private nameEnd (cursor: Cursor) (from: int) =
+        let text = cursor.Text
         let mutable p = from
-        while p < text.Length && not (isBlank text.[p]) && not (isBreak text.[p]) && not (isFlowIndicator text.[p]) && text.[p] <> byteOrderMark do
-            p <- p + 1
+        let mutable scanning = true
+        while scanning && p < text.Length do
+            let c = text.[p]
+            if isBlank c || isBreak c || isFlowIndicator c || c = byteOrderMark then
+                scanning <- false
+            elif isNbChar text p then
+                p <- p + 1
+            else
+                failChar cursor p
         p
 
     let private isWordChar (c: char) =
@@ -295,13 +391,19 @@ module internal Lexer =
         let mutable scanning = true
         while scanning && p < n do
             let c = text.[p]
-            if isBreak c then scanning <- false
-            elif c = '#' && isBlank text.[p - 1] then scanning <- false
-            else p <- p + 1
+            if isBreak c then
+                scanning <- false
+            elif c = '#' && isBlank text.[p - 1] then
+                scanning <- false
+            elif isNbChar text p then
+                p <- p + 1
+            elif c = byteOrderMark then
+                failBom cursor p
+            else
+                failChar cursor p
         let mutable finish = p
         while finish > q + 1 && isBlank text.[finish - 1] do
             finish <- finish - 1
-        checkNoBom cursor (q + 1) finish
         let starts = ResizeArray<int>()
         let ends = ResizeArray<int>()
         let mutable k = q + 1
@@ -373,7 +475,8 @@ module internal Lexer =
     /// it, and the index where the scan stopped: the line break, the end of the text, or the character that
     /// ends the scalar. A colon ends the scalar when a blank, a line break or the end follows it, and in a
     /// flow collection also a flow indicator. A hash that follows a blank starts a comment. In a flow
-    /// collection a flow indicator ends the scalar. So does a byte order mark, which the next lexeme reports.
+    /// collection a flow indicator ends the scalar. So does a character that is no [27] nb-char, such as a control
+    /// character or the byte order mark. The next lexeme reports it.
     let private plainLine (text: string) (from: int) (flow: bool) : int * int =
         let n = text.Length
         let mutable p = from
@@ -397,7 +500,7 @@ module internal Lexer =
                 else
                     p <- p + 1
                     textEnd <- p
-            elif (flow && isFlowIndicator c) || c = byteOrderMark then
+            elif (flow && isFlowIndicator c) || not (isNbChar text p) then
                 scanning <- false
             else
                 p <- p + 1
@@ -416,7 +519,7 @@ module internal Lexer =
     /// Scans the plain scalar that starts at `start`. Returns its folded value and the end of its last line.
     ///
     /// Where the context allows more than one line, a line behind the scalar continues it when it is
-    /// indented deeper than the parent, does not start a document marker, a comment or a byte order mark, and does not start
+    /// indented deeper than the parent, does not start a document marker, a comment or a character that is no nb-char, and does not start
     /// with a colon that ends the scalar or, in a flow collection, a flow indicator. The empty lines in
     /// between fold into line feeds, and a single line break folds into a space.
     let private scanPlain (ctx: LexContext) (cursor: Cursor) (start: int) : string * int =
@@ -463,7 +566,7 @@ module internal Lexer =
                         markerAt text r
                         || spaces - r <= ctx.ParentIndent
                         || c = '#'
-                        || c = byteOrderMark
+                        || not (isNbChar text contentAt)
                         || (c = ':' && (blankOrEnd text (contentAt + 1) || (flow && isFlowIndicator text.[contentAt + 1])))
                         || (flow && isFlowIndicator c)
                     if ends then
@@ -654,8 +757,10 @@ module internal Lexer =
                 if empties = 0 then sb.Append(' ') |> ignore else appendLineFeeds sb empties
                 p <- next
                 runStart <- next
-            else
+            elif isJsonChar text p then
                 p <- p + 1
+            else
+                failChar cursor p
         sb.ToString(), p
 
     // ---------------------------------------------------------------------------------------------
@@ -706,8 +811,7 @@ module internal Lexer =
             if text.[afterBlanks] = '#' then
                 if afterBlanks = headerEnd then
                     fail cursor YamlErrorCode.GluedComment "A comment needs a space or a tab before the #." afterBlanks (afterBlanks + 1) []
-                commentEnd <- lineEnd text afterBlanks
-                checkNoBom cursor afterBlanks commentEnd
+                commentEnd <- commentLineEnd cursor afterBlanks
                 headerLineEnd <- commentEnd
             else
                 let mutable bad = afterBlanks
@@ -809,7 +913,7 @@ module internal Lexer =
                     if le < n then empties <- empties + 1
                 else
                     let first = r + indent
-                    checkNoBom cursor first le
+                    checkNbChars cursor first le
                     let moreIndented = first < le && (text.[first] = ' ' || text.[first] = '\t')
                     if literal then
                         // Every line owes the value a line feed, and the empty lines in front of this one have been owed too.
@@ -914,13 +1018,13 @@ module internal Lexer =
             cursor.JsonLikeEnd <- q + 1
             single cursor q start (if c = ']' then Lexeme.FlowSequenceEnd else Lexeme.FlowMappingEnd)
         elif c = '&' then
-            let finish = nameEnd text (q + 1)
+            let finish = nameEnd cursor (q + 1)
             if finish = q + 1 then
                 fail cursor YamlErrorCode.EmptyAnchor "An anchor needs a name behind the `&`." q (q + 1) []
             cursor.Index <- finish
             located cursor start finish (Lexeme.Anchor(copyRange text (q + 1) finish))
         elif c = '*' then
-            let finish = nameEnd text (q + 1)
+            let finish = nameEnd cursor (q + 1)
             if finish = q + 1 then
                 fail cursor YamlErrorCode.EmptyAlias "An alias needs a name behind the `*`." q (q + 1) []
             cursor.Index <- finish
@@ -965,6 +1069,8 @@ module internal Lexer =
                 fail cursor YamlErrorCode.ReservedIndicator "A plain scalar cannot start with a `#`." q (q + 1) []
         elif c = byteOrderMark then
             failBom cursor q
+        elif not (isNbChar text q) then
+            failChar cursor q
         else
             let value, finish = scanPlain ctx cursor q
             cursor.Index <- finish
@@ -1007,8 +1113,7 @@ module internal Lexer =
             cursor.SeparationHadTab <- false
             Some lexeme
         elif text.[q] = '#' then
-            let finish = lineEnd text q
-            checkNoBom cursor q finish
+            let finish = commentLineEnd cursor q
             let span = cursor.SpanOf(q, finish)
             cursor.Index <- finish
             cursor.LineBegin <- false
@@ -1080,8 +1185,7 @@ module internal Lexer =
             cursor.LineBegin <- true
             None
         elif text.[q] = '#' && q > i then
-            let finish = lineEnd text q
-            checkNoBom cursor q finish
+            let finish = commentLineEnd cursor q
             let span = cursor.SpanOf(q, finish)
             cursor.Index <- finish
             cursor.SeparationHadTab <- tab

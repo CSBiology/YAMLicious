@@ -832,6 +832,113 @@ let private errorTests = testList "Lexer errors" [
             | None -> ()
 ]
 
+/// A surrogate on its own. An F# literal cannot spell it, because the compiler turns "\uD800" into U+FFFD.
+let private highSurrogate = string (char 0xD800)
+
+let private lowSurrogate = string (char 0xDC00)
+
+let private characterTests = testList "Lexer characters" [
+    // yaml@2.6.1 checks no character class: it accepts every input of this test, in the plain scalar, the key, the comment, the name, the block scalar and the directive alike. The tag
+    // inputs fail there with MISSING_CHAR, a tag error. [1] c-printable and [27] nb-char exclude the C0 controls except the tab, DEL, the C1 controls except U+0085, U+FFFE and U+FFFF.
+    testCase "a control character, DEL, a C1 control or U+FFFE in plain text is an error" <| fun _ ->
+        expectError "a: b\u0001c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0000c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0008c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u000Bc" "invalid-character" "1:5-1:6"
+        expectError "a: b\u001Fc" "invalid-character" "1:5-1:6"
+        expectError "a: b\u007Fc" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0080c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0081c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0084c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u0086c" "invalid-character" "1:5-1:6"
+        expectError "a: b\u009Fc" "invalid-character" "1:5-1:6"
+        expectError "a: b\uFFFEc" "invalid-character" "1:5-1:6"
+        expectError "a: b\uFFFFc" "invalid-character" "1:5-1:6"
+        // The first character of a scalar, a continuation line and a flow collection.
+        expectError "a: \u0001b" "invalid-character" "1:4-1:5"
+        expectError "a: b\n  c\u0001d" "invalid-character" "2:4-2:5"
+        expectError "a: b\n  \u0001d" "invalid-character" "2:3-2:4"
+        expectError "[a, b\u0001c]" "invalid-character" "1:6-1:7"
+        expectError "{a: b\u0081}" "invalid-character" "1:6-1:7"
+        // The character at the end of the scalar, behind blanks, and alone on its line.
+        expectError "a: b\u0001" "invalid-character" "1:5-1:6"
+        expectError "a: b \u0001" "invalid-character" "1:6-1:7"
+        expectError "a:\n  \u0001" "invalid-character" "2:3-2:4"
+
+    // yaml@2.6.1 accepts the keys and the names below as well. A name is a run of [102] ns-anchor-char, a key is a plain or quoted scalar, and a directive line holds ns-char parameters.
+    testCase "a control character in a key, a name, a tag, a comment, a block scalar or a directive is an error" <| fun _ ->
+        expectError "b\u0002: c" "invalid-character" "1:2-1:3"
+        expectError "\u0002b: c" "invalid-character" "1:1-1:2"
+        expectError "? b\u0002\n: c" "invalid-character" "1:4-1:5"
+        expectError "a: &x\u0001 b" "invalid-character" "1:6-1:7"
+        expectError "a: &\u0001x b" "invalid-character" "1:5-1:6"
+        expectError "a: &x b\nc: *x\u0001" "invalid-character" "2:6-2:7"
+        expectError "a: &x b\nc: *\u0001" "invalid-character" "2:5-2:6"
+        expectError "a: !x\u0001 b" "invalid-character" "1:6-1:7"
+        expectError "a: b # x\u0001y" "invalid-character" "1:9-1:10"
+        expectError "# x\u0001y\na: b" "invalid-character" "1:4-1:5"
+        expectError "a: |  # x\u0001y\n  b" "invalid-character" "1:10-1:11"
+        expectError "a: |\n  b\u0001c\n" "invalid-character" "2:4-2:5"
+        expectError "a: >\n  b\n  c\u007Fd\n" "invalid-character" "3:4-3:5"
+        expectError "%FOO a\u0001\n---\nx" "invalid-character" "1:7-1:8"
+        expectError "%YAML 1.2\u0001\n---\nx" "invalid-character" "1:10-1:11"
+        expectError "%TAG ! tag:x\u0001\n---\nx" "invalid-character" "1:13-1:14"
+
+    // yaml@2.6.1 accepts a surrogate on its own. A string of UTF-16 code units holds a character above U+FFFF as a high and a low surrogate in this order, and a surrogate without its partner
+    // is no character ([1] c-printable ends at U+D7FF and resumes at U+E000). The span of the error is the one code unit.
+    testCase "a surrogate without its partner is an error and a surrogate pair is one character" <| fun _ ->
+        expectError ("a: b" + highSurrogate + "c") "invalid-character" "1:5-1:6"
+        expectError ("a: b" + lowSurrogate + "c") "invalid-character" "1:5-1:6"
+        expectError ("a: b" + lowSurrogate + highSurrogate + "c") "invalid-character" "1:5-1:6"
+        expectError ("a: b" + highSurrogate) "invalid-character" "1:5-1:6"
+        expectError ("a: \"b" + highSurrogate + "c\"") "invalid-character" "1:6-1:7"
+        expectError ("a: 'b" + lowSurrogate + "c'") "invalid-character" "1:6-1:7"
+        expectError ("a: |\n  b" + highSurrogate + "c\n") "invalid-character" "2:4-2:5"
+        expectError ("a: b # x" + lowSurrogate) "invalid-character" "1:9-1:10"
+        expectError ("b" + highSurrogate + ": c") "invalid-character" "1:2-1:3"
+        expectError ("a: &x" + highSurrogate + " b") "invalid-character" "1:6-1:7"
+        // A pair next to a surrogate on its own: the lone one is the error, and the pair takes one column.
+        expectError ("a: b\U0001F600" + lowSurrogate) "invalid-character" "1:6-1:7"
+        expectError ("a: b" + highSurrogate + "\U0001F600") "invalid-character" "1:5-1:6"
+        expectLexemes "a: b\U0001F600c" [ "plain:a"; ":"; "plain:b\U0001F600c" ]
+        expectLexemes "a: b\U0010FFFFc" [ "plain:a"; ":"; "plain:b\U0010FFFFc" ]
+        Expect.equal (lexSpans "a: b\U0001F600c") [ "plain:a 1:1-1:2"; ": 1:2-1:3"; "plain:b\U0001F600c 1:4-1:7" ] "A pair is one column"
+
+    // yaml@2.6.1 accepts every input of this test. [2] nb-json is the tab and every character from U+0020 up, so a quoted scalar holds DEL, the C1 controls, U+FFFE, U+FFFF and the byte
+    // order mark as raw characters ([107], [118]). It refuses the other C0 controls. A surrogate needs its partner there too.
+    testCase "a quoted scalar holds every character of nb-json and refuses the C0 controls" <| fun _ ->
+        for text in [ "\u007F"; "\u0080"; "\u0085"; "\u009F"; "\u00A0"; "\u2028"; "\u2029"; "\uFFFD"; "\uFFFE"; "\uFFFF"; "\uFEFF"; "\U0001F600" ] do
+            expectLexemes ("\"a" + text + "b\"") [ "double:a" + text + "b" ]
+            expectLexemes ("'a" + text + "b'") [ "single:a" + text + "b" ]
+            expectLexemes ("[\"a" + text + "b\"]") [ "["; "double:a" + text + "b"; "]" ]
+        expectLexemes "\"a\tb\"" [ "double:a\\tb" ]
+        expectLexemes "'a\tb'" [ "single:a\\tb" ]
+        for code in [ 0x00; 0x01; 0x07; 0x08; 0x0B; 0x0C; 0x0E; 0x1F ] do
+            let text = string (char code)
+            expectError ("\"a" + text + "b\"") "invalid-character" "1:3-1:4"
+            expectError ("'a" + text + "b'") "invalid-character" "1:3-1:4"
+            expectError ("k: \"a" + text + "b\"") "invalid-character" "1:6-1:7"
+        expectError "\"a\n\u0001b\"" "invalid-character" "2:1-2:2"
+        expectError "'a\n  b\u0001'" "invalid-character" "2:4-2:5"
+
+    // yaml@2.6.1 reads U+0085, U+2028 and U+2029 as text, like this lexer. In YAML 1.2 b-char is the line feed and the carriage return alone, and [27] nb-char includes the three characters.
+    // U+00A0 is no s-white, so it neither separates tokens nor counts as indentation.
+    testCase "U+0085, U+2028, U+2029 and U+00A0 are text, no line breaks and no blanks" <| fun _ ->
+        for text in [ "\u0085"; "\u2028"; "\u2029"; "\u00A0" ] do
+            expectLexemes ("a: b" + text + "c") [ "plain:a"; ":"; "plain:b" + text + "c" ]
+            expectLexemes ("b" + text + ": c") [ "plain:b" + text; ":"; "plain:c" ]
+            expectLexemes ("a: b\n  c" + text + "d") [ "plain:a"; ":"; "plain:b c" + text + "d" ]
+            expectLexemes ("a: |\n  b" + text + "c\n") [ "plain:a"; ":"; "literal:b" + text + "c\\n" ]
+            expectLexemes ("a: b # x" + text + "y") [ "plain:a"; ":"; "plain:b"; "#: x" + text + "y" ]
+            expectLexemes ("# x" + text + "y\na") [ "#own: x" + text + "y"; "plain:a" ]
+            expectLexemes ("a: &x" + text + " b") [ "plain:a"; ":"; "&x" + text; "plain:b" ]
+            expectLexemes ("%FOO a" + text + "\n---\nx") [ "%FOO a" + text; "---"; "plain:x" ]
+            expectLexemes ("[a" + text + "b]") [ "["; "plain:a" + text + "b"; "]" ]
+            Expect.equal (lexSpans ("a: b" + text + "c")) [ "plain:a 1:1-1:2"; ": 1:2-1:3"; "plain:b" + text + "c 1:4-1:7" ] "One line and three columns"
+        // A line that starts with U+00A0 has no indentation, so it ends a mapping value like any other text at the column 1.
+        expectLexemes "a: b\n\u00A0c" [ "plain:a"; ":"; "plain:b" ; "plain:\u00A0c" ]
+]
+
 let private apiTests = testList "Lexer API" [
     // YAML 1.2.2, example 6.26: the tag !e!tag%21 with the prefix tag:example.com,2000:app/ is the tag tag:example.com,2000:app/tag!. The % escapes of a suffix are UTF-8 bytes.
     testCase "the escapes of a tag suffix decode as UTF-8" <| fun _ ->
@@ -1115,6 +1222,7 @@ let Main = testList "Lexer" [
     contextTests
     positionTests
     errorTests
+    characterTests
     apiTests
     performanceTests
 ]
