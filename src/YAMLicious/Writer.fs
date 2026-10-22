@@ -212,10 +212,10 @@ module internal WriterText =
             elif isHighSurrogate c && i + 1 < text.Length && isLowSurrogate text.[i + 1] then
                 sb.Append(c).Append(text.[i + 1]) |> ignore
                 i <- i + 1
-            elif code = 0x85 && not verbatim then sb.Append("\N") |> ignore
-            elif code = 0xA0 && not verbatim then sb.Append("\_") |> ignore
-            elif code = 0x2028 && not verbatim then sb.Append("\L") |> ignore
-            elif code = 0x2029 && not verbatim then sb.Append("\P") |> ignore
+            elif code = 0x85 && not verbatim then sb.Append("\\N") |> ignore
+            elif code = 0xA0 && not verbatim then sb.Append("\\_") |> ignore
+            elif code = 0x2028 && not verbatim then sb.Append("\\L") |> ignore
+            elif code = 0x2029 && not verbatim then sb.Append("\\P") |> ignore
             elif isRawChar c || (verbatim && isQuotedChar c) then sb.Append(c) |> ignore
             elif code < 0x100 then
                 sb.Append("\\x") |> ignore
@@ -1436,8 +1436,9 @@ type internal Engine(options: WriterOptions) =
         out <- saved
         text
 
-    /// The key of an implicit entry as one line, properties included, or None when the entry needs `?`.
-    member private this.ImplicitKeyText(entry: MappingEntry, col: int, prevColonless: bool) : string option =
+    /// The key of an implicit entry as one line, properties included, or None when the entry needs `?`. The second
+    /// value is the reason that the entry gives for the question mark, when it gives one.
+    member private this.ImplicitKeyChoice(entry: MappingEntry, col: int, prevColonless: bool) : string option * string option =
         let key = entry.Key
         let blockKey = this.IsBlockLike key
         let keyHeader =
@@ -1493,6 +1494,12 @@ type internal Engine(options: WriterOptions) =
             match oneLine with
             | Some line -> if WriterText.codePointLength line > 1024 then None else oneLine
             | None -> None
+        (text, reason)
+
+    /// The key of an implicit entry as one line, or None when the entry needs `?`. `RequireStored` raises there, because
+    /// the tree states no question mark.
+    member private this.ImplicitKeyText(entry: MappingEntry, col: int, prevColonless: bool) : string option =
+        let (text, reason) = this.ImplicitKeyChoice(entry, col, prevColonless)
         if text.IsNone && policy = StylePolicy.RequireStored then
             let why =
                 match reason with
@@ -1635,12 +1642,16 @@ type internal Engine(options: WriterOptions) =
                 | None -> not onMarkerLine
             startsLine && this.WantsPlainBehindBlank(root, scalar, true, false)
         | YamlNodeKind.Mapping collection when this.IsBlockLike root ->
+            // Only a key that the writer writes without `?` stands at the start of a line. `ImplicitKeyChoice` decides that for the
+            // column that the root takes when it moves in, so a key that needs the question mark for another reason, as a comment
+            // behind it, a gap in front of its colon or a length over the limit, asks for no blank.
             collection.Items
             |> List.exists (fun entry ->
                 entry.Question.IsNone
                 && (match entry.Key.Kind with
                     | YamlNodeKind.Scalar scalar -> not (this.HasProperties entry.Key) && this.WantsPlainBehindBlank(entry.Key, scalar, false, true)
-                    | _ -> false))
+                    | _ -> false)
+                && (fst (this.ImplicitKeyChoice(entry, 1, false))).IsSome)
         | _ -> false
 
     /// Writes a document. `preludeMark` is the mark of the line that ends the block scalar with the chomping Keep at the end

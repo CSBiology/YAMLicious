@@ -1506,6 +1506,41 @@ let private finalReviewTests = testList "Characters, root markers, key length an
         canonicalTwice "# c1\n\n[--- b, c]\n" "# c1\n\n- --- b\n- c\n"
         expectWritten "# c1\na: 1\n" "# c1\na: 1\n"
 
+    // yaml@2.6.1 reads the expected texts of this test as the mappings of the inputs. A root mapping stands one column in when a key that starts a line would read as a document marker. A key that
+    // the writer writes with a question mark does not start the line, because the question mark does. The reasons for the question mark are a comment behind the key, a key over the limit of
+    // 1024 characters and a key in an explicit entry. The first Canonical write of the flow inputs put the root one column in for a key that then got a question mark, and the second write did not.
+    testCase "a root mapping stands one column in only for a key that the writer writes without a question mark" <| fun _ ->
+        let inputs =
+            [ "{ ---\n? \"x\", # c5\n: [] }\n", "? --- ? \"x\" # c5\n?\n: []\n"
+              "--- { ---\n? \"#\P\", # c5\n: [  ] }\n", "---\n? --- ? \"#\P\" # c5\n?\n: []\n"
+              "{ a,\n? \"x\", # c5\n: [] }\n", "a:\n? x # c5\n?\n: []\n"
+              "{ ? \"x\", # c5\n: b }\n", "? x # c5\n?\n: b\n" ]
+        for (input, expected) in inputs do
+            canonicalTwice input expected
+        for policy in [ PreferStored; RequireStored; Canonical ] do
+            for (input, _) in inputs do
+                let write (stream: YamlStream) = Writer.writeDocuments (withStyles policy) stream
+                let once = write (parseOk input)
+                Expect.equal (write (parseOk once)) once (sprintf "The second write of %A under %A" input policy)
+        // Trees that a program built. The key has no question mark, so RequireStored raises where the writer needs one.
+        let commented = withNote " c" (sc "--- a")
+        let longKey = sc ("--- " + String.replicate 1100 "a")
+        let trees =
+            [ "a comment behind the key", YamlNode.mapping [ YamlNode.entry commented (sc "v") ], "? --- a # c\n: v\n"
+              "a key over the limit", YamlNode.mapping [ YamlNode.entry longKey (sc "v") ], "? " + ("--- " + String.replicate 1100 "a") + "\n: v\n"
+              "a comment and a key that starts the line", YamlNode.mapping [ YamlNode.entry commented (sc "v"); YamlNode.entry (sc "--- b") (sc "w") ], " ? --- a # c\n : v\n --- b: w\n"
+              "a key over the limit and a key that starts the line", YamlNode.mapping [ YamlNode.entry longKey (sc "v"); YamlNode.entry (sc "... b") (sc "w") ], " ? " + ("--- " + String.replicate 1100 "a") + "\n : v\n ... b: w\n"
+              "a key that starts the line", YamlNode.mapping [ YamlNode.entry (sc "--- a") (sc "v") ], " --- a: v\n" ]
+        for (label, tree, expected) in trees do
+            for policy in [ PreferStored; Canonical ] do
+                let once = Writer.writeNode (withStyles policy) tree
+                Expect.equal once expected (sprintf "%s under %A" label policy)
+                Expect.equal (Writer.writeNode (withStyles policy) (parseRoot once)) once (sprintf "The second write for %s under %A" label policy)
+            if expected.StartsWith " ---" then
+                Expect.equal (Writer.writeNode (withStyles RequireStored) tree) expected (sprintf "RequireStored for %s" label)
+            else
+                writeError (fun () -> Writer.writeNode (withStyles RequireStored) tree) |> ignore
+
     // The first line behind the root decides whether an empty root block scalar needs the indicator, and the line may stand in the prelude of the next document. The parser produces such a
     // tree from a text with a byte order mark line, which yaml@2.6.1 does not read, so the expected texts have no reference.
     testCase "an empty root block scalar gets the indicator when the comment line is in the prelude of the next document" <| fun _ ->
