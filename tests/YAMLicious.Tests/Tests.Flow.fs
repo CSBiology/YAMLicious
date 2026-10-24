@@ -528,9 +528,9 @@ let private endOfInputTests = testList "Block scalars with flow characters at th
 ]
 
 let private layoutTests = testList "Layouts over several lines" [
-    // Tests.YamlRead "A flow collection over several lines reads in every layout" and the CWL pattern "expressionLib". The closer may stand at the
-    // column of the node that owns the collection. That is a deliberate deviation from [69] and [80], which ask for one more space: ruamel (cwltool)
-    // and yaml@2.6.1 read the layout, and real CWL files use it. The value of each input stands in the table.
+    // Tests.YamlRead "A flow collection over several lines reads in every layout" and the pattern "expressionLib". The closer may stand at the
+    // column of the node that owns the collection. [69] and [80] ask for one more space, and the lexer takes a line of a flow collection at any indentation (see LexContext).
+    // ruamel and yaml@2.6.1 read this layout of the outermost collection. The tests below cover the layouts that only ruamel reads.
     testCase "the closer of a collection may stand at the column of its owner" <| fun _ ->
         let expression = mapOf [ "expressionLib", flowSeq [ dq "function f() { return 1; }"; dq "var x = 'a';" ] ]
         expectRoot "expressionLib: [\n  \"function f() { return 1; }\",\n  \"var x = 'a';\"\n]" expression
@@ -540,44 +540,122 @@ let private layoutTests = testList "Layouts over several lines" [
         expectRoot "k: {\n  a: 1\n}" (mapOf [ "k", flowMap [ "a", sc "1" ] ])
         expectRoot "k:\n    [\n      a\n  ]" (YamlNode.mapping [ entryOnNewLine "k" (flowSeq [ sc "a" ]) ])
         expectRoot "[a,\nb]" (flowSeq [ sc "a"; sc "b" ])
-        // The indentation counts spaces, so yaml@2.6.1 and the lexer read a closer behind a tab like a closer at the column of the owner.
+        // yaml@2.6.1 reads a closer behind a tab at the column 0 like a closer at the column of the owner.
         expectRoot "k: [\n\t ]" (mapOf [ "k", YamlNode.flowSequence [] ])
 
-    // [69] and [80]: a line inside a collection has to stand deeper than the owner of the collection. Only the closer is exempt.
-    testCase "a line of a collection that is not deeper than its owner is an error" <| fun _ ->
-        expectError "k: [\na\n]" "flow-indent@2"
-        expectError "- [\na]" "flow-indent@2"
-        expectError "a:\n  b: [\n  c\n  ]" "flow-indent@3"
-        expectError "k: {a: 1,\nb: 2}" "flow-indent@2"
+    // yaml@2.6.1 rejects every input with BAD_INDENT and related errors. ruamel reads the values below. [69] and [80] ask for the indentation of the owner plus one. The lexer takes a line
+    // of a flow collection at any indentation, because the collection runs to its closer.
+    testCase "the items of a collection may stand at the column of the owner or left of it" <| fun _ ->
+        expectRoot "k: [\na,\nb\n]" (mapOf [ "k", flowSeq [ sc "a"; sc "b" ] ])
+        expectRoot "- [a,\nb]\n- c" (seqOf [ flowSeq [ sc "a"; sc "b" ]; sc "c" ])
+        expectRoot "top:\n  k: [\na,\nb\n]" (YamlNode.mapping [ entryOnNewLine "top" (mapOf [ "k", flowSeq [ sc "a"; sc "b" ] ]) ])
+        for (input, expected) in
+            [ "top:\n  k: [\n  a,\n  b\n  ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "top:\n  k: [\n a,\n b\n ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "- k: [\na,\nb\n]", "[{\"k\":[\"a\",\"b\"]}]"
+              "k: {a: 1,\nb: 2}", "{\"k\":{\"a\":1,\"b\":2}}"
+              "top:\n  k: {\na: 1\n}", "{\"top\":{\"k\":{\"a\":1}}}"
+              "k: {\n  a:\n1\n}", "{\"k\":{\"a\":1}}"
+              "k: [ a: b,\nc: d ]", "{\"k\":[{\"a\":\"b\"},{\"c\":\"d\"}]}"
+              "top:\n  k: [ a\n, b ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
 
-    // yaml@2.6.1 reads the closer at the column of the owner for the outermost collection only. A nested closer needs one more space, and the parser tells the lexer which kind of
-    // collection a closer would end (FlowIn and FlowInNested).
-    testCase "a nested closer may not stand at the column of the owner" <| fun _ ->
-        expectError "k: [\n  [a\n]\n]" "flow-indent@3"
-        expectError "a:\n  b: [\n    [x\n  ]\n  ]" "flow-indent@4"
-        expectError "k: {\n  a: {b: 1\n}\n}" "flow-indent@3"
-        expectRoot "k: [\n  [a\n  ]\n]" (mapOf [ "k", flowSeq [ flowSeq [ sc "a" ] ] ])
-        expectRoot "k: [\n  [a\n ]\n ]" (mapOf [ "k", flowSeq [ flowSeq [ sc "a" ] ] ])
-        expectRoot "[\n[a\n]\n]" (flowSeq [ flowSeq [ sc "a" ] ])
-        // A closer behind a pair ends the sequence around it, so the rule follows the sequence.
-        expectError "k: [\n  [a: b\n]\n]" "flow-indent@3"
+    // yaml@2.6.1 rejects every input with BAD_INDENT and related errors. ruamel reads the values below. The lines of a plain scalar fold like the lines of a deeper scalar.
+    testCase "a plain scalar in a collection goes on in a line at any indentation" <| fun _ ->
+        expectRoot "k: [ a\nb ]" (mapOf [ "k", flowSeq [ scLines [ "a"; "b" ] ] ])
+        for (input, expected) in
+            [ "top:\n  k: [ a\n  b ]", "{\"top\":{\"k\":[\"a b\"]}}"
+              "top:\n  k: [ a\nb ]", "{\"top\":{\"k\":[\"a b\"]}}"
+              "top:\n  k: [ a\n b ]", "{\"top\":{\"k\":[\"a b\"]}}"
+              "k: [ a\n\nb ]", "{\"k\":[\"a\\nb\"]}"
+              "top:\n  k: [ a\n\nb, c ]", "{\"top\":{\"k\":[\"a\\nb\",\"c\"]}}"
+              "k: [ a:\nb ]", "{\"k\":[{\"a\":\"b\"}]}"
+              "k: { a: b\nc }", "{\"k\":{\"a\":\"b c\"}}"
+              "k: [ a b\nc d, e\nf ]", "{\"k\":[\"a b c d\",\"e f\"]}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects all but the last input (BAD_INDENT and related errors), which it reads like ruamel does. A nested closer, a closer of the outermost collection left of the owner and the
+    // entries behind it read as they do with deeper lines.
+    testCase "a closer may stand at the column of the owner or left of it" <| fun _ ->
+        expectRoot "k: [\n  [a\n]\n]" (mapOf [ "k", flowSeq [ flowSeq [ sc "a" ] ] ])
         expectRoot "k: [a: b\n]" (mapOf [ "k", flowSeq [ flowPair (sc "a") (sc "b") ] ])
+        for (input, expected) in
+            [ "top:\n  k: [\n    [a\n  ]\n  ]", "{\"top\":{\"k\":[[\"a\"]]}}"
+              "top:\n  k: [\n    [a\n]\n]", "{\"top\":{\"k\":[[\"a\"]]}}"
+              "k: {\n  a: {b: 1\n}\n}", "{\"k\":{\"a\":{\"b\":1}}}"
+              "k: [\n  [a: b\n]\n]", "{\"k\":[[{\"a\":\"b\"}]]}"
+              "k: [\n  { a: 1\n}\n]", "{\"k\":[{\"a\":1}]}"
+              "top:\n  k: [\n    a\n ]", "{\"top\":{\"k\":[\"a\"]}}"
+              "top:\n  k: [ a,\n]", "{\"top\":{\"k\":[\"a\"]}}"
+              "top:\n  k: [\n    a\n]\n  j: 1", "{\"top\":{\"k\":[\"a\"],\"j\":1}}"
+              "top:\n  k: [\n    a\n]\nj: 1", "{\"top\":{\"k\":[\"a\"]},\"j\":1}"
+              "- k: [\n    a\n]\n  j: 1", "[{\"k\":[\"a\"],\"j\":1}]"
+              "k: [\n  a\n] # c\nj: 1", "{\"k\":[\"a\"],\"j\":1}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
 
-    // [63] s-indent(n) is n spaces, so a line in a collection needs its spaces in front of any tab, and a tab behind them is a separator. A line that starts with a tab has no indentation.
-    // yaml@2.6.1 rejects the first two inputs (a nested closer behind a tab) and reads the outermost closer behind a tab at the column 0.
-    testCase "the indentation of a line inside a collection counts spaces and a tab only follows them" <| fun _ ->
-        expectError "k:\n  [ &b1 ,\n   [\n\t   ]\n   ]\nj: 1" "flow-indent@4"
-        expectError "k: [\n  { a: b\n  , c: d\n\t }\n  ]" "flow-indent@4"
-        expectError "a:\n  b: {\n    k: {x: 1\n  \t }\n  }" "flow-indent@4"
-        expectError "k: [\n\ta]" "flow-indent@2"
-        expectError "a:\n  b: [\n    c\n\t]" "flow-indent@4"
-        expectError "a:\n  b: [\n \tc]" "flow-indent@3"
-        // The spaces in front of the tab are the indentation. These lines stand deeper than the owner.
-        expectRoot "k: [\n  [a\n \t]\n]" (mapOf [ "k", flowSeq [ flowSeq [ sc "a" ] ] ])
-        expectRoot "k: [\n \ta\n]" (mapOf [ "k", flowSeq [ sc "a" ] ])
-        // At the column 0 the closer of the outermost collection needs no spaces, and a tab behind none is a separator.
-        expectRoot "k: [\n  a\n\t]" (mapOf [ "k", flowSeq [ sc "a" ] ])
-        expectRoot "[\n\ta]" (flowSeq [ sc "a" ])
+    // yaml@2.6.1 rejects every input with BAD_INDENT and related errors, and ruamel reads the values below. [63] s-indent(n) counts spaces only, and a tab behind them is a separator ([66]),
+    // so a flow line that starts with a tab is a line without indentation, and the lexer takes it like any other line. A line of tabs and spaces is a blank line.
+    testCase "a flow line may start with a tab" <| fun _ ->
+        for (input, expected) in
+            [ "a: [\n\tb]", "{\"a\":[\"b\"]}"
+              "k: [ a,\n\tb ]", "{\"k\":[\"a\",\"b\"]}"
+              "top:\n  k: [ a,\n\tb ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "top:\n  k: [ a,\n \tb ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "top:\n  k: [ a\n\t]", "{\"top\":{\"k\":[\"a\"]}}"
+              "k: [\n  { a: b\n  , c: d\n\t }\n  ]", "{\"k\":[{\"a\":\"b\",\"c\":\"d\"}]}"
+              "a:\n  b: {\n    k: {x: 1\n  \t }\n  }", "{\"a\":{\"b\":{\"k\":{\"x\":1}}}}"
+              "k: [ a,\n\t\nb ]", "{\"k\":[\"a\",\"b\"]}"
+              "top:\n  k: [ a,\n  \t\n  b ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "top:\n  k: [ a,\n\t# c\n  b ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 and ruamel reject the first five inputs (ruamel with a ParserError) and read the last two as {"k":["a"]}. A tab is no indentation, so a plain scalar ends in front of a line
+    // that starts with a tab behind too few spaces ([70] l-empty), and the next entry follows without a comma. A comment line ends a plain scalar as well.
+    testCase "a plain scalar in a collection ends in front of a tab behind too few spaces and in front of a comment" <| fun _ ->
+        expectError "k: [ a\n\tb ]" "missing-flow-comma@2"
+        expectError "top:\n  k: [ a\n \tb ]" "missing-flow-comma@3"
+        expectError "k: [ a\n\t\nb ]" "missing-flow-comma@3"
+        expectError "k: [ a\n# c\nb ]" "missing-flow-comma@3"
+        expectError "k: [ a #c\nb ]" "missing-flow-comma@2"
+        Expect.equal (valueOf "k: [ a\n\t\n]") "{\"k\":[\"a\"]}" "A line of a tab and a closer behind it"
+        Expect.equal (valueOf "k: [ a,\n\t\n]") "{\"k\":[\"a\"]}" "A line of a tab behind a comma"
+
+    // yaml@2.6.1 rejects every input with BAD_INDENT and related errors. ruamel reads the values below. A comment line and the properties of a node stand at any indentation.
+    testCase "comment lines and properties stand at any indentation inside a collection" <| fun _ ->
+        for (input, expected) in
+            [ "k: [ a,\n# c\nb ]", "{\"k\":[\"a\",\"b\"]}"
+              "top:\n  k: [ a,\n# c\nb ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "top:\n  k: [\n# c\na ]", "{\"top\":{\"k\":[\"a\"]}}"
+              "k: [ &x\na ]", "{\"k\":[\"a\"]}"
+              "k: [ !!str\na ]", "{\"k\":[\"a\"]}"
+              "top:\n  k: [ &x\na, b ]", "{\"top\":{\"k\":[\"a\",\"b\"]}}"
+              "? k\n: [ a,\nb ]", "{\"k\":[\"a\",\"b\"]}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input with errors such as BAD_INDENT. ruamel rejects the first six inputs (a ParserError, or a ScannerError for the quoted scalar) and reads the others as text.
+    // A marker is `---` or `...` at the column 0 with a blank or the end of the line behind it.
+    testCase "a document marker at the start of a line is an error inside a collection" <| fun _ ->
+        expectError "k: [ a,\n---\nb ]" "marker-in-flow@2"
+        expectError "k: [ a,\n...\nb ]" "marker-in-flow@2"
+        expectError "k: [ a,\n--- b ]" "marker-in-flow@2"
+        expectError "k: { a: 1,\n---\nb: 2 }" "marker-in-flow@2"
+        expectError "k: [ a\n---\nb ]" "marker-in-flow@2"
+        expectError "k: [ \"a\n---\nb\" ]" "marker-in-quote@2"
+        for (input, expected) in
+            [ "k: [ a,\n---x ]", "{\"k\":[\"a\",\"---x\"]}"
+              "k: [ a,\n---x,\nb ]", "{\"k\":[\"a\",\"---x\",\"b\"]}"
+              "top:\n  k: [ a,\n  ---\n  b ]", "{\"top\":{\"k\":[\"a\",\"--- b\"]}}"
+              "top:\n  k: [ a,\n  --- b ]", "{\"top\":{\"k\":[\"a\",\"--- b\"]}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 and ruamel reject every input (ruamel with a ParserError, and with a ScannerError for the third). The indentation of a line decides none of them, so they stay errors.
+    // An unclosed collection runs to the end of the text, so the lines behind it belong to the collection.
+    testCase "the errors of a collection do not depend on the indentation of its lines" <| fun _ ->
+        expectError "k: [ a,\n- b ]" "flow-dash@2"
+        expectError "k: [ a, b ] x" "unexpected-content@1"
+        expectError "[ a,\nb ]: v" "implicit-key-multiline@1"
+        expectError "k: [ a,\nb" "unclosed-flow@2"
+        expectError "k: [ a,\nb\nj: 1" "implicit-key-multiline@2"
 
     testCase "blank lines and comment lines stand anywhere inside a collection" <| fun _ ->
         expectRoot "k: [\n\n  a,\n\n  b\n\n]" (mapOf [ "k", withEnd [ blank ] (YamlNode.flowSequence [ itemBefore [ blank ] (sc "a"); itemBefore [ blank ] (sc "b") ]) ])

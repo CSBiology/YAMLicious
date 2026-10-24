@@ -732,9 +732,9 @@ let private lineBreakTests = testList "Line breaks in scalars" [
         // Enough spaces in front of the tab: the line is empty.
         expectScalars "k: a\n  \t\n   b" [ pl "k"; pl "a\nb" ]
         expectScalars "k: 'a\n  \t\n   b'" [ pl "k"; sq "a\nb" ]
-        // Too few spaces: the plain scalar ends in front of the line, and the quoted scalar in a flow collection is an error. A quoted scalar in the block structure takes the line.
+        // Too few spaces: the plain scalar ends in front of the line. A quoted scalar takes the line, in a flow collection as well.
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "a\n\t\n b") [ "plain:a"; "blank"; "plain:b" ] "The plain scalar ends"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"a\n\t\n b\"") [ "error:quoted-indent" ] "The quoted scalar in a flow collection is invalid"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"a\n\t\n b\"") [ "double:a\\nb" ] "The quoted scalar in a flow collection reads the line"
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"a\n\t\n b\"") [ "double:a\\nb" ] "The quoted scalar in the block structure reads the line"
         // At the root every line is deep enough.
         Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\t\n b") [ "plain:a\\nb" ] "A root scalar"
@@ -792,16 +792,15 @@ let private flowScalarTests = testList "Scalars in flow collections" [
         expectLexemes "{a\n b: c d}" [ "{"; "plain:a b"; ":"; "plain:c d"; "}" ]
 
     // Earlier tests "the lines of a flow collection must be indented deeper than the node that owns it" and "a closer may sit at the column of the
-    // node that owns the flow collection". yaml@2.6.1 rejects the first six inputs with BAD_INDENT and reads the others. The closer at the column of
-    // the owner is a deliberate difference from [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines, which ask for the indentation of
-    // the owner plus one. The loader of cwltool (ruamel) and yaml@2.6.1 read that layout, and real CWL files use it for `expressionLib: [`.
-    testCase "the lines of a flow collection have to be deeper than the node that owns it, and a closer may stand at its column" <| fun _ ->
-        expectError "k: [a,\nb]" "flow-indent" "2:1-2:2"
-        expectError "k: [\na,\nb\n]" "flow-indent" "2:1-2:2"
-        expectError "k:\n  - [a,\n  b]" "flow-indent" "3:1-3:4"
-        expectError "- k: [\n  a\n  ]" "flow-indent" "2:1-2:4"
-        expectError "k:\n  j: [\n    a\n]" "flow-indent" "4:1-4:2"
-        expectError "- [a,\nb]" "flow-indent" "2:1-2:2"
+    // node that owns the flow collection". yaml@2.6.1 rejects the first six inputs with BAD_INDENT and reads the others. ruamel reads all of them. [69] s-flow-line-prefix, [80] s-separate and
+    // [81] s-separate-lines ask for the indentation of the owner plus one, and the lexer takes a line of a flow collection at any indentation (see LexContext).
+    testCase "the lines of a flow collection stand at any indentation" <| fun _ ->
+        expectLexemes "k: [a,\nb]" [ "plain:k"; ":"; "["; "plain:a"; ","; "plain:b"; "]" ]
+        expectLexemes "k: [\na,\nb\n]" [ "plain:k"; ":"; "["; "plain:a"; ","; "plain:b"; "]" ]
+        expectLexemes "k:\n  - [a,\n  b]" [ "plain:k"; ":"; "-"; "["; "plain:a"; ","; "plain:b"; "]" ]
+        expectLexemes "- k: [\n  a\n  ]" [ "-"; "plain:k"; ":"; "["; "plain:a"; "]" ]
+        expectLexemes "k:\n  j: [\n    a\n]" [ "plain:k"; ":"; "plain:j"; ":"; "["; "plain:a"; "]" ]
+        expectLexemes "- [a,\nb]" [ "-"; "["; "plain:a"; ","; "plain:b"; "]" ]
         expectLexemes "k: [\n  a\n]" [ "plain:k"; ":"; "["; "plain:a"; "]" ]
         expectLexemes "k: [\n  a\n ]" [ "plain:k"; ":"; "["; "plain:a"; "]" ]
         expectLexemes "[a,\nb]" [ "["; "plain:a"; ","; "plain:b"; "]" ]

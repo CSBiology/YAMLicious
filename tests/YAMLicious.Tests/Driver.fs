@@ -77,7 +77,7 @@ let lexWith (simpleKeys: bool) (input: string) : Lexed =
         let parent = if owners.Count > 0 then owners.[owners.Count - 1] else -1
         let context =
             if flowOwners.Count > 0 then
-                { Grammar = (if flowOwners.Count > 1 then GrammarContext.FlowInNested else GrammarContext.FlowIn)
+                { Grammar = GrammarContext.FlowIn
                   ParentIndent = flowOwners.[flowOwners.Count - 1]
                   SimpleKey = false }
             else

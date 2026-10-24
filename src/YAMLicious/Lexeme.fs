@@ -8,23 +8,18 @@ namespace YAMLicious
 /// - `FlowOut` is a flow node inside the block structure. The lexer treats it like the block contexts and
 ///   leaves it to the parser to reject a block indicator in it.
 /// - `FlowIn` is a position inside a flow collection. A flow indicator ends a plain scalar, a dash is no
-///   block entry, and the lines of a collection have to stand deeper than the node that owns it, with one
-///   exception for the closer of the collection. See `LexContext`.
-/// - `FlowInNested` is a position inside a flow collection that stands in another flow collection. It is
-///   `FlowIn` without the exception for the closer.
+///   block entry, and the lines of the collection stand at any indentation. See `LexContext`.
 /// - `BlockKey` and `FlowKey` mark the key of an implicit entry. A plain scalar stays on its line there,
 ///   and `FlowKey` also ends it at a flow indicator.
 ///
-/// The parser passes `BlockIn` for every position of the block structure. Inside a flow collection it
-/// passes `FlowIn` while the collection is the outermost one and `FlowInNested` while a collection that
-/// another one holds is open. It cannot know that a node is the implicit key of an entry before the colon
+/// The parser passes `BlockIn` for every position of the block structure and `FlowIn` for every position
+/// inside a flow collection. It cannot know that a node is the implicit key of an entry before the colon
 /// follows, so it checks the line and the length of the key afterwards. `BlockOut`, `FlowOut`, `BlockKey`
 /// and `FlowKey` are for callers that know the production, such as the tests of the lexer.
 type internal GrammarContext =
     | BlockIn
     | BlockOut
     | FlowIn
-    | FlowInNested
     | FlowOut
     | BlockKey
     | FlowKey
@@ -33,28 +28,26 @@ type internal GrammarContext =
 ///
 /// `ParentIndent` is the indentation of the block node that owns the position: the column, counted from 0,
 /// of the key of a value, of the dash of a sequence item, of the `?` or `:` of an explicit entry, or of the
-/// node that owns a flow collection. A top-level node has -1. A continuation line of a plain scalar has to
-/// stand deeper than it, and so has a continuation line of a quoted scalar in a flow collection. The content
-/// of a block scalar is counted from it.
+/// node that owns a flow collection. A top-level node has -1. A continuation line of a plain scalar in the
+/// block structure has to stand deeper than it, and the content of a block scalar is counted from it.
 ///
-/// The lines of a flow collection have to stand deeper than `ParentIndent` too, because [69]
-/// s-flow-line-prefix(n) is s-indent(n) and [80] s-separate and [81] s-separate-lines ask for that prefix
-/// with n one above the owner. The lexer accepts one deviation on purpose: a line that starts with the
-/// closer of the collection, `]` or `}`, may stand at the column of the owner, as in `k: [` followed by
-/// `  a` and `]` at column 0. The loader of cwltool (ruamel) and yaml@2.6.1 read that layout, and real
-/// CWL files lay out `expressionLib` that way. A closer in front of the owner is still an error. yaml@2.6.1
-/// reads the layout for the closer of the outermost collection only, so the context `FlowInNested` of a
-/// collection inside another one withholds the exception.
+/// The indentation of a line is no error inside a flow collection and inside a quoted scalar. [69]
+/// s-flow-line-prefix(n) asks for the lines of a flow node to stand deeper than the owner, and [80] s-separate
+/// and [81] s-separate-lines ask for that prefix with n one above the owner. The lexer deviates on purpose.
+/// A flow collection runs to its closer and a quoted scalar runs to its closing quote, so the indentation of
+/// their lines cannot change where they end or what the parser reads around them. That covers the items, the
+/// keys, the values and the closers of a collection, the lines of a plain scalar in it and the lines of a
+/// quoted scalar everywhere. ruamel reads these layouts and yaml@2.6.1 rejects them, except for the closer of
+/// the outermost flow collection at the column of the owner. The layout of a scalar records its folds and no
+/// indentation, so the writer indents every line.
 ///
-/// The lines of a quoted scalar in the block structure are a second deviation. [69] asks for lines deeper than
-/// `ParentIndent`, and the lexer takes them at any indentation. The scalar runs to its closing quote, so the
-/// indentation of its lines cannot change where the scalar ends or what the parser reads around it. ruamel
-/// reads that layout and yaml@2.6.1 rejects it. A document marker at the start of a line stays an error
-/// inside a quoted scalar. A quoted scalar in a flow collection and a plain scalar keep the rule of [69].
-///
-/// The indentation counts spaces. [63] s-indent(n) is n spaces, so a line needs its spaces in front of any tab,
-/// and a tab behind them is a separator ([66] s-separate-in-line). A line that starts with a tab has no
-/// indentation, and the exception for a closer lets it stand only where the owner stands at the column 0.
+/// Two limits stay. A document marker at the start of a line is an error inside a flow collection and inside
+/// a quoted scalar, as it is in ruamel. A tab is no indentation ([63] s-indent(n) counts spaces only, and [66]
+/// s-separate-in-line makes a tab behind them a separator), so a plain scalar ends in front of an empty line
+/// that holds a tab behind too few spaces ([70] l-empty). In a flow collection it ends in front of a line with
+/// text that starts with a tab behind too few spaces as well, because ruamel does not continue the scalar
+/// there. A plain scalar in the block structure keeps the rule of [69], because a line at the column of its
+/// owner starts the next entry.
 ///
 /// `SimpleKey` is true when the parser knows that the node can only be an implicit key. The lexer keeps a
 /// plain scalar on its first line then, rejects a quoted scalar with a line break, and rejects a scalar of

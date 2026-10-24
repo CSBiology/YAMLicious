@@ -99,7 +99,6 @@ module internal Lexer =
     let private isFlowGrammar (grammar: GrammarContext) =
         match grammar with
         | GrammarContext.FlowIn -> true
-        | GrammarContext.FlowInNested -> true
         | GrammarContext.FlowKey -> true
         | _ -> false
 
@@ -558,9 +557,11 @@ module internal Lexer =
 
     /// Scans the plain scalar that starts at `start`. Returns its folded value and the end of its last line.
     ///
-    /// Where the context allows more than one line, a line behind the scalar continues it when it is
-    /// indented deeper than the parent, does not start a document marker, a comment or a character that is no nb-char, and does not start
-    /// with a colon that ends the scalar or, in a flow collection, a flow indicator. The empty lines in
+    /// Where the context allows more than one line, a line behind the scalar continues it when it does not
+    /// start a document marker, a comment or a character that is no nb-char, and does not start with a colon
+    /// that ends the scalar or, in a flow collection, a flow indicator. In the block structure the line also
+    /// has to be indented deeper than the parent. A flow collection takes the line at any indentation, except
+    /// that a tab behind too few spaces ends the scalar there as well (see `LexContext`). The empty lines in
     /// between fold into line feeds, and a single line break folds into a space.
     let private scanPlain (ctx: LexContext) (cursor: Cursor) (start: int) : string * int * ScalarLayout option =
         let text = cursor.Text
@@ -604,7 +605,7 @@ module internal Lexer =
                     let c = text.[contentAt]
                     let ends =
                         markerAt text r
-                        || spaces - r <= ctx.ParentIndent
+                        || (spaces - r <= ctx.ParentIndent && (not flow || contentAt > spaces))
                         || c = '#'
                         || not (isNbChar text contentAt)
                         || (c = ':' && (blankOrEnd text (contentAt + 1) || (flow && isFlowIndicator text.[contentAt + 1])))
@@ -637,19 +638,11 @@ module internal Lexer =
 
     /// Consumes the line break at `p` inside a quoted scalar together with the empty lines behind it. Returns
     /// the number of empty lines and the index of the first character with content on the next line, or the
-    /// end of the text. A document marker at the start of a line is an error.
-    ///
-    /// Inside a flow collection a line has to be indented deeper than the parent ([69] s-flow-line-prefix),
-    /// and an empty line that holds a tab behind too few spaces is no empty line ([70] l-empty), because a tab
-    /// is no indentation. Both are errors there. In the block structure the lexer reads a line at any
-    /// indentation, which is a deliberate deviation from [69]. The scalar runs to its closing quote, so the
-    /// indentation of its lines cannot change where it ends or how the parser reads the lines around it.
-    /// ruamel reads that layout and yaml@2.6.1 rejects it. The layout of the scalar records the folds only, so
-    /// the writer puts every line one step deeper than the parent.
-    let private foldBreak (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (p: int) : int * int =
+    /// end of the text. A document marker at the start of a line is an error. The lines stand at any
+    /// indentation, which the rule of `LexContext` explains.
+    let private foldBreak (cursor: Cursor) (opening: SourceSpan) (p: int) : int * int =
         let text = cursor.Text
         let n = text.Length
-        let flow = isFlowGrammar ctx.Grammar
         let mutable r = afterBreak text p
         let mutable empties = 0
         let mutable result = -1
@@ -660,16 +653,9 @@ module internal Lexer =
             if s >= n then
                 result <- s
             elif isBreak text.[s] then
-                if flow && tabbedEmptyLine text r s ctx.ParentIndent then
-                    fail cursor YamlErrorCode.QuotedIndent "An empty line of a quoted scalar in a flow collection cannot hold a tab in front of the indentation of the node that owns the collection." r s [ opening ]
                 empties <- empties + 1
                 r <- afterBreak text s
             else
-                let mutable spaces = r
-                while text.[spaces] = ' ' do
-                    spaces <- spaces + 1
-                if flow && spaces - r <= ctx.ParentIndent then
-                    fail cursor YamlErrorCode.QuotedIndent "A line of a quoted scalar in a flow collection has to be indented deeper than the node that owns the collection." s (s + 1) [ opening ]
                 result <- s
         empties, result
 
@@ -688,7 +674,7 @@ module internal Lexer =
     /// Decodes the escape that starts with the backslash at `p` in a double-quoted scalar and appends its
     /// text. Returns the index behind the escape. An escaped line break returns the index of the next
     /// character with content.
-    let private scanEscape (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (sb: Cooked) (p: int) (singleLine: bool) : int =
+    let private scanEscape (cursor: Cursor) (opening: SourceSpan) (sb: Cooked) (p: int) (singleLine: bool) : int =
         let text = cursor.Text
         let n = text.Length
         if p + 1 >= n then
@@ -751,7 +737,7 @@ module internal Lexer =
         | '\n' | '\r' ->
             if singleLine then
                 fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." p (p + 2) []
-            let empties, next = foldBreak ctx cursor opening (p + 1)
+            let empties, next = foldBreak cursor opening (p + 1)
             sb.Mark(LayoutKind.EscapedBreak empties)
             sb.AppendLineFeeds empties
             next
@@ -791,7 +777,7 @@ module internal Lexer =
                     closed <- true
             elif isDouble && c = '\\' then
                 sb.AppendRange(text, runStart, p)
-                p <- scanEscape ctx cursor opening sb p singleLine
+                p <- scanEscape cursor opening sb p singleLine
                 runStart <- p
             elif isBlank c then
                 let r = skipBlanks text p
@@ -805,7 +791,7 @@ module internal Lexer =
                 if singleLine then
                     fail cursor YamlErrorCode.ImplicitKeyMultiline "An implicit key has to stay on one line." q p []
                 sb.AppendRange(text, runStart, p)
-                let empties, next = foldBreak ctx cursor opening p
+                let empties, next = foldBreak cursor opening p
                 if empties = 0 then
                     sb.Mark(LayoutKind.Fold 0)
                     sb.AppendChar ' '
@@ -1184,19 +1170,9 @@ module internal Lexer =
                   Span = Some span }
             Some { Value = Lexeme.Comment(comment, true); Span = span }
         elif isFlowGrammar ctx.Grammar then
-            let c = text.[q]
+            // A line of a flow collection stands at any indentation, which the rule of `LexContext` explains.
             if i = q && markerAt text i then
                 fail cursor YamlErrorCode.MarkerInFlow "A document marker cannot stand inside a flow collection." i (i + 3) []
-            let isCloser = c = ']' || c = '}'
-            // [69] s-flow-line-prefix, [80] s-separate and [81] s-separate-lines ask for ParentIndent + 1 spaces
-            // in front of every line of a flow collection, the closer included. The spaces come first, because
-            // [63] s-indent(n) is spaces only, and a tab behind them is a separator. The closer of the outermost
-            // collection at the column of the owner is a deliberate exception: ruamel and yaml@2.6.1 accept
-            // `k: [` ... `]` and real CWL files lay out `expressionLib` that way. yaml@2.6.1 does not accept it
-            // for a nested collection, so FlowInNested withholds it.
-            let closerAtOwner = isCloser && ctx.Grammar <> GrammarContext.FlowInNested
-            if indent < ctx.ParentIndent || (indent = ctx.ParentIndent && not closerAtOwner) then
-                fail cursor YamlErrorCode.FlowIndent "A line inside a flow collection has to be indented deeper than the node that owns the collection." i (q + 1) []
             cursor.Index <- q
             cursor.LineBegin <- false
             cursor.SeparationHadTab <- false

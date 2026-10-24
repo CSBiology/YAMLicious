@@ -233,6 +233,31 @@ let private unindentedTests = testList "Quoted scalars with lines that are not i
         expectLinesWith { defaults with NewLine = "\r\n" } "top:\r\n  doc: 'a\r\nb'\r\n" "top:\r\n  doc: 'a\r\n    b'\r\n"
 ]
 
+let private unindentedFlowTests = testList "Flow collections with lines that are not indented" [
+    // yaml@2.6.1 rejects the first text of each pair with BAD_INDENT and related errors and reads the second text as the value that ruamel reads for the first one, as {"top":{"k":["a","b"]}} for the first
+    // pair. The parser takes the lines of a flow collection at any indentation. The writer keeps a flow collection on one line while its scalars have no layout, and it puts the items on lines of their own
+    // with the closer one step deeper than the key otherwise. That text reads as the same stream.
+    testCase "a flow collection with lines at the column of the owner or left of it goes back with indented lines" <| fun _ ->
+        expectLines "top:\n  k: [ a,\nb ]\n" "top:\n  k: [a, b]\n"
+        expectLines "top:\n  k: [\na,\nb\n]\n" "top:\n  k: [a, b]\n"
+        expectLines "top:\n  k: {\na: 1,\nb: 2\n}\n" "top:\n  k: {a: 1, b: 2}\n"
+        expectLines "k: [\n  [a\n]\n]\n" "k: [[a]]\n"
+        expectLines "top:\n  k: [\n    a\n]\n  j: 1\n" "top:\n  k: [a]\n  j: 1\n"
+        expectLines "- [ a,\nb ]\n- c\n" "- [a, b]\n- c\n"
+        expectLines "top:\n  k: [ a,\n\tb ]\n" "top:\n  k: [a, b]\n"
+
+    // yaml@2.6.1 rejects the first text of each pair and reads the second text as the value that ruamel reads for the first one, as {"top":{"k":["a b","c"]}} for the first pair.
+    // A scalar with a layout takes its lines along, and the lines of the author do not set their indentation.
+    testCase "the lines of a scalar in a flow collection go back with indented lines" <| fun _ ->
+        expectLines "top:\n  k: [ a\nb, c ]\n" "top:\n  k: [\n    a\n    b,\n    c\n    ]\n"
+        expectLines "top:\n  k: [ \"a\nb\", c ]\n" "top:\n  k: [\n    \"a\n    b\",\n    c\n    ]\n"
+        expectLines "top:\n  k: { a: 'b\nc' }\n" "top:\n  k: {\n    a: 'b\n    c'\n    }\n"
+        expectLines "top:\n  k: [ a,\n# c\nb ]\n" "top:\n  k: [\n    a,\n    # c\n    b\n    ]\n"
+        expectLines "top:\n  k: [ a\n\nb, c ]\n" "top:\n  k: [\n    a\n\n    b,\n    c\n    ]\n"
+        expectLines "top:\n  k: [ &x\na ]\n" "top:\n  k: [\n    &x\n    a\n    ]\n"
+        expectLines "k: { a:\n1 }\n" "k: {\n  a:\n    1\n  }\n"
+]
+
 let private foldedTests = testList "Folded block scalars" [
     // yaml@2.6.1 reads the texts as {"a":"one two\nthree four\n"}, {"a":"one two\n more\n more2\nthree\n"}, {"a":"one two\n  \nthree\n"}, {"a":"one\n\ttwo\nthree\n"} and {"a":"one\n\ntwo three\n"}. A fold joins two lines that start with text.
     // An empty line is a line feed of the value, and no fold happens next to a line that starts with a blank.
@@ -543,4 +568,4 @@ let private equalityTests = testList "Equality and printing" [
         Expect.isFalse ((YamlNode.show flat).Contains "breaks") "No layout, no printout"
 ]
 
-let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; unindentedTests; foldedTests; keyTests; policyTests; consumerTests; editTests; textTests; sizeTests; fitsTests; equalityTests ]
+let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; unindentedTests; unindentedFlowTests; foldedTests; keyTests; policyTests; consumerTests; editTests; textTests; sizeTests; fitsTests; equalityTests ]

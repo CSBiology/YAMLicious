@@ -16,7 +16,6 @@ type YamlErrorCode =
     | UnclosedQuote
     | InvalidEscape
     | MarkerInQuote
-    | QuotedIndent
     | InvalidBlockHeader
     | BlockIndent
     | LeadingEmptyLine
@@ -25,7 +24,6 @@ type YamlErrorCode =
     | ReservedIndicator
     | FlowDash
     | UnopenedFlow
-    | FlowIndent
     | MarkerInFlow
     | TabIndentation
     | ImplicitKeyLength
@@ -96,7 +94,6 @@ module YamlErrorCode =
         | YamlErrorCode.UnclosedQuote -> "unclosed-quote"
         | YamlErrorCode.InvalidEscape -> "invalid-escape"
         | YamlErrorCode.MarkerInQuote -> "marker-in-quote"
-        | YamlErrorCode.QuotedIndent -> "quoted-indent"
         | YamlErrorCode.InvalidBlockHeader -> "invalid-block-header"
         | YamlErrorCode.BlockIndent -> "block-indent"
         | YamlErrorCode.LeadingEmptyLine -> "leading-empty-line"
@@ -105,7 +102,6 @@ module YamlErrorCode =
         | YamlErrorCode.ReservedIndicator -> "reserved-indicator"
         | YamlErrorCode.FlowDash -> "flow-dash"
         | YamlErrorCode.UnopenedFlow -> "unopened-flow"
-        | YamlErrorCode.FlowIndent -> "flow-indent"
         | YamlErrorCode.MarkerInFlow -> "marker-in-flow"
         | YamlErrorCode.TabIndentation -> "tab-indentation"
         | YamlErrorCode.ImplicitKeyLength -> "implicit-key-length"

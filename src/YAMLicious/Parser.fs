@@ -890,20 +890,12 @@ type internal YamlParser(cursor: Cursor) =
     // comment behind the node (rules R6, R7 and R8): the trailing comment of the node, the gap in front of the
     // colon, or the trivia in front of the next entry.
 
-    /// The lexer context inside a flow collection. [69] s-flow-line-prefix(n) and [80] s-separate(n,c) ask for
-    /// the lines of the collection to stand deeper than the block node that owns it, with n one above the
-    /// column of the owner, and the lexer applies that rule to every line. It lets a line that starts with the
-    /// closer, `]` or `}`, stand at the column of the owner, as in `expressionLib: [` followed by `]` at the
-    /// column 0. That deviation is deliberate. ruamel (cwltool) and yaml@2.6.1 read that layout, and real CWL
-    /// files use it. yaml@2.6.1 reads it for the outermost collection only, so the context is FlowIn when the
-    /// next closer would end the outermost collection and FlowInNested otherwise. A flow pair has no closer of its
-    /// own, so a closer behind a pair ends the sequence below it. The key of a flow pair is not known to be a
-    /// key before the colon follows, so the parser checks its line and length afterwards, as it does for a block
-    /// key. FlowKey and FlowOut stay unused.
+    /// The lexer context inside a flow collection. The lexer takes the lines of the collection at any
+    /// indentation, and `ParentIndent` is the owner of the outermost collection (see `LexContext`). The key of a
+    /// flow pair is not known to be a key before the colon follows, so the parser checks its line and length
+    /// afterwards, as it does for a block key. FlowKey and FlowOut stay unused.
     member private _.FlowContext() : LexContext =
-        let top = stack.[stack.Count - 1]
-        let ended = if top.Kind = FrameKind.FlowPair then stack.[stack.Count - 2] else top
-        { Grammar = (if ended.Outermost then GrammarContext.FlowIn else GrammarContext.FlowInNested)
+        { Grammar = GrammarContext.FlowIn
           ParentIndent = flowOwner
           SimpleKey = false }
 

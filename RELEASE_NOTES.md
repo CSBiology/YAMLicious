@@ -41,13 +41,11 @@ The tests record the result of yaml@2.6.1 above each case. The parser differs fr
 * The parser keeps duplicate keys in the tree, and the object getters and the map and dict decoders reject them. yaml@2.6.1 rejects them while it parses.
 * A collection or an alias as a key stays a node in the tree. yaml@2.6.1 turns a collection key into a string such as "[ a, b ]" and resolves an alias key to its value.
 
-#### CWL flow layout
+#### Indentation of quoted scalars and flow collections
 
-* The closer `]` or `}` of an outermost flow collection may stand at the column of the node that owns the collection, as in `expressionLib: [` with `]` at column 0. YAML 1.2.2 asks for one more space ([69], [80]). The parser accepts the layout on purpose, because ruamel (cwltool) and yaml@2.6.1 read it and real CWL files use it. The items of the collection and the closers of nested collections still have to stand deeper than the owner.
-
-#### Quoted scalar lines
-
-* A line of a quoted scalar in the block structure may stand at any indentation, as in `doc: "first.` followed by `second"` at the column of `doc` or at the column 0. YAML 1.2.2 asks for a line deeper than the node that owns the scalar ([69]). The parser accepts the layout on purpose, because ruamel reads it with the folding of [73] to [81] and yaml@2.6.1 rejects it. The scalar runs to its closing quote, so the indentation of its lines cannot change what the parser reads around it. A quoted scalar in a flow collection and a plain scalar keep the rule of the specification, and a document marker at the start of a line is an error inside a quoted scalar. The tree holds the folds of the lines and no indentation, so the writer puts every line one step deeper than the parent.
+* The lines of a quoted scalar and the lines of a flow collection may stand at any indentation. A continuation line of `doc: "first.` may stand at the column of `doc` or at the column 0, and the items and the closer of `expressionLib: [` may stand at the column 0. YAML 1.2.2 asks for lines deeper than the node that owns the scalar or the collection ([69], [80], [81]). The parser accepts these layouts on purpose, because ruamel reads them with the folding of [73] to [81] and yaml@2.6.1 rejects them, except for the closer of an outermost flow collection at the column of the owner. A quoted scalar runs to its closing quote and a flow collection runs to its closer, so the indentation of their lines cannot change where they end or what the parser reads around them.
+* Two limits remain. A document marker at the start of a line is an error inside a quoted scalar and inside a flow collection. A tab is no indentation, so a plain scalar ends in front of an empty line that holds a tab behind too few spaces, and a plain scalar in a flow collection also ends in front of a line with text that starts with a tab behind too few spaces, as it does in ruamel. A plain scalar in the block structure keeps the rule of the specification, because a line at the column of its owner starts the next entry.
+* The tree holds the folds of the lines and no indentation, so the writer puts every line one step deeper than its parent, and the closer of a flow collection one step deeper than its key.
 
 #### Decoding
 

@@ -143,10 +143,9 @@ let private streamTests = testList "Lexer stream" [
         expectLexemes "'a\n\uFEFF---'" [ "single:a \uFEFF---" ]
         expectLexemes "\"a\n\n\uFEFF\"" [ "double:a\\n\uFEFF" ]
         expectLexemes "- \"a\n  \uFEFFb\"" [ "-"; "double:a \uFEFFb" ]
-        // Inside a flow collection the line of a continuation has to stand deeper than the parent, and the mark does not count as indentation.
-        Expect.equal (errorCodeOf "k: [\"a\n\uFEFFb\"]") "quoted-indent" "The mark is no indentation"
-        // The block structure takes the line at any indentation.
+        // The line of a continuation stands at any indentation, so the mark in the first column is content in a flow collection as well.
         expectLexemes "k: \"a\n\uFEFFb\"" [ "plain:k"; ":"; "double:a \uFEFFb" ]
+        expectLexemes "k: [\"a\n\uFEFFb\"]" [ "plain:k"; ":"; "["; "double:a \uFEFFb"; "]" ]
         // A mark behind the closing quote is outside the scalar.
         expectError "\"a\"\uFEFF" "invalid-character" "1:4-1:5"
 
@@ -535,9 +534,9 @@ let private tabTests = testList "Lexer tabs" [
         expectLexemes "[a,\tb]" [ "["; "plain:a"; ","; "plain:b"; "]" ]
         expectLexemes "[a,\n \tb]" [ "["; "plain:a"; ","; "plain:b"; "]" ]
 
-    // yaml@2.6.1 rejects `a: [\n\tb]` ("must be sufficiently indented"), because a tab is no indentation, and reads `a: [\n \tb]` as {"a":["b"]}
-    testCase "the indentation of a flow line counts spaces only" <| fun _ ->
-        expectError "a: [\n\tb]" "flow-indent" "2:1-2:3"
+    // yaml@2.6.1 rejects `a: [\n\tb]` ("must be sufficiently indented"), because a tab is no indentation, and reads `a: [\n \tb]` as {"a":["b"]}. ruamel reads both.
+    testCase "a flow line may start with a tab" <| fun _ ->
+        expectLexemes "a: [\n\tb]" [ "plain:a"; ":"; "["; "plain:b"; "]" ]
         expectLexemes "a: [\n \tb]" [ "plain:a"; ":"; "["; "plain:b"; "]" ]
 
     testCase "a tab inside a plain scalar and the tab flag of the cursor" <| fun _ ->
@@ -587,33 +586,36 @@ let private contextTests = testList "Lexer contexts" [
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a: b") [ "plain:a"; ":"; "plain:b" ] "A colon behind a blank"
         Expect.equal (lexIn GrammarContext.BlockOut -1 false "a:,") [ "plain:a:," ] "A comma behind a colon is text in a block"
 
-    testCase "a line of a flow collection has to stand deeper than the parent" <| fun _ ->
-        // yaml@2.6.1 rejects a line of a flow collection that is not indented deeper than the key that owns it
-        // The first line of every input starts with blanks, because the lexer treats the first line of its input as a continuation line too.
+    // yaml@2.6.1 rejects a line of a flow collection that is not indented deeper than the key that owns it, and reads the closer of the outermost collection at the column of the key. ruamel reads every input below.
+    // The lexer takes the lines of a flow collection at any indentation, because the collection runs to its closer.
+    // The first line of every input starts with blanks, because the lexer treats the first line of its input as a continuation line too.
+    testCase "a line of a flow collection stands at any indentation" <| fun _ ->
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n  b") [ "plain:a"; ","; "plain:b" ] "Deeper"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\nb") [ "plain:a"; ","; "error:flow-indent" ] "As deep as the parent"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n]") [ "plain:a"; ","; "]" ] "A closer may stand at the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\nb") [ "plain:a"; ","; "plain:b" ] "As deep as the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n b") [ "plain:a"; ","; "plain:b" ] "Left of the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n]") [ "plain:a"; ","; "]" ] "A closer at the parent"
         Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n  ]") [ "plain:a"; ","; "]" ] "A closer at the column of the parent"
-        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n ]") [ "plain:a"; ","; "error:flow-indent" ] "A closer behind the parent is too shallow"
-        // The indentation counts spaces. yaml@2.6.1 reads a closer behind a tab like a closer at the column of the parent.
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n ]") [ "plain:a"; ","; "]" ] "A closer left of the parent"
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n\t]") [ "plain:a"; ","; "]" ] "A tab in front of the closer"
-        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n \t]") [ "plain:a"; ","; "error:flow-indent" ] "A tab behind too few spaces"
-        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n\t]") [ "plain:a"; ","; "error:flow-indent" ] "A tab and no spaces, with the parent at the column 2"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n# c\nb") [ "plain:a"; ","; "#own: c"; "error:flow-indent" ] "A comment line stands anywhere"
-        // The context FlowInNested is FlowIn without the exception for the closer. The spaces count, and a tab behind them is a separator.
-        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer at the parent"
-        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n ]") [ "plain:a"; ","; "]" ] "A nested closer one space deeper"
-        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n\t]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer behind a tab and no space"
-        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\n \t]") [ "plain:a"; ","; "]" ] "A nested closer behind a space and a tab"
-        Expect.equal (lexIn GrammarContext.FlowInNested 2 false "    a,\n  ]") [ "plain:a"; ","; "error:flow-indent" ] "A nested closer at the column 2"
-        Expect.equal (lexIn GrammarContext.FlowInNested 0 false "  a,\nb") [ "plain:a"; ","; "error:flow-indent" ] "Another token at the parent"
-        Expect.equal (lexIn GrammarContext.FlowInNested -1 false "a,\n]") [ "plain:a"; ","; "]" ] "At the root every column is deep enough"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n \t]") [ "plain:a"; ","; "]" ] "A tab behind too few spaces"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a,\n\t]") [ "plain:a"; ","; "]" ] "A tab and no spaces, with the parent at the column 2"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  a,\n# c\nb") [ "plain:a"; ","; "#own: c"; "plain:b" ] "A comment line stands anywhere"
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a,\nb") [ "plain:a"; ","; "plain:b" ] "At the root every line is deep enough"
+
+    // yaml@2.6.1 rejects `k: [ a` followed by `b ]` (BAD_INDENT) and reads a second line that stands deeper than the key as "a b". ruamel reads both as "a b". It rejects a second line that starts with a tab
+    // behind too few spaces and a comment line in between, because the scalar ends there and a second entry follows without a comma.
+    testCase "a plain scalar in a flow collection goes on in a line at any indentation" <| fun _ ->
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\nb") [ "plain:a b" ] "Left of the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n  b") [ "plain:a b" ] "At the column of the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n\n b") [ "plain:a\\nb" ] "After an empty line"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n   \tb") [ "plain:a b" ] "A tab behind enough spaces"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n \tb") [ "plain:a"; "plain:b" ] "A tab behind too few spaces ends the scalar"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n\tb") [ "plain:a"; "plain:b" ] "A tab and no space ends the scalar"
+        Expect.equal (lexIn GrammarContext.FlowIn 2 false "    a\n# c\nb") [ "plain:a"; "#own: c"; "plain:b" ] "A comment line ends the scalar"
 
     // yaml@2.6.1 rejects `k: "b\n\t\n  c"` and `k: b\n\t\n  c` (BAD_INDENT), and reads `"b\n\t\n  c"` and `b\n\t\n  c` at the root as "b\nc".
     // [70] l-empty(n,c) is n spaces and then any blanks, or fewer than n spaces and nothing else, with n one above the parent. A tab behind
-    // fewer spaces makes the line no empty line, so a plain scalar ends in front of it and a quoted scalar in a flow collection is an error. A quoted scalar in the block structure
-    // reads the line at any indentation.
+    // fewer spaces makes the line no empty line, so a plain scalar ends in front of it. A quoted scalar reads the line at any indentation, in a flow collection as well.
     testCase "an empty line inside a folded scalar holds a tab only behind the indentation" <| fun _ ->
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "b\n\t\n  c") [ "plain:b"; "blank"; "plain:c" ] "A tab with no space under parent 0"
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "b\n \t\n  c") [ "plain:b\\nc" ] "One space and a tab under parent 0"
@@ -621,14 +623,14 @@ let private contextTests = testList "Lexer contexts" [
         Expect.equal (lexIn GrammarContext.BlockOut 2 false "b\n   \t\n    c") [ "plain:b\\nc" ] "Three spaces and a tab under parent 2"
         Expect.equal (lexIn GrammarContext.BlockOut -1 false "b\n\t\n  c") [ "plain:b\\nc" ] "At the root"
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  b\n\t\n  c") [ "plain:b"; "blank"; "plain:c" ] "In a flow collection"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"b\n\t\n  c\"") [ "error:quoted-indent" ] "A quoted scalar in a flow collection under parent 0"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"b\\\n\t\n  c\"") [ "error:quoted-indent" ] "A quoted scalar after an escaped line break"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"b\n\t\n  c\"") [ "double:b\\nc" ] "A quoted scalar in a flow collection under parent 0"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"b\\\n\t\n  c\"") [ "double:b\\nc" ] "A quoted scalar after an escaped line break"
         Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"b\n \t\n  c\"") [ "double:b\\nc" ] "One space and a tab in a quoted scalar"
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"b\n\t\n  c\"") [ "double:b\\nc" ] "A tab and no space in a quoted scalar of the block structure"
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"b\\\n\t\n  c\"") [ "double:b\\nc" ] "After an escaped line break"
         Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"b\n\t\n  c\"") [ "double:b\\nc" ] "A quoted scalar at the root"
-        expectError "k: [\"b\n\t\n  c\"]" "quoted-indent" "2:1-2:2"
-        expectError "k: ['b\n \n\t\n  c']" "quoted-indent" "3:1-3:2"
+        expectLexemes "k: [\"b\n\t\n  c\"]" [ "plain:k"; ":"; "["; "double:b\\nc"; "]" ]
+        expectLexemes "k: ['b\n \n\t\n  c']" [ "plain:k"; ":"; "["; "single:b\\n\\nc"; "]" ]
 
     testCase "a document marker inside a flow collection is an error" <| fun _ ->
         Expect.equal (lexIn GrammarContext.FlowIn -1 false "a,\n---") [ "plain:a"; ","; "error:marker-in-flow" ] "Start marker"
@@ -786,25 +788,23 @@ let private errorTests = testList "Lexer errors" [
         | Some failure -> Expect.equal (failure.Related |> List.map showSpan) [ "1:4-1:5" ] "The opening quote"
         | None -> failwith "The input is invalid"
 
-    // yaml@2.6.1 rejects a quoted scalar in a flow collection over lines that are not indented deeper than the key: `a: ["x\ny"]` is BAD_INDENT and MISSING_CHAR.
-    testCase "a line of a quoted scalar in a flow collection has to be deeper than the parent" <| fun _ ->
-        expectError "a: [\"x\ny\"]" "quoted-indent" "2:1-2:2"
-        expectError "- ['x\ny']" "quoted-indent" "2:1-2:2"
-        expectError "a:\n  b: [\"x\n  y\"]" "quoted-indent" "3:3-3:4"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"x\ny\"") [ "error:quoted-indent" ] "As deep as the parent"
-        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"x\n y\"") [ "double:x y" ] "Deeper than the parent"
-        Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"x\ny\"") [ "double:x y" ] "At the root every line is deep enough"
-
-    // yaml@2.6.1 rejects the texts below with MISSING_CHAR, BAD_INDENT or TAB_AS_INDENT. The lexer reads a line of a quoted scalar in the block structure at any indentation,
+    // yaml@2.6.1 rejects the texts below with errors such as MISSING_CHAR and BAD_INDENT. The lexer reads a line of a quoted scalar at any indentation,
     // because the scalar runs to its closing quote. ruamel reads these layouts with the same value.
-    testCase "a line of a quoted scalar in the block structure needs no indentation" <| fun _ ->
+    testCase "a line of a quoted scalar needs no indentation" <| fun _ ->
         expectLexemes "a: \"x\ny\"" [ "plain:a"; ":"; "double:x y" ]
         expectLexemes "- 'x\ny'" [ "-"; "single:x y" ]
         expectLexemes "a:\n  b: \"x\ny\"" [ "plain:a"; ":"; "plain:b"; ":"; "double:x y" ]
         expectLexemes "a:\n  b: 'x\n y'" [ "plain:a"; ":"; "plain:b"; ":"; "single:x y" ]
         expectLexemes "a:\n  b: \"x\n\ty\"" [ "plain:a"; ":"; "plain:b"; ":"; "double:x y" ]
+        expectLexemes "a: [\"x\ny\"]" [ "plain:a"; ":"; "["; "double:x y"; "]" ]
+        expectLexemes "- ['x\ny']" [ "-"; "["; "single:x y"; "]" ]
+        expectLexemes "a:\n  b: [\"x\n  y\"]" [ "plain:a"; ":"; "plain:b"; ":"; "["; "double:x y"; "]" ]
         Expect.equal (lexIn GrammarContext.BlockOut 3 false "\"x\ny\"") [ "double:x y" ] "Left of the parent"
         Expect.equal (lexIn GrammarContext.BlockOut 3 false "\"x\n   y\"") [ "double:x y" ] "At the column of the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"x\ny\"") [ "double:x y" ] "A flow collection, as deep as the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 3 false "    \"x\ny\"") [ "double:x y" ] "A flow collection, left of the parent"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"x\n y\"") [ "double:x y" ] "A flow collection, deeper than the parent"
+        Expect.equal (lexIn GrammarContext.BlockOut -1 false "\"x\ny\"") [ "double:x y" ] "At the root every line is deep enough"
 
     // yaml@2.6.1 rejects @, the backquote and a percent sign at the start of a plain scalar with BAD_SCALAR_START
     testCase "a reserved indicator cannot start a plain scalar" <| fun _ ->

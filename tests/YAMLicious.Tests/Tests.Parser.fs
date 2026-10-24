@@ -1809,10 +1809,10 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.isTrue items.[1].Node.TrailingComment.IsNone "The second item has no comment"
 ]
 
-// The lines of a quoted scalar in the block structure. [69] s-flow-line-prefix asks for a continuation line deeper than the node that owns the scalar. The lexer takes the line at
-// any indentation, because the scalar runs to its closing quote and the indentation of its lines cannot change what the parser reads around it. ruamel reads these layouts and
-// yaml@2.6.1 rejects them. The values below come from a run of ruamel, and the layout of the scalar keeps the folds only.
-let private quotedLineTests = testList "Lines of a quoted scalar in the block structure" [
+// The lines of a quoted scalar. [69] s-flow-line-prefix asks for a continuation line deeper than the node that owns the scalar. The lexer takes the line at any indentation,
+// because the scalar runs to its closing quote and the indentation of its lines cannot change what the parser reads around it. ruamel reads these layouts and yaml@2.6.1
+// rejects them. The values below come from a run of ruamel, and the layout of the scalar keeps the folds only.
+let private quotedLineTests = testList "Lines of a quoted scalar" [
     // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and MULTILINE_IMPLICIT_KEY. ruamel reads the value "first. second" in each of the first five and "a b" in the sixth.
     testCase "a continuation line at the column of the key joins the lines" <| fun _ ->
         let lines = [ "first."; "second" ]
@@ -1906,13 +1906,29 @@ let private quotedLineTests = testList "Lines of a quoted scalar in the block st
         Expect.streamEqual (parseOk "top:\n  doc: \"a\n  b\"") (parseOk "top:\n  doc: \"a\n    b\"") "At the column of the key"
         Expect.streamEqual (parseOk "top:\n  doc: 'a\nb'") (parseOk "top:\n  doc: 'a\n    b'") "At the column 0"
         Expect.streamEqual (parseOk "- id: X\n  doc: \"a\n\n b\"") (parseOk "- id: X\n  doc: \"a\n\n    b\"") "After an empty line"
+        Expect.streamEqual (parseOk "k: [ \"a\nb\" ]") (parseOk "k: [ \"a\n    b\" ]") "In a flow collection"
 
-    // yaml@2.6.1 rejects every input. ruamel reads the first three as {"k":["a b"]}, {"top":{"k":["a b"]}} and [["a b"]], and rejects the others. The tolerance covers the block structure.
-    // A quoted scalar in a flow collection keeps the indentation of [69], and a document marker or an implicit key over several lines stays an error wherever the lines start.
-    testCase "a quoted scalar in a flow collection, a document marker and an implicit key keep their errors" <| fun _ ->
-        expectError "k: [\"a\nb\"]" "quoted-indent@2"
-        expectError "top:\n  k: [\"a\n  b\"]" "quoted-indent@3"
-        expectError "- ['a\nb']" "quoted-indent@2"
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and BAD_INDENT. ruamel reads the values below. The lines of a quoted scalar in a flow collection stand at any
+    // indentation as well. The collection runs to its closer, and the scalar runs to its closing quote.
+    testCase "a continuation line in a flow collection joins the lines" <| fun _ ->
+        expectRoot "k: [ \"a\nb\" ]" (mapOf [ "k", flowSeq [ dqLines [ "a"; "b" ] ] ])
+        for (input, expected) in
+            [ "top:\n  k: [ \"a\n  b\" ]", "{\"top\":{\"k\":[\"a b\"]}}"
+              "top:\n  k: [ 'a\nb' ]", "{\"top\":{\"k\":[\"a b\"]}}"
+              "k: { \"a\": \"b\nc\" }", "{\"k\":{\"a\":\"b c\"}}"
+              "top:\n  k: { a: 'b\nc' }", "{\"top\":{\"k\":{\"a\":\"b c\"}}}"
+              "top:\n  k: { a: 'b\n\nc' }", "{\"top\":{\"k\":{\"a\":\"b\\nc\"}}}"
+              "- k: [ \"a\nb\" ]", "[{\"k\":[\"a b\"]}]"
+              "- [ \"a\nb\" ]", "[[\"a b\"]]"
+              "k: [ \"a\\\nb\" ]", "{\"k\":[\"ab\"]}"
+              "k: [ \"a\n\tb\" ]", "{\"k\":[\"a b\"]}"
+              "k: [ \"a\n\t\nb\" ]", "{\"k\":[\"a\\nb\"]}"
+              "k: [ \"a\nb\",\n\"c\nd\" ]", "{\"k\":[\"a b\",\"c d\"]}"
+              "k: [ \"a\n\", b ]", "{\"k\":[\"a \",\"b\"]}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 and ruamel reject every input (ruamel with a ScannerError). A document marker or an implicit key over several lines stays an error wherever the lines start.
+    testCase "a document marker and an implicit key over several lines keep their errors" <| fun _ ->
         expectError "top:\n  doc: \"a\n---\n  b\"" "marker-in-quote@3"
         expectError "doc: 'a\n...\nb'" "marker-in-quote@2"
         expectError "\"a\nb\": 1" "implicit-key-multiline@1"
