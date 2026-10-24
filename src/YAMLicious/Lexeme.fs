@@ -49,6 +49,11 @@ type internal GrammarContext =
 /// there. A plain scalar in the block structure keeps the rule of [69], because a line at the column of its
 /// owner starts the next entry.
 ///
+/// The key of a flow mapping entry without `?` keeps the rule of [69] when it goes over several lines or its
+/// colon stands on a later line, as in `{ matches` followed by `% : 20 }` (Example 9.4). The productions
+/// [143] to [147] allow that layout, with the lines deeper than the owner. ruamel rejects it at every
+/// indentation, so no layout of it lies in the tolerance. The parser checks the lines when it reaches the colon.
+///
 /// `SimpleKey` is true when the parser knows that the node can only be an implicit key. The lexer keeps a
 /// plain scalar on its first line then, rejects a quoted scalar with a line break, and rejects a scalar of
 /// more than 1024 characters. A parser that cannot know yet passes false and checks the span after it has

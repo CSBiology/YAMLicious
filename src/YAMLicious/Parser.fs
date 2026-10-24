@@ -230,6 +230,8 @@ type internal YamlParser(cursor: Cursor) =
     // parent indentation that the lexer needs inside them.
     let mutable flowCount = 0
     let mutable flowOwner = -1
+    // The index of the first character of every line, built when the first key that needs it asks for it.
+    let mutable lineStarts: int[] = null
     // The node kind of the outermost flow collection while it completes the request that opened it.
     let mutable flowKind = YamlNodeKind.Alias ""
     // The gap behind a token of a flow collection: the comment on the line of the token, the question whether
@@ -937,6 +939,50 @@ type internal YamlParser(cursor: Cursor) =
         this.Unread tok
         gapReady <- true
 
+    /// The index of the first character of the line, counted from 1. A line ends at LF, CRLF or a lone CR, like the marks of the cursor.
+    member private _.LineStart(line: int) : int =
+        if isNull lineStarts then
+            let text = cursor.Text
+            let starts = ResizeArray<int>()
+            starts.Add cursor.Origin
+            let mutable i = cursor.Origin
+            while i < text.Length do
+                if text.[i] = '\n' then
+                    starts.Add(i + 1)
+                elif text.[i] = '\r' then
+                    if i + 1 < text.Length && text.[i + 1] = '\n' then i <- i + 1
+                    starts.Add(i + 1)
+                i <- i + 1
+            lineStarts <- starts.ToArray()
+        lineStarts.[line - 1]
+
+    /// The lines of the implicit key of a flow mapping entry that goes over several lines or whose colon stands on a later line. The
+    /// productions [143] to [147] allow that layout (Example 9.4 has `{ matches` and `% : 20 }`), with its lines indented deeper than the
+    /// owner of the collection ([69]). ruamel rejects the layout at every indentation, so the tolerance for the indentation of the lines
+    /// of a flow collection does not cover it. A line of the key or of the colon at the column of the owner or in front of it is an error.
+    /// A comment line between the key and the colon has no indentation to check.
+    member private this.CheckFlowKeyLines(key: YamlNode, keyEnd: SourceMark, colon: Tok) =
+        let keySpan =
+            match key.Span with
+            | Some span -> span
+            | None -> spanAt keyEnd
+        if colon.Span.Start.Line > keySpan.Start.Line && flowOwner >= 0 then
+            let text = cursor.Text
+            for line in keySpan.Start.Line .. colon.Span.Start.Line do
+                let start = this.LineStart line
+                let mutable spaces = start
+                while spaces < text.Length && text.[spaces] = ' ' do
+                    spaces <- spaces + 1
+                let mutable content = spaces
+                while content < text.Length && (text.[content] = ' ' || text.[content] = '\t') do
+                    content <- content + 1
+                let blank = content >= text.Length || text.[content] = '\n' || text.[content] = '\r'
+                let comment = line > keySpan.Finish.Line && not blank && text.[content] = '#'
+                // The first line counts when the key starts it. Otherwise the line belongs to the entry in front of the key.
+                let startsLine = line > keySpan.Start.Line || keySpan.Start.Column - 1 = content - start
+                if startsLine && not blank && not comment && spaces - start <= flowOwner then
+                    failWith YamlErrorCode.ImplicitKeyMultiline "A key of a flow mapping entry over several lines, or with its colon on a later line, has to be indented deeper than the node that owns the collection." keySpan []
+
     member private _.FlowName(top: Frame) : string =
         if top.Kind = FrameKind.FlowMapping then "mapping" else "sequence"
 
@@ -1320,6 +1366,7 @@ type internal YamlParser(cursor: Cursor) =
         gapComment <- None
         match tok.Lexeme with
         | Lexeme.Value ->
+            if top.Question.IsNone then this.CheckFlowKeyLines(top.Pend, top.PendEnd, tok)
             // A comment on the line where the key ends is the trailing comment of the key (rule R8), as behind
             // the key of `? "a" # c` and `: v` in a block mapping. A key that holds properties only has taken
             // that comment into the `After` of its last property already (rule R1). The comment lines and the

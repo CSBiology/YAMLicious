@@ -528,7 +528,7 @@ let private endOfInputTests = testList "Block scalars with flow characters at th
 ]
 
 let private layoutTests = testList "Layouts over several lines" [
-    // Tests.YamlRead "A flow collection over several lines reads in every layout" and the pattern "expressionLib". The closer may stand at the
+    // Tests.YamlRead "A flow collection over several lines reads in every layout" and a list that is laid out like a block. The closer may stand at the
     // column of the node that owns the collection. [69] and [80] ask for one more space, and the lexer takes a line of a flow collection at any indentation (see LexContext).
     // ruamel and yaml@2.6.1 read this layout of the outermost collection. The tests below cover the layouts that only ruamel reads.
     testCase "the closer of a collection may stand at the column of its owner" <| fun _ ->
@@ -646,6 +646,47 @@ let private layoutTests = testList "Layouts over several lines" [
               "k: [ a,\n---x,\nb ]", "{\"k\":[\"a\",\"---x\",\"b\"]}"
               "top:\n  k: [ a,\n  ---\n  b ]", "{\"top\":{\"k\":[\"a\",\"--- b\"]}}"
               "top:\n  k: [ a,\n  --- b ]", "{\"top\":{\"k\":[\"a\",\"--- b\"]}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // ruamel rejects every input at every indentation, because it takes no implicit key of a flow mapping over several lines and no key with its colon on a later line. The productions [143] to
+    // [147] allow both with the lines deeper than the owner ([69]), and Example 9.4 of the specification is `{ matches` followed by `% : 20 }`. yaml@2.6.1 reads the first group with the same
+    // values and rejects the second group. The tolerance for the indentation of a flow line covers what ruamel reads, so the second group stays an error, at the line where the key starts.
+    testCase "a key over several lines keeps the indentation of the specification" <| fun _ ->
+        for (input, expected) in
+            [ "{ matches\n% : 20 }", "{\"matches %\":20}"
+              "{\"a\nb\": c}", "{\"a b\":\"c\"}"
+              "{\"foo\"\n: \"bar\"}", "{\"foo\":\"bar\"}"
+              "k: {\"a\n b\": c}", "{\"k\":{\"a b\":\"c\"}}"
+              "top:\n  k: {\"a\n    b\": c}", "{\"top\":{\"k\":{\"a b\":\"c\"}}}"
+              "k: {a\n b: c}", "{\"k\":{\"a b\":\"c\"}}"
+              "k: {\"a\"\n  : c}", "{\"k\":{\"a\":\"c\"}}"
+              "k: {\n \"a\n b\": c }", "{\"k\":{\"a b\":\"c\"}}"
+              "k: {\"a\n\n b\": c}", "{\"k\":{\"a\\nb\":\"c\"}}"
+              "k: { a\n# c\n  : b }", "{\"k\":{\"a\":\"b\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+        for (input, expected) in
+            [ "k: {\"a\nb\": c}", "implicit-key-multiline@1"
+              "k: {'a\nb': c}", "implicit-key-multiline@1"
+              "top:\n  k: {\"a\nb\": c}", "implicit-key-multiline@2"
+              "top:\n  k: {\"a\n  b\": c}", "implicit-key-multiline@2"
+              "k: {a\nb: c}", "implicit-key-multiline@1"
+              "k: {\n\"a\n b\": c }", "implicit-key-multiline@2"
+              "k: { c: d,\n\"a\nb\": e }", "implicit-key-multiline@2"
+              "k: {\"a\"\n: c}", "implicit-key-multiline@1"
+              "k: { a\n# c\n: b }", "implicit-key-multiline@1"
+              "k: {\"a\n\tb\": c}", "implicit-key-multiline@1"
+              "x: 1\r\nk: {\"a\r\nb\": c}", "implicit-key-multiline@2" ] do
+            expectError input expected
+
+    // ruamel reads every input. yaml@2.6.1 reads only the third, which has its lines deeper than the owner. The key of an explicit entry and a key alone are no implicit keys of an entry
+    // with a colon, so their lines follow the tolerance for the indentation of a flow line.
+    testCase "an explicit key and a key alone over several lines take their lines at any indentation" <| fun _ ->
+        for (input, expected) in
+            [ "k: {? \"a\nb\": c}", "{\"k\":{\"a b\":\"c\"}}"
+              "k: {? a\nb\n: c}", "{\"k\":{\"a b\":\"c\"}}"
+              "k: { ? \"a\n b\"\n  : c }", "{\"k\":{\"a b\":\"c\"}}"
+              "k: [? a\nb : c]", "{\"k\":[{\"a b\":\"c\"}]}"
+              "k: {\"a\nb\"}", "{\"k\":{\"a b\":null}}" ] do
             Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
 
     // yaml@2.6.1 and ruamel reject every input (ruamel with a ParserError, and with a ScannerError for the third). The indentation of a line decides none of them, so they stay errors.
