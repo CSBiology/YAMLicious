@@ -1751,16 +1751,15 @@ let private oldInputTests = testList "Inputs of the old tests" [
     // Earlier tests "a comment ends the plain scalar and a deeper line behind it is an error", "a continuation line that holds a mapping indicator is an error", "text behind a flow collection is an error",
     // "an alias in the place of a key inside a flow collection is an error that names the line", Tests.YamlRead "Text behind an alias and an alias as the key of a flow entry are errors" and
     // "A named tag handle needs a TAG directive in its document", Tests.Escapes "Double-quoted multiline escaped line break"). yaml@2.6.1 rejects every input below, and so does the parser.
-    // The codes agree with the productions. A line of a quoted scalar needs more indentation than its parent (s-flow-line-prefix), so a continuation at the column of the key is quoted-indent, and it
-    // is reported on the line of the continuation where the old scanner named the line of the quote. A comment ends a plain scalar, so a deeper line behind it belongs to no node (bad-indentation).
+    // The codes agree with the productions. A quoted scalar that never closes runs on to the next quote or to the end of the input, whatever the indentation of its lines in the block structure,
+    // so the error is unclosed-quote on the line of the opening quote, where the old scanner named the line of the quote. A comment ends a plain scalar, so a deeper line behind it belongs to no node (bad-indentation).
     // A plain scalar over several lines cannot be an implicit key (ns-s-implicit-yaml-key). A flow collection and an alias end their node, so text behind them is unexpected content or a missing
     // comma. A named handle needs the directive of its own document. A block mapping and a block sequence cannot share a level.
     testCase "the inputs that the old scanner rejected are errors with the code and the line of the parser" <| fun _ ->
         let rows =
-            [ "a: 'unclosed\nb: 1\n", "quoted-indent@2"
-              "a: \"never closed\nb: 'ok' # c", "quoted-indent@2"
-              "a: 1\nb: 'p\nc: 2\n", "quoted-indent@3"
-              "key: \"a\\\nb\"", "quoted-indent@2"
+            [ "a: 'unclosed\nb: 1\n", "unclosed-quote@1"
+              "a: \"never closed\nb: 'ok' # c", "unclosed-quote@1"
+              "a: 1\nb: 'p\nc: 2\n", "unclosed-quote@2"
               "k: a # c\n  \"b\"", "bad-indentation@2"
               "k: a #c\n  b", "bad-indentation@2"
               "k: a\n# c\n  b", "bad-indentation@3"
@@ -1810,6 +1809,129 @@ let private oldInputTests = testList "Inputs of the old tests" [
         Expect.isTrue items.[1].Node.TrailingComment.IsNone "The second item has no comment"
 ]
 
+// The lines of a quoted scalar in the block structure. [69] s-flow-line-prefix asks for a continuation line deeper than the node that owns the scalar. The lexer takes the line at
+// any indentation, because the scalar runs to its closing quote and the indentation of its lines cannot change what the parser reads around it. ruamel reads these layouts and
+// yaml@2.6.1 rejects them. The values below come from a run of ruamel, and the layout of the scalar keeps the folds only.
+let private quotedLineTests = testList "Lines of a quoted scalar in the block structure" [
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and MULTILINE_IMPLICIT_KEY. ruamel reads the value "first. second" in each of the first five and "a b" in the sixth.
+    testCase "a continuation line at the column of the key joins the lines" <| fun _ ->
+        let lines = [ "first."; "second" ]
+        expectRoot "doc: \"first.\nsecond\"" (mapOf [ "doc", dqLines lines ])
+        expectRoot "doc: 'first.\nsecond'" (mapOf [ "doc", sqLines lines ])
+        expectRoot "top:\n  doc: \"first.\n  second\"" (YamlNode.mapping [ entryOnNewLine "top" (mapOf [ "doc", dqLines lines ]) ])
+        expectRoot "- id: X\n  doc: 'first.\n  second'" (seqOf [ mapOf [ "id", sc "X"; "doc", sqLines lines ] ])
+        expectRoot "  - id: X\n    doc: \"first.\n    second\"\n    next: 1" (seqOf [ mapOf [ "id", sc "X"; "doc", dqLines lines; "next", sc "1" ] ])
+        expectRoot "- doc: \"a\n  b\"" (seqOf [ mapOf [ "doc", dqLines [ "a"; "b" ] ] ])
+
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and BAD_INDENT. ruamel reads the same values.
+    testCase "a continuation line left of the column of the key joins the lines" <| fun _ ->
+        expectRoot "top:\n  doc: \"a\nb\"" (YamlNode.mapping [ entryOnNewLine "top" (mapOf [ "doc", dqLines [ "a"; "b" ] ]) ])
+        for (input, expected) in
+            [ "top:\n  doc: \"a\n b\"", "{\"top\":{\"doc\":\"a b\"}}"
+              "top:\n  doc: 'a\nb'", "{\"top\":{\"doc\":\"a b\"}}"
+              "  - id: X\n    doc: \"a\n  b\"", "[{\"id\":\"X\",\"doc\":\"a b\"}]"
+              "  - id: X\n    doc: \"a\nb\"", "[{\"id\":\"X\",\"doc\":\"a b\"}]"
+              "- id: X\n  doc: 'a\n b'", "[{\"id\":\"X\",\"doc\":\"a b\"}]"
+              "- doc: \"a\nb\"", "[{\"doc\":\"a b\"}]"
+              "a:\n  b:\n    c: \"x\n y\"", "{\"a\":{\"b\":{\"c\":\"x y\"}}}"
+              "m:\n  - k: \"a\n  b\"", "{\"m\":[{\"k\":\"a b\"}]}"
+              "m:\n  - k: \"a\nb\"", "{\"m\":[{\"k\":\"a b\"}]}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and UNEXPECTED_TOKEN. ruamel reads the same values.
+    testCase "the lines of a sequence item and of an explicit entry may start at any column" <| fun _ ->
+        expectRoot "- \"a\nb\"" (seqOf [ dqLines [ "a"; "b" ] ])
+        expectRoot "? \"a\nb\"\n: v" (YamlNode.mapping [ explicitEntry (dqLines [ "a"; "b" ]) (sc "v") ])
+        expectRoot "? k\n: \"a\nb\"" (YamlNode.mapping [ explicitEntry (sc "k") (dqLines [ "a"; "b" ]) ])
+        for (input, expected) in
+            [ "top:\n  - \"a\nb\"", "{\"top\":[\"a b\"]}"
+              "key:\n- 'a\nb'", "{\"key\":[\"a b\"]}"
+              "- - \"a\nb\"", "[[\"a b\"]]"
+              "top:\n  ? \"a\n  b\"\n  : v", "{\"top\":{\"a b\":\"v\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input except the fifth, which stands two columns deeper than the key, and reads it as {"top":{"doc":"a b"}}. ruamel reads the values below. The folding
+    // is the one of [73] to [81]. An empty line is a line feed and the blanks in front of a break go away. An escaped break joins the lines without a space.
+    testCase "the lines fold like the lines of a deeper continuation" <| fun _ ->
+        for (input, expected) in
+            [ "top:\n  doc: \"a\n\n  b\"", "{\"top\":{\"doc\":\"a\\nb\"}}"
+              "top:\n  doc: \"a\n\n\n  b\"", "{\"top\":{\"doc\":\"a\\n\\nb\"}}"
+              "top:\n  doc: 'a\n\nb'", "{\"top\":{\"doc\":\"a\\nb\"}}"
+              "doc: \"a  \nb\"", "{\"doc\":\"a b\"}"
+              "top:\n  doc: \"a\n    b\"", "{\"top\":{\"doc\":\"a b\"}}"
+              "top:\n  doc: \"a\n  \"", "{\"top\":{\"doc\":\"a \"}}"
+              "top:\n  doc: \"\n  a\"", "{\"top\":{\"doc\":\" a\"}}"
+              "top:\n  doc: \"a\\\n  b\"", "{\"top\":{\"doc\":\"ab\"}}"
+              "top:\n  doc: \"a \\\nb\"", "{\"top\":{\"doc\":\"a b\"}}"
+              "top:\n  doc: \"a\\\n\nb\"", "{\"top\":{\"doc\":\"a\\nb\"}}"
+              "top:\n  doc: \"a\n  b\nc\"", "{\"top\":{\"doc\":\"a b c\"}}"
+              "top:\r\n  doc: 'a\r\nb'", "{\"top\":{\"doc\":\"a b\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and MULTILINE_IMPLICIT_KEY. ruamel reads the lines as text. A line is text whatever it starts with, and a
+    // document marker needs the start of the line followed by a blank or the end of the line.
+    testCase "a continuation line may look like a key, a sequence entry, a comment or a marker" <| fun _ ->
+        for (input, expected) in
+            [ "top:\n  doc: \"a\n  k: v\"", "{\"top\":{\"doc\":\"a k: v\"}}"
+              "top:\n  doc: \"a\n  - b\"", "{\"top\":{\"doc\":\"a - b\"}}"
+              "top:\n  doc: \"a\n# b\"", "{\"top\":{\"doc\":\"a # b\"}}"
+              "doc: \"a\n---xb\"", "{\"doc\":\"a ---xb\"}"
+              "top:\n  doc: \"a\n  --- b\"", "{\"top\":{\"doc\":\"a --- b\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and TAB_AS_INDENT. ruamel reads the values below. A tab in front of the text is a separator, and a line of
+    // tabs and spaces is an empty line wherever it starts.
+    testCase "a continuation line may start with a tab and an empty line may hold one" <| fun _ ->
+        for (input, expected) in
+            [ "doc: \"a\n\tb\"", "{\"doc\":\"a b\"}"
+              "top:\n  doc: \"a\n \tb\"", "{\"top\":{\"doc\":\"a b\"}}"
+              "top:\n  doc: 'a\n\t\n  b'", "{\"top\":{\"doc\":\"a\\nb\"}}"
+              "top:\n  doc: \"a\n  \t\n  b\"", "{\"top\":{\"doc\":\"a\\nb\"}}"
+              "top:\n  doc: \"a\n\t\nb\"", "{\"top\":{\"doc\":\"a\\nb\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects every input with errors such as MISSING_CHAR and MULTILINE_IMPLICIT_KEY. ruamel reads the same entries.
+    testCase "the entries behind a scalar with a continuation line read as usual" <| fun _ ->
+        expectRoot "doc: \"a\nb\" # c\nnext: 1" (mapOf [ "doc", withNote " c" (dqLines [ "a"; "b" ]); "next", sc "1" ])
+        for (input, expected) in
+            [ "top:\n  doc: \"a\n  b\"\n  next: 1", "{\"top\":{\"doc\":\"a b\",\"next\":1}}"
+              "- id: X\n  doc: \"a\n  b\"\n- id: Y\n  doc: 'c\nd'", "[{\"id\":\"X\",\"doc\":\"a b\"},{\"id\":\"Y\",\"doc\":\"c d\"}]"
+              "a:\n  b: \"x\ny\"\n  c: 1\nd: 2", "{\"a\":{\"b\":\"x y\",\"c\":1},\"d\":2}"
+              "top:\n  doc: &x !!str \"a\n  b\"", "{\"top\":{\"doc\":\"a b\"}}" ] do
+            Expect.equal (valueOf input) expected (sprintf "The value of %A" input)
+
+    // yaml@2.6.1 rejects the first text of each pair with MISSING_CHAR and reads the second one. The tree of the tolerant layout equals the tree of the strict layout, the layout of
+    // the scalar included.
+    testCase "the tree of a continuation line without indentation equals the tree of an indented one" <| fun _ ->
+        Expect.streamEqual (parseOk "top:\n  doc: \"a\n  b\"") (parseOk "top:\n  doc: \"a\n    b\"") "At the column of the key"
+        Expect.streamEqual (parseOk "top:\n  doc: 'a\nb'") (parseOk "top:\n  doc: 'a\n    b'") "At the column 0"
+        Expect.streamEqual (parseOk "- id: X\n  doc: \"a\n\n b\"") (parseOk "- id: X\n  doc: \"a\n\n    b\"") "After an empty line"
+
+    // yaml@2.6.1 rejects every input. ruamel reads the first three as {"k":["a b"]}, {"top":{"k":["a b"]}} and [["a b"]], and rejects the others. The tolerance covers the block structure.
+    // A quoted scalar in a flow collection keeps the indentation of [69], and a document marker or an implicit key over several lines stays an error wherever the lines start.
+    testCase "a quoted scalar in a flow collection, a document marker and an implicit key keep their errors" <| fun _ ->
+        expectError "k: [\"a\nb\"]" "quoted-indent@2"
+        expectError "top:\n  k: [\"a\n  b\"]" "quoted-indent@3"
+        expectError "- ['a\nb']" "quoted-indent@2"
+        expectError "top:\n  doc: \"a\n---\n  b\"" "marker-in-quote@3"
+        expectError "doc: 'a\n...\nb'" "marker-in-quote@2"
+        expectError "\"a\nb\": 1" "implicit-key-multiline@1"
+        expectError "top:\n  'a\n  b': 1" "implicit-key-multiline@2"
+        expectError "top:\n  doc: \"a\n  b\n" "unclosed-quote@2"
+
+    // yaml@2.6.1 rejects all but the last input, and ruamel rejects the same inputs with a ScannerError or a ParserError. A line at the column of the key starts the next entry and
+    // needs its colon. The last input reads as {"top":{"doc":"a","b":"c"}} in both.
+    testCase "a plain scalar at the column of the key stays an error" <| fun _ ->
+        expectError "doc: a\nb" "missing-colon@2"
+        expectError "top:\n  doc: a\n  b" "missing-colon@3"
+        expectError "top:\n  doc: a\nb" "missing-colon@3"
+        expectError "- id: X\n  doc: a\n  b" "missing-colon@3"
+        expectError "top:\n  doc: a\n b" "bad-indentation@3"
+        expectError "- a\nb" "mixed-collections@2"
+        expectError "top:\n  - a\n  b" "mixed-collections@3"
+        Expect.equal (valueOf "top:\n  doc: a\n  b: c") "{\"top\":{\"doc\":\"a\",\"b\":\"c\"}}" "The line is a key when it holds a colon"
+]
+
 let Main =
     testList "Parser" [
         mappingTests
@@ -1819,6 +1941,7 @@ let Main =
         moreTests
         advancedTests
         blockScalarStructureTests
+        quotedLineTests
         errorTests
         n1Tests
         spanTests

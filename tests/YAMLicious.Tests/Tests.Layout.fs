@@ -205,6 +205,34 @@ let private doubleTests = testList "Double-quoted scalars" [
         expectLines "[\"a\n b\", c]\n" "[\n  \"a\n  b\",\n  c\n]\n"
 ]
 
+let private unindentedTests = testList "Quoted scalars with lines that are not indented" [
+    // yaml@2.6.1 rejects the first text of each pair with errors such as MISSING_CHAR and reads the second text as the value that ruamel reads for the first one, as {"top":{"doc":"a b"}} for the third pair.
+    // The parser takes a line of a quoted scalar in the block structure at any indentation. The layout holds the folds only, so the writer puts the lines one step deeper than the parent.
+    // That text reads as the same stream.
+    testCase "a quoted scalar with lines at the column of the key or left of it goes back with indented lines" <| fun _ ->
+        expectLines "doc: \"first.\nsecond\"\n" "doc: \"first.\n  second\"\n"
+        expectLines "top:\n  doc: 'first.\n  second'\n" "top:\n  doc: 'first.\n    second'\n"
+        expectLines "top:\n  doc: \"a\nb\"\n" "top:\n  doc: \"a\n    b\"\n"
+        expectLines "- id: X\n  doc: 'a\n  b\nc'\n" "- id: X\n  doc: 'a\n    b\n    c'\n"
+        expectLines "  - id: X\n    doc: \"a\n  b\"\n" "- id: X\n  doc: \"a\n    b\"\n"
+        expectLines "- \"a\nb\"\n" "- \"a\n  b\"\n"
+        expectLines "top:\n  - 'a\nb'\n" "top:\n  - 'a\n    b'\n"
+
+    // yaml@2.6.1 rejects the first text of each pair and reads the second text as {"top":{"doc":"a\nb"}}, {"top":{"doc":"ab"}}, {"top":{"doc":"a\nb"}} and {"top":{"doc":"a b"}}.
+    // The empty lines and the escaped breaks keep their boundaries when the lines move.
+    testCase "empty lines, escaped breaks and tabs in lines that are not indented go back as in an indented scalar" <| fun _ ->
+        expectLines "top:\n  doc: \"a\n\nb\"\n" "top:\n  doc: \"a\n\n    b\"\n"
+        expectLines "top:\n  doc: \"a\\\nb\"\n" "top:\n  doc: \"a\\\n    b\"\n"
+        expectLines "top:\n  doc: 'a\n\t\nb'\n" "top:\n  doc: 'a\n\n    b'\n"
+        expectLines "top:\n  doc: \"a\n\tb\"\n" "top:\n  doc: \"a\n    b\"\n"
+
+    // yaml@2.6.1 rejects the first text of each pair and reads the second text as {"top":{"doc":"a b"}}. The indentation step of the options applies to the moved lines.
+    testCase "the lines come back with the indentation step of the options" <| fun _ ->
+        let wide = { defaults with Indent = 4 }
+        expectLinesWith wide "top:\n  doc: \"a\n  b\"\n" "top:\n    doc: \"a\n        b\"\n"
+        expectLinesWith { defaults with NewLine = "\r\n" } "top:\r\n  doc: 'a\r\nb'\r\n" "top:\r\n  doc: 'a\r\n    b'\r\n"
+]
+
 let private foldedTests = testList "Folded block scalars" [
     // yaml@2.6.1 reads the texts as {"a":"one two\nthree four\n"}, {"a":"one two\n more\n more2\nthree\n"}, {"a":"one two\n  \nthree\n"}, {"a":"one\n\ttwo\nthree\n"} and {"a":"one\n\ntwo three\n"}. A fold joins two lines that start with text.
     // An empty line is a line feed of the value, and no fold happens next to a line that starts with a blank.
@@ -515,4 +543,4 @@ let private equalityTests = testList "Equality and printing" [
         Expect.isFalse ((YamlNode.show flat).Contains "breaks") "No layout, no printout"
 ]
 
-let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; foldedTests; keyTests; policyTests; consumerTests; editTests; textTests; sizeTests; fitsTests; equalityTests ]
+let Main = testList "Layout" [ wrappedTests; plainTests; singleTests; doubleTests; unindentedTests; foldedTests; keyTests; policyTests; consumerTests; editTests; textTests; sizeTests; fitsTests; equalityTests ]

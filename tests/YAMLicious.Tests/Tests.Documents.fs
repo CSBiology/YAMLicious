@@ -432,8 +432,9 @@ let private byteOrderMarkTests = testList "Byte order marks between documents" [
         expectRoot "\"a\n\uFEFFb\"" (dqLines [ "a"; "\uFEFFb" ])
         expectRoot "- \"a\n  \uFEFFb\"" (seqOf [ dqLines [ "a"; "\uFEFFb" ] ])
         expectStream "\"a\uFEFF\"\n--- b" [ document (plainDocument (dq "a\uFEFF")); document (explicitDocument (sc "b")) ]
-        // A mark that starts a continuation line is content, so it is no indentation.
-        Expect.equal (parseErrorOf "k: \"a\n\uFEFFb\"") "quoted-indent@2" "The mark does not indent the line"
+        // A mark that starts a continuation line is content, so it is no indentation. A flow collection needs the indentation and the block structure takes the line without it.
+        Expect.equal (parseErrorOf "k: [\"a\n\uFEFFb\"]") "quoted-indent@2" "The mark does not indent the line"
+        expectRoot "k: \"a\n\uFEFFb\"" (mapOf [ "k", dqLines [ "a"; "\uFEFFb" ] ])
         // Outside the quotes the mark is invalid again.
         Expect.equal (parseErrorOf "\"a\"\uFEFF") "invalid-character@1" "Behind the closing quote"
 

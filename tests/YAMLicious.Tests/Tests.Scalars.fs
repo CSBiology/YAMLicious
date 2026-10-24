@@ -113,8 +113,8 @@ let private quotedTests = testList "Quoted scalars" [
             [ pl "a"; sq "p q"; pl "b"; dq "r s"; pl "c"; sq "t u"; pl "d"; lit "\"keep\"\n'keep'\n"; pl "e"; dq "v"; pl "f"; sq "w" ]
 
     // Tests.StringCleanUp "a quote at a node start that never closes is an error that names its line", "quote at the end of the input without
-    // a line break". yaml@2.6.1 rejects all inputs with MISSING_CHAR. The old inputs continue the quote at the column of the key, which is the
-    // error quoted-indent here, so the continuation lines stand two spaces in.
+    // a line break". yaml@2.6.1 rejects all inputs with MISSING_CHAR. The old inputs continue the quote at the column of the key, and the lexer reports
+    // the same error for that layout. The continuation lines here stand two spaces in.
     testCase "a quote that never closes is an error on the opening quote" <| fun _ ->
         expectError "a: 'unclosed\n  b: 1\n" "unclosed-quote" "1:4-1:5"
         expectError "a: \"never closed\n  b: 'ok' # c" "unclosed-quote" "1:4-1:5"
@@ -732,9 +732,10 @@ let private lineBreakTests = testList "Line breaks in scalars" [
         // Enough spaces in front of the tab: the line is empty.
         expectScalars "k: a\n  \t\n   b" [ pl "k"; pl "a\nb" ]
         expectScalars "k: 'a\n  \t\n   b'" [ pl "k"; sq "a\nb" ]
-        // Too few spaces: the plain scalar ends in front of the line, and the quoted scalar is an error.
+        // Too few spaces: the plain scalar ends in front of the line, and the quoted scalar in a flow collection is an error. A quoted scalar in the block structure takes the line.
         Expect.equal (lexIn GrammarContext.BlockOut 0 false "a\n\t\n b") [ "plain:a"; "blank"; "plain:b" ] "The plain scalar ends"
-        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"a\n\t\n b\"") [ "error:quoted-indent" ] "The quoted scalar is invalid"
+        Expect.equal (lexIn GrammarContext.FlowIn 0 false "  \"a\n\t\n b\"") [ "error:quoted-indent" ] "The quoted scalar in a flow collection is invalid"
+        Expect.equal (lexIn GrammarContext.BlockOut 0 false "\"a\n\t\n b\"") [ "double:a\\nb" ] "The quoted scalar in the block structure reads the line"
         // At the root every line is deep enough.
         Expect.equal (lexIn GrammarContext.BlockOut -1 false "a\n\t\n b") [ "plain:a\\nb" ] "A root scalar"
 
@@ -955,7 +956,6 @@ let private oldScalarRows : (string * string * string) list = [
     "Tokenizer text behind a flow collection is an error", "k: [[a] b]", "ERROR"
     "Tokenizer several multiline quotes before a block scalar", "a: 'p\n  q'\nb: 'r\n  s'\nc: 't\n  u'\nd: |\n  \"keep\"\n  'keep'\ne: \"v\"\nf: 'w'\n", "{\"a\":\"p q\",\"b\":\"r s\",\"c\":\"t u\",\"d\":\"\\\"keep\\\"\\n'keep'\\n\",\"e\":\"v\",\"f\":\"w\"}"
     "Tokenizer an unbalanced bracket or brace at the start of a continuation line does not hide the blocks after it", "desc: see the list\n  {draft\nscript: |\n  echo 'hi'\nnext:\n  run: >\n    x # y\n", "{\"desc\":\"see the list {draft\",\"script\":\"echo 'hi'\\n\",\"next\":{\"run\":\"x # y\\n\"}}"
-    "Escapes Double-quoted multiline escaped line break", "key: \"a\\\nb\"", "ERROR"
     "BlockScalars Block scalar keeps quote delimiters on every body line", "expression: >\n  ${ return (function() {\n    var permittedKeys = ['class', 'basename'];\n    if (shortened.basename === \"own\") return null;\n    if (shortened.class === \"Directory\") return null;\n  })(); }\n", "{\"expression\":\"${ return (function() {\\n  var permittedKeys = ['class', 'basename'];\\n  if (shortened.basename === \\\"own\\\") return null;\\n  if (shortened.class === \\\"Directory\\\") return null;\\n})(); }\\n\"}"
     "Tokenizer properties before a header", "k: !<tag:yaml.org,2002:str> |\n  'a'\nl: &x !!str >\n  \"b\"\n- !<t:u> |\n  'c'\nm: 'd'\n", "ERROR"
     "Tokenizer a header ends the block of the previous header on the same line", "a: |\n  x\nb: >\n  y\n", "{\"a\":\"x\\n\",\"b\":\"y\\n\"}"
@@ -982,10 +982,12 @@ let private oldInputTests = testList "Inputs of the old tests" [
     // Earlier tests "line endings are normalized once" and "a block at the end of the input". yaml@2.6.1 reads the old text with a lone carriage return as {"a":"x y","b":"\"q\"\rc: \"z\"\n"},
     // because it takes the carriage return for a character, and it reads `a: |` followed by `  x` at the end of the input as {"a":"x\n"}. The spec takes a lone carriage return for a
     // line break (b-char) and ends the body at the end of the input without a line feed (rule [165]). The values here are the ones of the old tests: the old scanner normalized the carriage
-    // return, so c was a key, and the body of the last scalar had no line feed.
+    // return, so c was a key, and the body of the last scalar had no line feed. The old test "Escapes Double-quoted multiline escaped line break" continues the quoted scalar at the column
+    // of the key. yaml@2.6.1 rejects `key: "a\` followed by `b"` with MISSING_CHAR, and the lexer reads a line of a quoted scalar in the block structure at any indentation.
     testCase "the old inputs where the spec and yaml@2.6.1 differ" <| fun _ ->
         Expect.equal (yamlValueOf "a: 'x\r\n  y'\r\nb: |\r\n  \"q\"\rc: \"z\"\r\n") "{\"a\":\"x y\",\"b\":\"\\\"q\\\"\\n\",\"c\":\"z\"}" "A lone carriage return is a line break"
         Expect.equal (yamlValueOf "a: |\n  x") "{\"a\":\"x\"}" "The body at the end of the input has no final line feed"
+        Expect.equal (yamlValueOf "key: \"a\\\nb\"") "{\"key\":\"ab\"}" "An escaped line break and a continuation line at the column of the key"
 ]
 
 let Main = testList "Scalars" [

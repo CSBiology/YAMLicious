@@ -33,8 +33,9 @@ type internal GrammarContext =
 ///
 /// `ParentIndent` is the indentation of the block node that owns the position: the column, counted from 0,
 /// of the key of a value, of the dash of a sequence item, of the `?` or `:` of an explicit entry, or of the
-/// node that owns a flow collection. A top-level node has -1. A continuation line of a plain or quoted
-/// scalar has to stand deeper than it, and the content of a block scalar is counted from it.
+/// node that owns a flow collection. A top-level node has -1. A continuation line of a plain scalar has to
+/// stand deeper than it, and so has a continuation line of a quoted scalar in a flow collection. The content
+/// of a block scalar is counted from it.
 ///
 /// The lines of a flow collection have to stand deeper than `ParentIndent` too, because [69]
 /// s-flow-line-prefix(n) is s-indent(n) and [80] s-separate and [81] s-separate-lines ask for that prefix
@@ -44,6 +45,12 @@ type internal GrammarContext =
 /// CWL files lay out `expressionLib` that way. A closer in front of the owner is still an error. yaml@2.6.1
 /// reads the layout for the closer of the outermost collection only, so the context `FlowInNested` of a
 /// collection inside another one withholds the exception.
+///
+/// The lines of a quoted scalar in the block structure are a second deviation. [69] asks for lines deeper than
+/// `ParentIndent`, and the lexer takes them at any indentation. The scalar runs to its closing quote, so the
+/// indentation of its lines cannot change where the scalar ends or what the parser reads around it. ruamel
+/// reads that layout and yaml@2.6.1 rejects it. A document marker at the start of a line stays an error
+/// inside a quoted scalar. A quoted scalar in a flow collection and a plain scalar keep the rule of [69].
 ///
 /// The indentation counts spaces. [63] s-indent(n) is n spaces, so a line needs its spaces in front of any tab,
 /// and a tab behind them is a separator ([66] s-separate-in-line). A line that starts with a tab has no

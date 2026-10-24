@@ -637,12 +637,19 @@ module internal Lexer =
 
     /// Consumes the line break at `p` inside a quoted scalar together with the empty lines behind it. Returns
     /// the number of empty lines and the index of the first character with content on the next line, or the
-    /// end of the text. A document marker at the start of a line is an error, and so is a line that is not
-    /// indented deeper than the parent. An empty line that holds a tab behind too few spaces is such a line
-    /// ([70] l-empty), because a tab is no indentation.
+    /// end of the text. A document marker at the start of a line is an error.
+    ///
+    /// Inside a flow collection a line has to be indented deeper than the parent ([69] s-flow-line-prefix),
+    /// and an empty line that holds a tab behind too few spaces is no empty line ([70] l-empty), because a tab
+    /// is no indentation. Both are errors there. In the block structure the lexer reads a line at any
+    /// indentation, which is a deliberate deviation from [69]. The scalar runs to its closing quote, so the
+    /// indentation of its lines cannot change where it ends or how the parser reads the lines around it.
+    /// ruamel reads that layout and yaml@2.6.1 rejects it. The layout of the scalar records the folds only, so
+    /// the writer puts every line one step deeper than the parent.
     let private foldBreak (ctx: LexContext) (cursor: Cursor) (opening: SourceSpan) (p: int) : int * int =
         let text = cursor.Text
         let n = text.Length
+        let flow = isFlowGrammar ctx.Grammar
         let mutable r = afterBreak text p
         let mutable empties = 0
         let mutable result = -1
@@ -653,16 +660,16 @@ module internal Lexer =
             if s >= n then
                 result <- s
             elif isBreak text.[s] then
-                if tabbedEmptyLine text r s ctx.ParentIndent then
-                    fail cursor YamlErrorCode.QuotedIndent "An empty line of a quoted scalar cannot hold a tab in front of the indentation of its parent." r s [ opening ]
+                if flow && tabbedEmptyLine text r s ctx.ParentIndent then
+                    fail cursor YamlErrorCode.QuotedIndent "An empty line of a quoted scalar in a flow collection cannot hold a tab in front of the indentation of the node that owns the collection." r s [ opening ]
                 empties <- empties + 1
                 r <- afterBreak text s
             else
                 let mutable spaces = r
                 while text.[spaces] = ' ' do
                     spaces <- spaces + 1
-                if spaces - r <= ctx.ParentIndent then
-                    fail cursor YamlErrorCode.QuotedIndent "A line of a quoted scalar has to be indented deeper than its parent." s (s + 1) [ opening ]
+                if flow && spaces - r <= ctx.ParentIndent then
+                    fail cursor YamlErrorCode.QuotedIndent "A line of a quoted scalar in a flow collection has to be indented deeper than the node that owns the collection." s (s + 1) [ opening ]
                 result <- s
         empties, result
 

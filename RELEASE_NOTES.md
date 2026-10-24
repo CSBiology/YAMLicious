@@ -45,6 +45,10 @@ The tests record the result of yaml@2.6.1 above each case. The parser differs fr
 
 * The closer `]` or `}` of an outermost flow collection may stand at the column of the node that owns the collection, as in `expressionLib: [` with `]` at column 0. YAML 1.2.2 asks for one more space ([69], [80]). The parser accepts the layout on purpose, because ruamel (cwltool) and yaml@2.6.1 read it and real CWL files use it. The items of the collection and the closers of nested collections still have to stand deeper than the owner.
 
+#### Quoted scalar lines
+
+* A line of a quoted scalar in the block structure may stand at any indentation, as in `doc: "first.` followed by `second"` at the column of `doc` or at the column 0. YAML 1.2.2 asks for a line deeper than the node that owns the scalar ([69]). The parser accepts the layout on purpose, because ruamel reads it with the folding of [73] to [81] and yaml@2.6.1 rejects it. The scalar runs to its closing quote, so the indentation of its lines cannot change what the parser reads around it. A quoted scalar in a flow collection and a plain scalar keep the rule of the specification, and a document marker at the start of a line is an error inside a quoted scalar. The tree holds the folds of the lines and no indentation, so the writer puts every line one step deeper than the parent.
+
 #### Decoding
 
 * A `Decoder<'T>` is a function from `YamlNode` to `'T`. `Decode.object` reads a mapping through getters. `get.Required.Field` and `get.Optional.Field` read one field. `get.MultipleOptional.FieldList` returns the entries with the given names, and `get.Overflow.FieldList` returns the other entries. Both return a `MappingEntry list` in source order. `get.Entries` returns every entry.

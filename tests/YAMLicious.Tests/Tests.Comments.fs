@@ -541,8 +541,8 @@ let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
         expectRoot "\"x\" # comment" (withNote " comment" (dq "x"))
         Expect.equal (parseErrorOf "\"x\"#suffix") "glued-comment@1" "A hash glued to the closing quote"
         Expect.equal (parseErrorOf "a: 'open # c") "unclosed-quote@1" "The hash is inside the open quote"
-        // A quoted scalar goes on in the next line only when that line is deeper than its parent, so the second line ends it with another error.
-        Expect.equal (parseErrorOf "a: 'open # c\nb: 1 # d\n") "quoted-indent@2" "The next line is not deeper than the key"
+        // The quoted scalar goes on in the next line, which stands at the column of the key, and no quote closes it.
+        Expect.equal (parseErrorOf "a: 'open # c\nb: 1 # d\n") "unclosed-quote@1" "The scalar runs on to the end of the input"
 
     // Tests.CommentCleanUp "comments inside a multiline flow collection stay in the merged line". yaml@2.6.1: {"a":["x","y"]}. The reader before 2.0.0 merged the lines and kept only the comment behind
     // the closer as the comment of the line. The tree keeps every comment in its slot.
