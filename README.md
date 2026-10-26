@@ -70,7 +70,7 @@ printfn "%A" (docValidation.Packages |> List.map (fun package -> package.Name, p
 [("package1", Some "1.0.0"); ("package2", Some "2.0.0"); ("package3", None)]
 ```
 
-The scalar decoders follow the YAML 1.2 core schema. A plain `1` is an int and a quoted `"1"` is a string. `yes` is a string too, and `Decode.string` reads the text of any scalar.
+The scalar decoders follow the YAML 1.2 core schema. A plain `1` is an int and a quoted `"1"` is a string. `yes` is a string too, and `Decode.string` reads the text of any scalar. `CoreSchema.resolveKind` gives a plain scalar text its core schema kind whatever its size, and `CoreSchema.integerToFloat` converts an integer text of any size and radix to the nearest float.
 
 ### Errors with positions
 
