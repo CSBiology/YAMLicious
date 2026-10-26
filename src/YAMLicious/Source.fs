@@ -8,8 +8,8 @@ type internal Located<'T> =
 /// The kind of a lexical or syntactic error. The cases up to `InvalidCharacter` come from the lexer, and the
 /// parser raises five of them too: `InvalidTag`, `TabIndentation`, `ImplicitKeyLength`, `ImplicitKeyMultiline`
 /// and `InvalidCharacter`. The other cases come from the parser only, except `MultipleDocuments`, which the
-/// reader raises. `YamlErrorCode.name` gives each case a stable text, which the failure projection and the
-/// tests use.
+/// reader raises. The last two cases come from `Aliases`, which raises `UndefinedAlias` for a tree that a program
+/// built. `YamlErrorCode.name` gives each case a stable text, which the failure projection and the tests use.
 [<RequireQualifiedAccess>]
 type YamlErrorCode =
     // The lexer.
@@ -84,6 +84,12 @@ type YamlErrorCode =
     /// part of the stream. A directive counts as content there, because [211] l-yaml-stream allows one only
     /// behind a `...`. `Related` holds the byte order mark.
     | ContentAfterByteOrderMark
+    /// An alias inside the node that its anchor names, as in `&a [*a]`. A copy of that node would hold the alias
+    /// again. `Related` holds the anchored node.
+    | RecursiveAlias
+    /// The copies that the aliases of a document add pass the limit of `AliasOptions`. `Related` holds the
+    /// anchored node that the alias names.
+    | AliasLimit
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module YamlErrorCode =
@@ -134,6 +140,8 @@ module YamlErrorCode =
         | YamlErrorCode.EmptyFlowEntry -> "empty-flow-entry"
         | YamlErrorCode.MissingFlowComma -> "missing-flow-comma"
         | YamlErrorCode.ContentAfterByteOrderMark -> "content-after-byte-order-mark"
+        | YamlErrorCode.RecursiveAlias -> "recursive-alias"
+        | YamlErrorCode.AliasLimit -> "alias-limit"
 
 /// A lexical or syntactic error. `Code` says what is wrong, `Message` is the text for a person with the line,
 /// and `Span` is the offending text. `Related` holds further ranges that explain the error, such as the

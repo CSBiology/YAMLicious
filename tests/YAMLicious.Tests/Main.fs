@@ -16,6 +16,7 @@ let all =
           Tests.Flow.Main
           Tests.Keys.Main
           Tests.Aliases.Main
+          Tests.AliasExpansion.Main
           Tests.Decode.Main
           Tests.Encode.Main
           Tests.Reader.Main

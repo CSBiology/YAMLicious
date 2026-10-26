@@ -293,7 +293,7 @@ and [<RequireQualifiedAccess; NoEquality; NoComparison>] YamlNodeKind =
     | Scalar of YamlScalar
     | Mapping of Collection<MappingEntry>
     | Sequence of Collection<SequenceItem>
-    /// A reference to an anchor. The tree keeps it symbolic and never resolves it.
+    /// A reference to an anchor. The tree keeps it symbolic and never resolves it. `Aliases.expandNode` replaces it with a copy on request.
     | Alias of string
 
 /// An entry of a mapping. The key is a full node, so it can be a scalar, a collection or an alias, and it

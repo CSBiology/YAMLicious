@@ -94,6 +94,33 @@ unclosed-quote at 1:7
 At validation_packages[0]: The mapping has no field name. (line 3, column 5)
 ```
 
+### Aliases
+
+The reader keeps an alias as a node, and no decoder resolves it. `Aliases.expandNode` replaces each alias with a copy of the node that its anchor names, and `Aliases.expandDocument` and `Aliases.expandStream` do the same for a document and for each document of a stream. The functions return a `Result` with a `YamlError`. An alias inside its own node is the error `recursive-alias`. Copies that pass `AliasOptions.MaxCopiedNodes` (100000 nodes by default) are the error `alias-limit`.
+
+```fsharp
+let text =
+    """defaults: &defaults
+  retries: 3
+  timeout: 10
+job: *defaults
+"""
+
+let jobDecoder: Decoder<int * int> =
+    Decode.object (fun get -> get.Required.Field "retries" Decode.int, get.Required.Field "timeout" Decode.int)
+
+let job =
+    Reader.readRoot text
+    |> Aliases.expandNode AliasOptions.defaults
+    |> Result.map (Decode.object (fun get -> get.Required.Field "job" jobDecoder))
+
+printfn "%A" job
+```
+
+```
+Ok (3, 10)
+```
+
 ### Encode and write
 
 The encoders build nodes. `Encode.optionalField` returns `None` for a missing value, so combine the fields with `List.choose id`. `Writer.writeNode` turns a node into text.

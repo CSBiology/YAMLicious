@@ -38,6 +38,8 @@
     <Compile Include="Decode.fs" />
     <Compile Include="Encode.fs" />
     <Compile Include="Reader.fs" />
+    <Compile Include="TreeWalk.fs" />
+    <Compile Include="Aliases.fs" />
     <Compile Include="Writer.fs" />
   </ItemGroup>
 
