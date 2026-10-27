@@ -141,6 +141,29 @@ module CoreSchema =
         else
             None
 
+    /// True when a reader of the core schema reads the scalar as a string. The tag decides before the style. The
+    /// tag `!!str` and the non-specific tag `!` make a string of any text in any style, and every other explicit
+    /// tag makes no string, a local or unknown tag included. Without a tag a quoted or block scalar is a string. A
+    /// plain scalar without a tag is a string when `resolveKind` gives `Str` for its text, so an empty plain
+    /// scalar is null and an integer of any size stays an `Integer`.
+    let isString (tag: YamlTag option) (scalar: YamlScalar) =
+        match tag with
+        | Some YamlTag.NonSpecific -> true
+        | Some explicit -> YamlTag.identifier explicit = YamlTag.coreNamespace + "str"
+        | None ->
+            match scalar.Style with
+            | ScalarStyle.Plain ->
+                // Every form of an int and a float starts with a sign, a point or a digit. Every form of null starts
+                // with `~`, n or N, and every form of a bool with t, T, f or F. A text that starts with another
+                // character is a string without a regular expression, which is the case of most keys and words.
+                let text = scalar.Value
+                if text.Length = 0 then false
+                elif "+-.0123456789".IndexOf(text.[0]) >= 0 then resolveKind text = CoreKind.Str
+                elif "~nN".IndexOf(text.[0]) >= 0 then not (resolvesToNull text)
+                elif "tTfF".IndexOf(text.[0]) >= 0 then (tryParseBool None scalar).IsNone
+                else true
+            | _ -> true
+
     /// The int64 that a reader of the core schema takes from the scalar, or None when the scalar is not an int
     /// or does not fit in 64 bits. The core schema sets no size limit for an int. A decimal int has an
     /// optional sign. An octal int starts with 0o and a hexadecimal int with 0x.
@@ -302,6 +325,159 @@ module CoreSchema =
                     for _ in 1 .. dropped do
                         magnitude <- magnitude * 2.0
                     Ok (if radix = 10 && text.[0] = '-' && magnitude > 0.0 then -magnitude else magnitude)
+
+    // The canonical forms below compare values for the identity of a mapping key. They work on decimal digits in
+    // strings, so a number of any length gives the same text on every target and no native float takes part.
+
+    /// The digits without their leading zeros, and "0" for digits that are all zero.
+    let private withoutLeadingZeros (digits: string) : string =
+        let mutable start = 0
+        while start < digits.Length - 1 && digits.[start] = '0' do
+            start <- start + 1
+        digits.Substring start
+
+    /// -1, 0 or 1 as the magnitude `a` is less than, equal to or greater than `b`. Both have no leading zeros.
+    let private compareMagnitudes (a: string) (b: string) : int =
+        if a.Length <> b.Length then
+            compare a.Length b.Length
+        else
+            let mutable i = 0
+            while i < a.Length && a.[i] = b.[i] do
+                i <- i + 1
+            if i = a.Length then 0 elif a.[i] < b.[i] then -1 else 1
+
+    /// The text of digits that stand with the last digit first.
+    let private fromLastDigit (digits: ResizeArray<int>) : string =
+        let sb = System.Text.StringBuilder()
+        for i in digits.Count - 1 .. -1 .. 0 do
+            sb.Append(string digits.[i]) |> ignore
+        withoutLeadingZeros (sb.ToString())
+
+    let private addMagnitudes (a: string) (b: string) : string =
+        let digits = ResizeArray<int>()
+        let mutable i = a.Length - 1
+        let mutable j = b.Length - 1
+        let mutable carry = 0
+        while i >= 0 || j >= 0 || carry > 0 do
+            let sum = carry + (if i >= 0 then digitValue a.[i] else 0) + (if j >= 0 then digitValue b.[j] else 0)
+            digits.Add(sum % 10)
+            carry <- sum / 10
+            i <- i - 1
+            j <- j - 1
+        fromLastDigit digits
+
+    /// `larger` minus `smaller`, for magnitudes where `larger` is not less than `smaller`.
+    let private subtractMagnitudes (larger: string) (smaller: string) : string =
+        let digits = ResizeArray<int>()
+        let mutable i = larger.Length - 1
+        let mutable j = smaller.Length - 1
+        let mutable borrow = 0
+        while i >= 0 do
+            let mutable difference = digitValue larger.[i] - borrow - (if j >= 0 then digitValue smaller.[j] else 0)
+            if difference < 0 then
+                difference <- difference + 10
+                borrow <- 1
+            else
+                borrow <- 0
+            digits.Add difference
+            i <- i - 1
+            j <- j - 1
+        fromLastDigit digits
+
+    /// The canonical decimal of a signed decimal plus a small int. Both and the result are in the form of
+    /// `canonicalInteger`: a `-` in front of a negative number, no `+` and no leading zero.
+    let private addToDecimal (canonical: string) (offset: int) : string =
+        let negativeA = canonical.StartsWith("-")
+        let magnitudeA = if negativeA then canonical.Substring 1 else canonical
+        let negativeB = offset < 0
+        let magnitudeB = string (if negativeB then -offset else offset)
+        let negative, magnitude =
+            if negativeA = negativeB then
+                negativeA, addMagnitudes magnitudeA magnitudeB
+            else
+                match compareMagnitudes magnitudeA magnitudeB with
+                | 0 -> false, "0"
+                | 1 -> negativeA, subtractMagnitudes magnitudeA magnitudeB
+                | _ -> negativeB, subtractMagnitudes magnitudeB magnitudeA
+        if negative && magnitude <> "0" then "-" + magnitude else magnitude
+
+    /// The integer of a core integer text as signed decimal digits: a `-` in front of a negative number, no `+`
+    /// and no leading zero. Every zero is "0", and an octal or hexadecimal text converts exactly, so `1`, `+1`,
+    /// `01`, `0o1` and `0x1` all give "1". The text has any length. None when `resolveKind` gives no `Integer`
+    /// for the text.
+    ///
+    /// The conversion of an octal or hexadecimal text takes time that grows with the square of its length.
+    let internal canonicalInteger (text: string) : string option =
+        match integerRadix text with
+        | 0 -> None
+        | 10 ->
+            let negative = text.[0] = '-'
+            let start = if text.[0] = '-' || text.[0] = '+' then 1 else 0
+            let magnitude = withoutLeadingZeros (text.Substring start)
+            Some (if negative && magnitude <> "0" then "-" + magnitude else magnitude)
+        | radix ->
+            // Little-endian limbs of four decimal digits. A limb times 16 plus a carry below 16 stays below 2^18.
+            let limbs = ResizeArray<int>()
+            for index in 2 .. text.Length - 1 do
+                let mutable carry = digitValue text.[index]
+                for limb in 0 .. limbs.Count - 1 do
+                    let product = limbs.[limb] * radix + carry
+                    limbs.[limb] <- product % 10000
+                    carry <- product / 10000
+                while carry > 0 do
+                    limbs.Add(carry % 10000)
+                    carry <- carry / 10000
+            if limbs.Count = 0 then
+                Some "0"
+            else
+                let sb = System.Text.StringBuilder()
+                sb.Append(string limbs.[limbs.Count - 1]) |> ignore
+                for limb in limbs.Count - 2 .. -1 .. 0 do
+                    let text = string limbs.[limb]
+                    sb.Append(String.replicate (4 - text.Length) "0").Append(text) |> ignore
+                Some (sb.ToString())
+
+    /// The value of a core float text in one form per value. A finite number is its sign, its decimal digits
+    /// without leading and trailing zeros, `e` and the exponent of the last digit, so `1.0`, `1.00`, `10e-1` and
+    /// `0.1e1` all give "+1e0". Every zero, `-0.0` included, is "0". The infinities are "+inf" and "-inf", and
+    /// every spelling of not-a-number is "nan". A decimal int such as `1` is a float text too and gives "+1e0". The
+    /// form is exact for any count of digits and any exponent, so two texts give the same form exactly when they
+    /// name the same decimal number, even when both round to the same float. None when the text is no float of
+    /// the core schema, which includes the octal and hexadecimal ints.
+    let internal canonicalFloat (text: string) : string option =
+        if matches infinityPattern text then
+            Some (if text.[0] = '-' then "-inf" else "+inf")
+        elif matches nanPattern text then
+            Some "nan"
+        elif matches numberPattern text then
+            let negative = text.[0] = '-'
+            let start = if text.[0] = '-' || text.[0] = '+' then 1 else 0
+            let mutable exponentAt = start
+            while exponentAt < text.Length && text.[exponentAt] <> 'e' && text.[exponentAt] <> 'E' do
+                exponentAt <- exponentAt + 1
+            let mantissa = text.Substring(start, exponentAt - start)
+            let point = mantissa.IndexOf('.')
+            let integerDigits = if point < 0 then mantissa else mantissa.Substring(0, point)
+            let fractionDigits = if point < 0 then "" else mantissa.Substring(point + 1)
+            let digits = integerDigits + fractionDigits
+            let mutable first = 0
+            while first < digits.Length && digits.[first] = '0' do
+                first <- first + 1
+            if first = digits.Length then
+                Some "0"
+            else
+                let mutable last = digits.Length
+                while digits.[last - 1] = '0' do
+                    last <- last - 1
+                let exponent =
+                    if exponentAt = text.Length then "0"
+                    else (canonicalInteger (text.Substring(exponentAt + 1))).Value
+                // The value is the digits times ten to the exponent minus the count of fraction digits. Each
+                // trailing zero that goes adds one to that power.
+                let shift = (digits.Length - last) - fractionDigits.Length
+                Some ((if negative then "-" else "+") + digits.Substring(first, last - first) + "e" + addToDecimal exponent shift)
+        else
+            None
 
     /// The text of a finite float. A whole number such as 1 gets ".0", because a reader of the core schema
     /// reads the text 1 as an int and 1.0 as a float. Every other text of a float already has a point or

@@ -268,9 +268,9 @@ let private rootTests = testList "Reader.readRoot and the decoders" [
             Expect.equal (decode text) None (sprintf "The document %A is null" text)
         Expect.equal (decode "a: b") (Some (Map [ "a", "b" ])) "A mapping is not null"
 
-    testCase "the root of a document without a node is the empty text for the string decoder" <| fun _ ->
-        Expect.equal (Decode.string (Reader.readRoot "")) "" "The text"
-        Expect.equal (Decode.string (Reader.readRoot "# c")) "" "The text of a comment-only document"
+    testCase "the root of a document without a node is the empty text for the text decoder" <| fun _ ->
+        Expect.equal (Decode.scalarText (Reader.readRoot "")) "" "The text"
+        Expect.equal (Decode.scalarText (Reader.readRoot "# c")) "" "The text of a comment-only document"
 ]
 
 let Main =

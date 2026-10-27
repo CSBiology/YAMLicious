@@ -537,6 +537,65 @@ let tests_integer_to_float = testList "CoreSchema.integerToFloat" [
             | None -> failwith (text + " is an int64")
 ]
 
+let tests_is_string = testList "CoreSchema.isString" [
+    // yaml@2.6.1 reads a scalar under !!str or ! as a string in every style and a quoted or block scalar without a tag as a string. It reads `!!int "5"` as the
+    // int 5 and a plain scalar without a tag by the core schema.
+    testCase "the tag decides before the style" <| fun _ ->
+        let str = Some (YamlTag.core "str")
+        let nonSpecific = Some YamlTag.NonSpecific
+        let others = [ YamlTag.core "int"; YamlTag.core "float"; YamlTag.core "bool"; YamlTag.core "null"; YamlTag.core "binary"; YamlTag.local "str"; YamlTag.local "foo" ]
+        for text in [ "5"; ""; "null"; "true"; "1.5"; "abc" ] do
+            for scalar in [ plain text; doubleQuoted text; singleQuoted text; literal text ] do
+                Expect.isTrue (CoreSchema.isString str scalar) $"!!str '{text}' in the style {scalar.Style} is a string"
+                Expect.isTrue (CoreSchema.isString nonSpecific scalar) $"! '{text}' in the style {scalar.Style} is a string"
+                for tag in others do
+                    Expect.isFalse (CoreSchema.isString (Some tag) scalar) $"{YamlTag.identifier tag} '{text}' in the style {scalar.Style} is no string"
+            Expect.isTrue (CoreSchema.isString None (doubleQuoted text)) $"A double-quoted '{text}' is a string"
+            Expect.isTrue (CoreSchema.isString None (singleQuoted text)) $"A single-quoted '{text}' is a string"
+            Expect.isTrue (CoreSchema.isString None (literal text)) $"A block scalar '{text}' is a string"
+
+    // A %TAG directive and a verbatim tag split the identifier tag:yaml.org,2002:str into other prefixes and suffixes.
+    testCase "the tag is compared by its expanded identifier" <| fun _ ->
+        let verbatim = YamlTag.Named { Prefix = ""; Suffix = "tag:yaml.org,2002:str" }
+        let split = YamlTag.Named { Prefix = "tag:yaml.org,"; Suffix = "2002:str" }
+        Expect.isTrue (CoreSchema.isString (Some verbatim) (plain "5")) "A verbatim !!str"
+        Expect.isTrue (CoreSchema.isString (Some split) (plain "5")) "A !!str with another prefix"
+        Expect.isFalse (CoreSchema.isString (Some (YamlTag.Named { Prefix = "!"; Suffix = "tag:yaml.org,2002:str" })) (plain "5")) "A local tag that holds the identifier"
+
+    testCase "a plain scalar without a tag is a string exactly when resolveKind gives Str" <| fun _ ->
+        for text in everyKindText do
+            Expect.equal (CoreSchema.isString None (plain text)) (CoreSchema.resolveKind text = CoreKind.Str) $"'{text}'"
+        Expect.isFalse (CoreSchema.isString None (plain "")) "The empty plain scalar is null"
+        Expect.isFalse (CoreSchema.isString None (plain power1024Decimal)) "An int of any size is an int"
+        Expect.isFalse (CoreSchema.isString None (plain "0x8000000000000000")) "A hexadecimal int beyond 64 bits is an int"
+        Expect.isTrue (CoreSchema.isString None (plain "1\n2")) "A text with a line break never resolves"
+]
+
+let tests_canonical = testList "CoreSchema.canonicalInteger and canonicalFloat" [
+    testCase "canonicalInteger gives the signed decimal digits of an int in every radix and size" <| fun _ ->
+        let cases =
+            [ "1", "1"; "+1", "1"; "01", "1"; "0o1", "1"; "0x1", "1"; "0", "0"; "-0", "0"; "+000", "0"; "0x0", "0"; "0o0", "0"; "0x000", "0"
+              "-12", "-12"; "-0012", "-12"; "0xff", "255"; "0xFF", "255"; "0o777", "511"; "0x2710", "10000"; "0x270F", "9999"; "0x5F5E100", "100000000"
+              "0x18ee90ff6c373e0ee4e3f0ad2", "123456789012345678901234567890"; "0o143564417755415637016711617605322", "123456789012345678901234567890"
+              "-9223372036854775809", "-9223372036854775809"; ("0x1" + String.replicate 256 "0"), power1024Decimal; ("0o2" + String.replicate 341 "0"), power1024Decimal ]
+        for (text, expected) in cases do
+            Expect.equal (CoreSchema.canonicalInteger text) (Some expected) (shorten text)
+        for text in [ "1.0"; "abc"; ""; "-0x1"; "0b1"; "1_000"; "0X1"; ".5"; "1e3" ] do
+            Expect.equal (CoreSchema.canonicalInteger text) None $"'{text}' is no int"
+
+    testCase "canonicalFloat gives the sign, the digits and the exponent of the exact decimal value" <| fun _ ->
+        let cases =
+            [ "1.0", "+1e0"; "1", "+1e0"; "1.00", "+1e0"; "10e-1", "+1e0"; "0.1e1", "+1e0"; "1000e-3", "+1e0"; "0.001e3", "+1e0"; "-1e-0", "-1e0"
+              ".5", "+5e-1"; "5.", "+5e0"; "-2.50", "-25e-1"; "120", "+12e1"; "1.5", "+15e-1"; "1.5e-3", "+15e-4"; "1e+5", "+1e5"; "0.5e10", "+5e9"
+              "1000e-1000", "+1e-997"; "100e-100000000000000000000", "+1e-99999999999999999998"; "10e99999999999999999999", "+1e100000000000000000000"
+              "0.0", "0"; "-0.0", "0"; "-0e5", "0"; "0.000e7", "0"; "+.0", "0"; "000", "0"
+              ".inf", "+inf"; "-.Inf", "-inf"; "+.INF", "+inf"; ".nan", "nan"; ".NaN", "nan"; ".NAN", "nan" ]
+        for (text, expected) in cases do
+            Expect.equal (CoreSchema.canonicalFloat text) (Some expected) text
+        for text in [ "0x1"; "0o1"; "abc"; ""; "NaN"; "+.nan"; "1_0.0"; "1e"; "." ] do
+            Expect.equal (CoreSchema.canonicalFloat text) None $"'{text}' is no float"
+]
+
 let Main = testList "CoreSchema" [
     tests_string_content
     tests_null
@@ -544,5 +603,7 @@ let Main = testList "CoreSchema" [
     tests_int
     tests_float
     tests_kind
+    tests_is_string
+    tests_canonical
     tests_integer_to_float
 ]

@@ -7,7 +7,8 @@ module Tests.Decode
 // Old tests that changed:
 // - A test with `[1, 2]` or `{}` in its input builds the node with the constructors, as it did before the parser read flow collections. The test
 //   "the flow inputs of the old decode tests" reads the original inputs through the parser.
-// - The model has no Nil. A missing value is an empty plain scalar, so Decode.string reads `k:` as the empty text where the old decoder rejected Nil.
+// - The model has no Nil. A missing value is an empty plain scalar, so Decode.scalarText reads `k:` as the empty text. Decode.string rejects it, as the old decoder
+//   rejected Nil.
 // - Decode.read is gone. The Reader owns reading, so the tests parse with parseRoot and decode the node.
 // - The ExtensionData of the old overflow tests was a Dictionary from key to element. The getters return the entries in source order now.
 //
@@ -61,15 +62,53 @@ let private triviaText (trivia: Trivia list) : string list =
 // Scalars
 
 let private stringTests = testList "Decode.string" [
-    // yaml@2.6.1 reads each of these as a scalar. Decode.string returns the cooked text of any scalar, also of a number, a bool, a null and
-    // a missing value. A tag does not change the text.
-    testCase "reads the text of every scalar" <| fun _ ->
+    // yaml@2.6.1 reads each of these as a string. A plain text resolves to no other type in the core schema, and a quoted or block scalar or a scalar under
+    // !!str or the non-specific tag ! is a string whatever its text. It reads `%TAG !e! tag:yaml.org,2002:` with `!e!str 5` and the verbatim `!<tag:yaml.org,2002:str> 5` as
+    // the string 5 too.
+    testCase "reads a string by its tag first and by its style second" <| fun _ ->
         let cases =
-            [ "k: abc", "abc"; "k: 12", "12"; "k: true", "true"; "k: null", "null"; "k: ~", "~"; "k: ", ""
-              "k: \"x\"", "x"; "k: 'it''s'", "it's"; "k: \"\"", ""; "k: !!int 5", "5"; "k: !!str 5", "5"; "k: !foo bar", "bar"
-              "k: |\n  a\n  b\n", "a\nb\n"; "k: >-\n  a\n  b\n", "a b"; "k: a\n  b", "a b" ]
+            [ "k: abc", "abc"; "k: yes", "yes"; "k: 1_000", "1_000"; "k: 0x", "0x"; "k: -0x10", "-0x10"; "k: a\n  b", "a b"
+              "k: \"x\"", "x"; "k: 'it''s'", "it's"; "k: \"\"", ""; "k: ''", ""; "k: \"1\"", "1"; "k: 'true'", "true"; "k: \"null\"", "null"; "k: \"~\"", "~"
+              "k: |\n  a\n  b\n", "a\nb\n"; "k: >-\n  a\n  b\n", "a b"; "k: |-\n  5\n", "5"; "k: |-\n  null\n", "null"
+              "k: !!str 5", "5"; "k: !!str", ""; "k: !!str \"\"", ""; "k: !!str null", "null"; "k: !!str |-\n  5\n", "5"
+              "k: ! 5", "5"; "k: !", ""; "k: ! \"x\"", "x"; "k: !<tag:yaml.org,2002:str> 5", "5" ]
         for (text, expected) in cases do
-            Expect.equal (Decode.string (fieldNode text)) expected (sprintf "The text of %s" text)
+            Expect.equal (Decode.string (fieldNode text)) expected (sprintf "The string of %s" text)
+        Expect.equal (Decode.string (fieldNode "%TAG !e! tag:yaml.org,2002:\n---\nk: !e!str 5")) "5" "The tag is compared by its expanded identifier"
+
+    // yaml@2.6.1 reads the plain 5, 0x1F, -0 and the 30 digits as ints (the digits with { intAsBigInt: true }), 1.5, 1e3, .nan and -.inf as floats, true and
+    // FALSE as bools, and null, ~, Null and the missing value as null. It reads a scalar under !!int, !!float, !!bool or !!null by its tag, and `k: !foo bar`
+    // as the string bar with the warning TAG_RESOLVE_FAILED.
+    testCase "rejects a plain scalar of another type and names the tag that it resolves to" <| fun _ ->
+        let resolved =
+            [ "5", "!!int"; "0x1F", "!!int"; "-0", "!!int"; "123456789012345678901234567890", "!!int"; "1.5", "!!float"; "1e3", "!!float"
+              ".nan", "!!float"; "-.inf", "!!float"; "true", "!!bool"; "FALSE", "!!bool"; "null", "!!null"; "~", "!!null"; "Null", "!!null" ]
+        for (text, tag) in resolved do
+            let node = fieldNode ("k: " + text)
+            expectError Decode.string node [] node.Span (sprintf "Expected a string, found the plain scalar \"%s\", which resolves to %s." text tag)
+        expectError Decode.string (fieldNode "k: 5") [] (span 1 4 1 5) "Expected a string, found the plain scalar \"5\", which resolves to !!int."
+
+    testCase "rejects a missing value and an empty plain scalar with an anchor" <| fun _ ->
+        expectError Decode.string (fieldNode "k:") [] (span 1 3 1 3) "Expected a string, found a missing value."
+        expectError Decode.string (fieldNode "k: &a") [] (span 1 4 1 6) "Expected a string, found a missing value."
+        expectError Decode.string YamlNode.empty [] None "Expected a string, found a missing value."
+
+    testCase "rejects every explicit tag other than !!str and ! and names it" <| fun _ ->
+        let tagged =
+            [ "k: !!int 5", "found the plain scalar \"5\" with the tag !!int."
+              "k: !!int \"5\"", "found the double-quoted scalar \"5\" with the tag !!int."
+              "k: !!float 1", "found the plain scalar \"1\" with the tag !!float."
+              "k: !!bool true", "found the plain scalar \"true\" with the tag !!bool."
+              "k: !!null \"\"", "found the double-quoted scalar \"\" with the tag !!null."
+              "k: !!null", "found the plain scalar \"\" with the tag !!null."
+              "k: !!binary abc", "found the plain scalar \"abc\" with the tag !!binary."
+              "k: !foo bar", "found the plain scalar \"bar\" with the tag !foo."
+              "k: !foo 'bar'", "found the single-quoted scalar \"bar\" with the tag !foo."
+              "k: !<tag:example.com,2000:x> y", "found the plain scalar \"y\" with the tag !<tag:example.com,2000:x>." ]
+        for (text, message) in tagged do
+            expectError Decode.string (fieldNode text) [] (fieldNode text).Span ("Expected a string, " + message)
+        // A text under !!null that is no null stays the error of the tag.
+        expectError Decode.string (fieldNode "k: !!null foo") [] (span 1 4 1 14) "The tag !!null needs null"
 
     testCase "rejects a mapping and a sequence with their span" <| fun _ ->
         expectError Decode.string (fieldNode "k:\n  a: b\n") [] (span 2 3 2 7) "Expected a string, found a mapping."
@@ -77,6 +116,24 @@ let private stringTests = testList "Decode.string" [
 
     testCase "rejects an alias and names it with its span" <| fun _ ->
         expectError Decode.string aliasNode [] (span 2 4 2 6) "The alias *x at line 2, column 4 cannot be read as a value."
+]
+
+let private scalarTextTests = testList "Decode.scalarText" [
+    // yaml@2.6.1 reads each of these as a scalar. Decode.scalarText returns the cooked text of any scalar, also of a number, a bool, a null and a missing
+    // value. A tag does not change the text, and a text that its tag rejects is read too.
+    testCase "reads the text of every scalar" <| fun _ ->
+        let cases =
+            [ "k: abc", "abc"; "k: 12", "12"; "k: true", "true"; "k: null", "null"; "k: ~", "~"; "k: ", ""; "k: &a", ""
+              "k: \"x\"", "x"; "k: 'it''s'", "it's"; "k: \"\"", ""; "k: !!int 5", "5"; "k: !!str 5", "5"; "k: !foo bar", "bar"
+              "k: !!int foo", "foo"; "k: !!null foo", "foo"; "k: !!null \"\"", ""; "k: !!null", ""
+              "k: |\n  a\n  b\n", "a\nb\n"; "k: >-\n  a\n  b\n", "a b"; "k: a\n  b", "a b" ]
+        for (text, expected) in cases do
+            Expect.equal (Decode.scalarText (fieldNode text)) expected (sprintf "The text of %s" text)
+
+    testCase "rejects a mapping, a sequence and an alias with their span" <| fun _ ->
+        expectError Decode.scalarText (fieldNode "k:\n  a: b\n") [] (span 2 3 2 7) "Expected a scalar, found a mapping."
+        expectError Decode.scalarText (fieldNode "k:\n  - a\n") [] (span 2 3 2 6) "Expected a scalar, found a sequence."
+        expectError Decode.scalarText aliasNode [] (span 2 4 2 6) "The alias *x at line 2, column 4 cannot be read as a value."
 ]
 
 /// Checks that the decoder rejects a mapping, a sequence and an alias, and that the message names what the decoder expected.
@@ -88,6 +145,7 @@ let private expectKindErrors (what: string) (decoder: Decoder<'T>) =
 let private kindTests = testList "Every scalar decoder" [
     testCase "rejects a mapping, a sequence and an alias with the span of the node" <| fun _ ->
         expectKindErrors "a string" Decode.string
+        expectKindErrors "a scalar" Decode.scalarText
         expectKindErrors "an int" Decode.int
         expectKindErrors "an int64" Decode.int64
         expectKindErrors "a float" Decode.float
@@ -200,12 +258,16 @@ let private boolTests = testList "Decode.bool" [
 ]
 
 let private charTests = testList "Decode.char" [
-    // yaml@2.6.1 reads `k: c` as the string c and `k: "1"` as the string 1.
-    testCase "reads a scalar of one character in any style" <| fun _ ->
+    // yaml@2.6.1 reads `k: c` and `k: '~'` as the strings c and ~, and `k: "1"` and `k: !!str 1` as the string 1. It reads `k: 1` as the int 1 and `k: ~`
+    // as null.
+    testCase "reads a string of one character by the rules of Decode.string" <| fun _ ->
         Expect.equal (Decode.char (fieldNode "k: c")) 'c' "Plain"
         Expect.equal (Decode.char (fieldNode "k: \"1\"")) '1' "Quoted"
-        Expect.equal (Decode.char (fieldNode "k: 1")) '1' "A number is a scalar of one character"
+        Expect.equal (Decode.char (fieldNode "k: !!str 1")) '1' "Under !!str"
         Expect.equal (Decode.char (fieldNode "k: '~'")) '~' "Single-quoted"
+        expectError Decode.char (fieldNode "k: 1") [] (span 1 4 1 5) "Expected a char, found the plain scalar \"1\", which resolves to !!int."
+        expectError Decode.char (fieldNode "k: ~") [] (span 1 4 1 5) "Expected a char, found the plain scalar \"~\", which resolves to !!null."
+        expectError Decode.char (fieldNode "k: !foo c") [] (span 1 4 1 10) "Expected a char, found the plain scalar \"c\" with the tag !foo."
 
     testCase "rejects a longer text, an empty text, a collection and an alias" <| fun _ ->
         expectError Decode.char (fieldNode "k: ab") [] (span 1 4 1 6) "Expected a char, found the plain scalar \"ab\"."
@@ -331,8 +393,10 @@ let private optionTests = testList "Decode.option" [
         Expect.equal (readOption "k: !!null\n") None "!!null alone is null"
         Expect.equal (readOption "k: !!null null\n") None "!!null null is null"
         Expect.equal (readOption "k: !!null ~\n") None "!!null ~ is null"
-        Expect.equal (readOption "k: !foo null\n") (Some "null") "A local tag is not null"
+        Expect.equal (Decode.option Decode.scalarText (fieldNode "k: !foo null\n")) (Some "null") "A local tag is not null"
         Expect.equal (readOption "k: ! null\n") (Some "null") "The non-specific tag is not null"
+        // The string decoder behind it rejects the local tag.
+        expectError (Decode.option Decode.string) (fieldNode "k: !foo null\n") [] (span 1 4 1 13) "found the plain scalar \"null\" with the tag !foo."
 
     // yaml@2.6.1 reads `k: !!null foo`, `k: !!null "foo"` and `k: !!null 5` as the strings with the warning TAG_RESOLVE_FAILED, and `k: !!null ""` and
     // `k: !!null ''` as null. The library takes the failed tag resolution as an error in every decoder, as `!!int foo` is one for an int.
@@ -348,7 +412,8 @@ let private optionTests = testList "Decode.option" [
         // The null spellings and the empty text stay None, quoted or not.
         for text in [ "k: !!null\n"; "k: !!null null\n"; "k: !!null ~\n"; "k: !!null Null\n"; "k: !!null NULL\n"; "k: !!null \"\"\n"; "k: !!null ''\n"; "k: !!null \"null\"\n" ] do
             Expect.equal (readOption text) None (sprintf "%s is null" text)
-        Expect.equal (Decode.string (fieldNode "k: !!null \"\"")) "" "The string decoder reads the empty text"
+        Expect.equal (Decode.scalarText (fieldNode "k: !!null \"\"")) "" "The text decoder reads the empty text"
+        expectError Decode.string (fieldNode "k: !!null \"\"") [] (span 1 4 1 13) "found the double-quoted scalar \"\" with the tag !!null."
 
     // yaml@2.6.1 reads `k:` followed by `- a` and `- b` as {"k":["a","b"]}, `k: [a, b]` as {"k":["a","b"]}, `k:` followed
     // by `  a: b` as {"k":{"a":"b"}}, `k: {}` as {"k":{}} and `k:` as {"k":null}. Only the null goes to None. The flow forms
@@ -411,8 +476,12 @@ let private nonNullTests = testList "Decode.nonNull" [
         let decoder = Decode.nonNull Decode.string
         for (text, expected) in
             [ "k: \"null\"", "null"; "k: 'null'", "null"; "k: \"~\"", "~"; "k: \"\"", ""; "k: ''", ""; "k: |-\n  null\n", "null"
-              "k: !!str null", "null"; "k: !!str", ""; "k: !!str ~", "~"; "k: abc", "abc"; "k: 0", "0"; "k: false", "false"; "k: nul", "nul" ] do
+              "k: !!str null", "null"; "k: !!str", ""; "k: !!str ~", "~"; "k: abc", "abc"; "k: nul", "nul" ] do
             Expect.equal (decoder (fieldNode text)) expected (sprintf "The text of %s" text)
+        // A number and a bool reach the decoder, which decides.
+        Expect.equal (Decode.nonNull Decode.scalarText (fieldNode "k: 0")) "0" "The text decoder reads 0"
+        Expect.equal (Decode.nonNull Decode.scalarText (fieldNode "k: false")) "false" "The text decoder reads false"
+        expectError decoder (fieldNode "k: 0") [] (span 1 4 1 5) "Expected a string, found the plain scalar \"0\", which resolves to !!int."
         Expect.equal (Decode.nonNull Decode.int (fieldNode "k: 5")) 5 "A value goes to the int decoder"
         expectError (Decode.nonNull Decode.int) (fieldNode "k: abc") [] (span 1 4 1 7) "Expected an int, found the plain scalar \"abc\"."
 
@@ -579,15 +648,24 @@ let private mapTests = testList "Decode.map and Decode.dict" [
         Expect.equal (Decode.map Decode.string Decode.int (YamlNode.mapping [])) Map.empty "The empty mapping"
 
     testCase "the key decoder gets the full key node" <| fun _ ->
-        let node = parseRoot "&k a: 1\n*k : 2\n"
-        // The alias key is rejected by the string decoder and accepted by the alias decoder.
-        expectError (Decode.map Decode.string Decode.int) node [ "{*k}" ] (span 2 1 2 3) "The alias *k at line 2, column 1"
-        let keyKind =
-            Decode.map (fun (key: YamlNode) -> (match key.Kind with YamlNodeKind.Alias name -> "alias " + name | _ -> "node")) Decode.int node
-        Expect.equal keyKind (Map [ "alias k", 2; "node", 1 ]) "The decoder sees the alias and the scalar"
+        let tagOf (key: YamlNode) : string =
+            match key.Properties.Tag with
+            | Some tag -> YamlTag.identifier tag
+            | None -> "none"
+        Expect.equal (Decode.map tagOf Decode.int (parseRoot "!!str a: 1\nb: 2\n")) (Map [ "tag:yaml.org,2002:str", 1; "none", 2 ]) "The decoder sees the tag"
         let sequenceKey = parseRoot "? - a\n  - b\n: v\n"
         let decoded = Decode.dict (Decode.list Decode.string) Decode.string sequenceKey
         Expect.equal [ for KeyValue (key, value) in decoded -> key, value ] [ [ "a"; "b" ], "v" ] "A sequence key"
+
+    // yaml@2.6.1 resolves the alias key *k to the string a and rejects the two keys a with DUPLICATE_KEY. Aliases stay symbolic here, so an alias as a key is
+    // an error before any key decoder runs, also one that reads aliases. After Aliases.expandNode the two keys are the same YAML value.
+    testCase "an alias as a key is an error before the key decoder runs" <| fun _ ->
+        let node = parseRoot "&k a: 1\n*k : 2\n"
+        expectError (Decode.map Decode.string Decode.int) node [] (span 2 1 2 3) "The alias *k at line 2, column 1"
+        expectError (Decode.map Decode.alias Decode.int) node [] (span 2 1 2 3) "The alias *k at line 2, column 1"
+        match Aliases.expandNode AliasOptions.defaults node with
+        | Ok expanded -> expectError (Decode.map Decode.string Decode.int) expanded [] (span 1 1 1 5) "The key a occurs twice, at line 1, column 1 and at line 1, column 1."
+        | Error error -> failwith error.Message
 
     testCase "put the key in the path of an error" <| fun _ ->
         let node = parseRoot "a: 1\nb: x\n"
@@ -602,37 +680,64 @@ let private mapTests = testList "Decode.map and Decode.dict" [
         expectError (Decode.dict Decode.string Decode.int) (fieldNode "k: 5") [] (span 1 4 1 5) "Expected a mapping, found the plain scalar \"5\"."
         expectError (Decode.map Decode.string Decode.int) aliasNode [] (span 2 4 2 6) "The alias *x"
 
-    // yaml@2.6.1 rejects a mapping with the same key twice (DUPLICATE_KEY). The library never reads the last entry silently.
-    testCase "two entries with the same decoded key are an error that names both" <| fun _ ->
+    // yaml@2.6.1 rejects a mapping with the same key twice (DUPLICATE_KEY), and so it rejects the ints 1 and 01. The library never reads the last entry silently.
+    testCase "two keys that are the same YAML value are an error at the second key that names both" <| fun _ ->
         let node = parseRoot "a: 1\nb: 2\na: 3\n"
         let message = "The key a occurs twice, at line 1, column 1 and at line 3, column 1."
         expectError (Decode.map Decode.string Decode.int) node [] (span 3 1 3 2) message
         expectError (Decode.dict Decode.string Decode.int) node [] (span 3 1 3 2) message
-        // The keys are equal after decoding, whatever the spelling: the plain 1 and the quoted "1" are the same string and the ints 1 and 01 are the same int.
-        expectError (Decode.map Decode.string Decode.string) (parseRoot "1: a\n\"1\": b\n") [] (span 2 1 2 4) "The key 1 occurs twice, at line 1, column 1 and at line 2, column 1."
-        expectError (Decode.map Decode.int Decode.string) (parseRoot "1: a\n01: b\n") [] (span 2 1 2 3) "The key 01 occurs twice"
+        // The check of the YAML keys runs before the key decoder, so the ints 1 and 01 are one key also for a decoder of their text.
+        let ints = parseRoot "1: a\n01: b\n"
+        let intMessage = "The key 01 at line 2, column 1 repeats the key 1 at line 1, column 1."
+        expectError (Decode.map Decode.int Decode.string) ints [] (span 2 1 2 3) intMessage
+        expectError (Decode.map Decode.scalarText Decode.string) ints [] (span 2 1 2 3) intMessage
         // Different keys of the node stay different after decoding when the key decoder keeps them apart.
-        Expect.equal (Decode.map Decode.string Decode.int (parseRoot "1: 1\n01: 2\n")) (Map [ "1", 1; "01", 2 ]) "1 and 01 differ as strings"
+        Expect.equal (Decode.map Decode.string Decode.int (parseRoot "\"1\": 1\n\"01\": 2\n")) (Map [ "1", 1; "01", 2 ]) "\"1\" and \"01\" differ as strings"
         let constructed = YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); YamlNode.entry (sc "a") (sc "2") ]
         expectError (Decode.map Decode.string Decode.int) constructed [] None "The key a occurs twice, at an earlier entry and at a later entry."
+        // A key that the string decoder rejects is an error of the key decoder with the key in the path.
+        expectError (Decode.map Decode.string Decode.int) (parseRoot "1: 1\n") [ "{1}" ] (span 1 1 1 2) "Expected a string, found the plain scalar \"1\", which resolves to !!int."
 
-    // yaml@2.6.1 rejects `~: 1` followed by `null: 2` with DUPLICATE_KEY. It reads `.nan: 1` followed by `.NaN: 2` as one key without an error. Here both pairs are
-    // duplicates on every target. The Dictionary of .NET rejects a null key and the Dictionary of Fable never finds a NaN again, so the index wraps the keys.
+    // yaml@2.6.1 reads `1: a` and `"1": b` as the two keys 1 and "1". The int key and the string key are distinct YAML values, and the text decoder makes
+    // the same string of both. The int 1 and the float 1.0 are distinct values that the float decoder makes the same float.
+    testCase "distinct YAML keys that decode to the same map key are an error that names both" <| fun _ ->
+        let node = parseRoot "1: a\n\"1\": b\n"
+        let message =
+            "Distinct YAML keys decode to the same map key: the plain scalar \"1\" at line 1, column 1 and the double-quoted scalar \"1\" at line 2, column 1."
+        expectError (Decode.map Decode.scalarText Decode.string) node [] (span 2 1 2 4) message
+        expectError (Decode.dict Decode.scalarText Decode.string) node [] (span 2 1 2 4) message
+        expectError (Decode.map Decode.float Decode.string) (parseRoot "1: a\n1.0: b\n") [] (span 2 1 2 4) "Distinct YAML keys decode to the same map key"
+        Expect.equal (Decode.map Decode.scalarText Decode.string (parseRoot "1: a\n\"01\": b\n")) (Map [ "1", "a"; "01", "b" ]) "Distinct texts stay apart"
+
+    // yaml@2.6.1 rejects `~: 1` followed by `null: 2` with DUPLICATE_KEY. It reads `.nan: 1` followed by `.NaN: 2` as two keys without an error, because NaN differs
+    // from itself in JavaScript. Here both pairs are the same YAML key on every target. The Dictionary of .NET rejects a null key and the Dictionary of Fable
+    // never finds a NaN again, so the index of the decoded keys wraps them, and two distinct YAML keys that decode to null or NaN collide.
     testCase "two null keys and two NaN keys are duplicates on every target" <| fun _ ->
         let nullKey = Decode.option Decode.string
         let nullKeys = parseRoot "~: 1\nnull: 2\n"
-        expectError (Decode.map nullKey Decode.int) nullKeys [] (span 2 1 2 5) "The key null occurs twice, at line 1, column 1 and at line 2, column 1."
+        expectError (Decode.map nullKey Decode.int) nullKeys [] (span 2 1 2 5) "The key null at line 2, column 1 repeats the key ~ at line 1, column 1."
         let nanKeys = parseRoot ".nan: 1\n.NaN: 2\n"
-        let nanMessage = "The key .NaN occurs twice, at line 1, column 1 and at line 2, column 1."
+        let nanMessage = "The key .NaN at line 2, column 1 repeats the key .nan at line 1, column 1."
         expectError (Decode.map Decode.float Decode.int) nanKeys [] (span 2 1 2 5) nanMessage
         expectError (Decode.dict Decode.float Decode.int) nanKeys [] (span 2 1 2 5) nanMessage
         // The empty key of a missing key is a null key too.
-        expectError (Decode.map nullKey Decode.int) (parseRoot "? \n: 1\n~: 2\n") [] (span 3 1 3 2) "The key ~ occurs twice"
+        expectError (Decode.map nullKey Decode.int) (parseRoot "? \n: 1\n~: 2\n") [] (span 3 1 3 2) "The key ~ at line 3, column 1 repeats the empty key at line 1"
+        // Two distinct YAML keys that the key decoder turns into null or NaN collide after decoding.
+        let toNull (_: YamlNode) : string option = None
+        let toNaN (_: YamlNode) : float = System.Double.NaN
+        let distinct = parseRoot "a: 1\nb: 2\n"
+        expectError (Decode.map toNull Decode.int) distinct [] (span 2 1 2 2) "Distinct YAML keys decode to the same map key: the plain scalar \"a\""
+        expectError (Decode.map toNaN Decode.int) distinct [] (span 2 1 2 2) "Distinct YAML keys decode to the same map key"
+        expectError (Decode.dict toNaN Decode.int) distinct [] (span 2 1 2 2) "Distinct YAML keys decode to the same map key"
         // One null key is a key in a map, and one NaN key is a key in a dictionary.
         Expect.equal (Decode.map nullKey Decode.int (parseRoot "~: 1\na: 2\n")) (Map [ None, 1; Some "a", 2 ]) "One null key in a map"
         let dictionary = Decode.dict Decode.float Decode.int (parseRoot ".nan: 1\n1.5: 2\n")
         Expect.equal dictionary.Count 2 "One NaN key in a dictionary"
         Expect.isTrue (dictionary |> Seq.exists (fun pair -> System.Double.IsNaN pair.Key && pair.Value = 1)) "The NaN key keeps its value"
+        // .NET finds the NaN key again. The Dictionary of Fable never does, as the documentation of Decode.dict says, so the other targets enumerate.
+#if !FABLE_COMPILER
+        Expect.equal dictionary.[System.Double.NaN] 1 "A lookup finds the NaN key on .NET"
+#endif
 
     // A .NET dictionary has no null key, so the decoder reports it on every target.
     testCase "a dictionary rejects a key that decodes to null on every target" <| fun _ ->
@@ -746,8 +851,9 @@ let private getterTests = testList "Decode.object" [
 
     testCase "Required.Field puts the name of the field in the path of an error" <| fun _ ->
         expectError (Decode.object (fun get -> get.Required.Field "a" Decode.int)) (parseRoot "a: x\n") [ "a" ] (span 1 4 1 5) "Expected an int"
-        // A missing value is the empty text for the string decoder and a null for the option decoder.
-        Expect.equal (Decode.object (fun get -> get.Required.Field "label" Decode.string) (parseRoot "label:\n")) "" "The empty text"
+        // A missing value is an error for the string decoder, the empty text for the text decoder and a null for the option decoder.
+        expectError (Decode.object (fun get -> get.Required.Field "label" Decode.string)) (parseRoot "label:\n") [ "label" ] (span 1 7 1 7) "Expected a string, found a missing value."
+        Expect.equal (Decode.object (fun get -> get.Required.Field "label" Decode.scalarText) (parseRoot "label:\n")) "" "The empty text"
         Expect.equal (Decode.object (fun get -> get.Required.Field "label" (Decode.option Decode.string)) (parseRoot "label:\n")) None "The option decoder reads it as None"
         expectError (Decode.object (fun get -> get.Required.Field "label" Decode.int)) (parseRoot "label:\n") [ "label" ] (span 1 7 1 7) "found a missing value."
 
@@ -784,6 +890,18 @@ let private getterTests = testList "Decode.object" [
 
     testCase "Optional.Field puts the name of the field in the path of an error" <| fun _ ->
         expectError (Decode.object (fun get -> get.Optional.Field "a" Decode.int)) (parseRoot "a: x\n") [ "a" ] (span 1 4 1 5) "Expected an int"
+
+    // yaml@2.6.1 reads `label: 5` as the int 5, `label: ""` as the empty string, `label: "5"` as the string 5 and `label:` as null.
+    testCase "Optional.Field with the string decoder reads None for a null and rejects a number" <| fun _ ->
+        let strict = Decode.object (fun get -> get.Optional.Field "label" Decode.string)
+        expectError strict (parseRoot "label: 5\n") [ "label" ] (span 1 8 1 9) "Expected a string, found the plain scalar \"5\", which resolves to !!int."
+        Expect.equal (strict (parseRoot "label: \"\"\n")) (Some "") "A quoted empty text is the empty string"
+        Expect.equal (strict (parseRoot "label: \"5\"\n")) (Some "5") "A quoted number is a string"
+        Expect.equal (strict (parseRoot "label:\n")) None "A missing value is None"
+        let text = Decode.object (fun get -> get.Optional.Field "label" Decode.scalarText)
+        Expect.equal (text (parseRoot "label: 5\n")) (Some "5") "The text decoder reads the number"
+        Expect.equal (text (parseRoot "label:\n")) None "The getter hides the null from the text decoder too"
+        Expect.equal (text (parseRoot "label: ~\n")) None "A null spelling is None"
 
     // yaml@2.6.1 reads the document as the three top-level fields and a list of three packages, one of them without a version.
     testCase "nested objects read a typed value" <| fun _ ->
@@ -844,18 +962,35 @@ let private getterTests = testList "Decode.object" [
 
     testCase "a field name that occurs twice is an error that names both" <| fun _ ->
         let decoder = Decode.object (fun get -> get.Optional.Field "b" Decode.int)
-        expectError decoder (parseRoot "a: 1\nb: 2\na: 3\n") [] (span 3 1 3 2) "The field a occurs twice, at line 1, column 1 and at line 3, column 1."
+        expectError decoder (parseRoot "a: 1\nb: 2\na: 3\n") [] (span 3 1 3 2) "The key a occurs twice, at line 1, column 1 and at line 3, column 1."
         // The spelling of the name does not matter, only its text.
-        expectError decoder (parseRoot "a: 1\n\"a\": 2\n") [] (span 2 1 2 4) "The field a occurs twice, at line 1, column 1 and at line 2, column 1."
+        expectError decoder (parseRoot "a: 1\n\"a\": 2\n") [] (span 2 1 2 4) "The key a occurs twice, at line 1, column 1 and at line 2, column 1."
+        expectError decoder (parseRoot "a: 1\n!!str a: 2\n") [] (span 2 1 2 8) "The key a occurs twice, at line 1, column 1 and at line 2, column 1."
         let constructed = YamlNode.mapping [ YamlNode.entry (sc "a") (sc "1"); YamlNode.entry (sc "a") (sc "2") ]
-        expectError decoder constructed [] None "The field a occurs twice, at an earlier entry and at a later entry."
+        expectError decoder constructed [] None "The key a occurs twice, at an earlier entry and at a later entry."
+        // Two keys of another type that are the same value are reported before the field names are read.
+        expectError decoder (parseRoot "1: a\n0x1: b\n") [] (span 2 1 2 4) "The key 0x1 at line 2, column 1 repeats the key 1 at line 1, column 1."
 
-    testCase "a field name must be a scalar" <| fun _ ->
+    // yaml@2.6.1 reads the keys 1, true, null and `!!int 1` by the core schema and `"1"` as the string. It turns the sequence key of `? - a` into a string.
+    testCase "a field name must be a string" <| fun _ ->
         let decoder = Decode.object (fun get -> get.Optional.Field "a" Decode.int)
-        expectError decoder (parseRoot "? - a\n: v\n") [] (span 1 3 1 6) "Expected a scalar as a field name, found a sequence."
+        expectError decoder (parseRoot "? - a\n: v\n") [] (span 1 3 1 6) "Expected a string as a field name, found a sequence."
         expectError decoder (parseRoot "&x a: 1\n*x : 2\n") [] (span 2 1 2 3) "The alias *x at line 2, column 1"
+        expectError decoder (parseRoot "1: a\n") [] (span 1 1 1 2) "Expected a string as a field name, found the plain scalar \"1\", which resolves to !!int."
+        expectError decoder (parseRoot "true: a\n") [] (span 1 1 1 5) "found the plain scalar \"true\", which resolves to !!bool."
+        expectError decoder (parseRoot "null: a\n") [] (span 1 1 1 5) "found the plain scalar \"null\", which resolves to !!null."
+        expectError decoder (parseRoot "? \n: a\n") [] (span 1 2 1 2) "Expected a string as a field name, found a missing value."
+        expectError decoder (parseRoot "!!int 1: a\n") [] (span 1 1 1 8) "found the plain scalar \"1\" with the tag !!int."
+        expectError decoder (parseRoot "!foo a: 1\n") [] (span 1 1 1 7) "found the plain scalar \"a\" with the tag !foo."
+        // The int 1 and the string "1" are distinct YAML keys, so the mapping is valid YAML, and the int is no field name.
+        expectError decoder (parseRoot "1: a\n\"1\": b\n") [] (span 1 1 1 2) "Expected a string as a field name, found the plain scalar \"1\""
+        Expect.equal (Decode.object (fun get -> get.Required.Field "1" Decode.string) (parseRoot "\"1\": b\n")) "b" "A quoted 1 is the field 1"
+        Expect.equal (Decode.object (fun get -> get.Required.Field "1" Decode.string) (parseRoot "!!str 1: b\n")) "b" "!!str 1 is the field 1"
+        Expect.equal (Decode.object (fun get -> get.Required.Field "yes" Decode.string) (parseRoot "yes: b\n")) "b" "yes is a string in YAML 1.2"
         // The names are checked when the object is read, whichever fields the builder asks for.
-        expectError (Decode.object (fun _ -> 0)) (parseRoot "? - a\n: v\n") [] (span 1 3 1 6) "a scalar as a field name"
+        expectError (Decode.object (fun _ -> 0)) (parseRoot "? - a\n: v\n") [] (span 1 3 1 6) "a string as a field name"
+        // Decode.entries keeps every key, so a mapping with other keys reads through it.
+        Expect.equal (Decode.entries (parseRoot "1: a\ntrue: b\n")).Length 2 "The entries of a mapping with an int key and a bool key"
 ]
 
 // -------------------------------------------------------------------------------------------------------------------
@@ -929,7 +1064,8 @@ let private oldSuiteTests = testList "Tests of the old suite" [
                 get.Required.Field "tags" (Decode.list Decode.string),
                 get.Required.Field "summary" Decode.string,
                 get.Required.Field "parameters" (Decode.list decodeParameter),
-                get.Required.Field "responses" (Decode.object (fun r -> r.Required.Field "200" (Decode.object (fun ok -> ok.Required.Field "description" Decode.string)))))
+                // The plain key 200 is an int, so the responses read as a map with int keys.
+                get.Required.Field "responses" (Decode.map Decode.int (Decode.object (fun ok -> ok.Required.Field "description" Decode.string))) |> Map.find 200)
         let decoded =
             parseRoot yaml
             |> Decode.object (fun root ->
@@ -959,9 +1095,201 @@ let private oldSuiteTests = testList "Tests of the old suite" [
         Expect.equal decoded ([ "participants" ], [ ("id", "path") ]) "The operation behind the braces key"
 ]
 
+// -------------------------------------------------------------------------------------------------------------------
+// The identity of keys
+
+/// The mapping with the two keys as explicit keys, so that any key text of one line fits.
+let private twoKeys (first: string) (second: string) : YamlNode = parseRoot ("? " + first + "\n: 1\n? " + second + "\n: 2\n")
+
+/// True when the check of the keys finds the two keys equal. Any other error fails the test.
+let private sameKey (first: string) (second: string) : bool =
+    match Decode.tryDecode (Decode.uniqueKeys Decode.node) (twoKeys first second) with
+    | Ok _ -> false
+    | Error error ->
+        if error.Message.Contains("occurs twice") || error.Message.Contains("repeats") then
+            true
+        else
+            failwith (sprintf "%s and %s: %s" first second error.Message)
+
+/// True when the decoder accepts the node.
+let private passes (decoder: Decoder<'T>) (node: YamlNode) : bool =
+    match Decode.tryDecode decoder node with
+    | Ok _ -> true
+    | Error _ -> false
+
+/// Every two keys of the group are one key.
+let private expectOneKey (group: string list) =
+    for first in group do
+        for second in group do
+            Expect.isTrue (sameKey first second) (sprintf "%s and %s are one key" first second)
+
+/// Every two keys of the list are distinct keys.
+let private expectDistinctKeys (keys: string list) =
+    let indexed = List.indexed keys
+    for (i, first) in indexed do
+        for (j, second) in indexed do
+            if i <> j then
+                Expect.isFalse (sameKey first second) (sprintf "%s and %s are distinct keys" first second)
+
+/// A sequence or a mapping of one entry, nested `depth` levels around the scalar.
+let private deepSequence (depth: int) (leaf: string) : YamlNode =
+    let mutable node = sc leaf
+    for _ in 1 .. depth do
+        node <- flowSeq [ node ]
+    node
+
+let private deepMapping (depth: int) (leaf: string) : YamlNode =
+    let mutable node = sc leaf
+    for _ in 1 .. depth do
+        node <- YamlNode.mapping [ YamlNode.entry (sc "k") node ]
+    node
+
+let private keyIdentityTests = testList "The identity of keys" [
+    // yaml@2.6.1 with { intAsBigInt: true } finds each pair of these ints a DUPLICATE_KEY, also the 30 digits and their hexadecimal spelling.
+    testCase "an int is one key in every radix, sign and size" <| fun _ ->
+        expectOneKey [ "1"; "0x1"; "0o1"; "+1"; "01"; "!!int 1"; "!!int \"0x1\""; "!!int '+001'" ]
+        expectOneKey [ "0"; "-0"; "+0"; "000"; "0x0"; "0o0"; "!!int -0" ]
+        expectOneKey [ "123456789012345678901234567890"; "0x18ee90ff6c373e0ee4e3f0ad2"; "0x18EE90FF6C373E0EE4E3F0AD2"; "0o143564417755415637016711617605322"; "+000123456789012345678901234567890" ]
+        expectOneKey [ "-123456789012345678901234567890"; "-0123456789012345678901234567890" ]
+        expectDistinctKeys [ "1"; "2"; "-1"; "123456789012345678901234567890"; "123456789012345678901234567891"; "-123456789012345678901234567890"; "0x10"; "0o10"; "10" ]
+
+    // yaml@2.6.1 finds 1.0, 1.00, 10e-1 and 0.1e1 duplicates, and 0.0 and -0.0. It finds `!!float 1` distinct from 1.0 and `!!float 0` distinct from 0.0, and
+    // 1e400 and 1e401 duplicates, because both are Infinity. The identity here is the exact decimal value, so 1e400 and 1e401 differ, and so do 1e-400 and
+    // 2e-400, which both round to zero.
+    testCase "a float is one key for its exact decimal value" <| fun _ ->
+        expectOneKey [ "1.0"; "1.00"; "10e-1"; "0.1e1"; "100E-2"; "+1.0"; "1."; "!!float 1"; "!!float \"1.0\"" ]
+        expectOneKey [ "0.0"; "-0.0"; "+0.0"; ".0"; "0e5"; "-0e-5"; "!!float 0"; "!!float -0" ]
+        expectOneKey [ "-2.5"; "-25e-1"; "-0.25E1" ]
+        expectOneKey [ "1e100000000000000000000"; "10e99999999999999999999"; "0.1e100000000000000000001"; "100000e99999999999999999995" ]
+        expectOneKey [ "1e-100000000000000000000"; "0.01e-99999999999999999998"; "10e-100000000000000000001" ]
+        expectOneKey [ "123456789012345678901234567890.5"; "1234567890123456789012345678905e-1" ]
+        expectDistinctKeys [ "1.0"; "1.1"; "-1.0"; "1e400"; "1e401"; "1e-400"; "2e-400"; "0.1"; "0.10000000000000001"; "1e100000000000000000000"; "1e100000000000000000001" ]
+
+    // yaml@2.6.1 finds .inf, .Inf, .INF and +.inf duplicates. It finds two spellings of .nan distinct, because NaN differs from itself in JavaScript.
+    testCase "the infinities and not-a-number are one key each" <| fun _ ->
+        expectOneKey [ ".inf"; ".Inf"; ".INF"; "+.inf"; "!!float .inf" ]
+        expectOneKey [ "-.inf"; "-.Inf"; "-.INF" ]
+        expectOneKey [ ".nan"; ".NaN"; ".NAN"; "!!float .nan" ]
+        expectDistinctKeys [ ".inf"; "-.inf"; ".nan"; "0.0" ]
+
+    // yaml@2.6.1 finds null, ~, Null and the empty key duplicates, and the spellings of true.
+    testCase "every null spelling is one key and so is every spelling of a bool" <| fun _ ->
+        expectOneKey [ "null"; "~"; "Null"; "NULL"; ""; "!!null"; "!!null ~"; "!!null \"\""; "!!null 'null'" ]
+        expectOneKey [ "true"; "True"; "TRUE"; "!!bool true"; "!!bool \"True\"" ]
+        expectOneKey [ "false"; "False"; "FALSE"; "!!bool FALSE" ]
+        expectDistinctKeys [ "null"; "true"; "false"; "\"null\""; "\"true\""; "\"\"" ]
+
+    // yaml@2.6.1 finds a, 'a', "a", `!!str a` and `! a` duplicates.
+    testCase "a string is one key for its cooked text in every style" <| fun _ ->
+        expectOneKey [ "a"; "'a'"; "\"a\""; "!!str a"; "! a"; "!<tag:yaml.org,2002:str> a"; "\"\\x61\"" ]
+        expectOneKey [ "\"1\""; "'1'"; "!!str 1"; "! 1" ]
+        expectOneKey [ "\"\""; "''"; "!!str"; "!" ]
+        expectDistinctKeys [ "a"; "A"; "\"a \""; "\"01\""; "\"1\"" ]
+
+    // yaml@2.6.1 finds the int 1, the string "1", the float 1.0 and the bool true distinct, and the int 0 distinct from the float 0.0.
+    testCase "the tag keeps the types apart" <| fun _ ->
+        expectDistinctKeys [ "1"; "\"1\""; "1.0"; "true"; "0"; "0.0"; "null"; "\"null\""; "!foo 1"; "!bar 1"; "!!binary 1"; "[1]"; "{1: 1}" ]
+
+    // yaml@2.6.1 finds `!foo 1` and `!foo 01` distinct. A tag that is no tag of the core schema compares by its expanded identifier and the cooked text.
+    testCase "a scalar under another tag is one key for its tag and its cooked text" <| fun _ ->
+        expectOneKey [ "!foo a"; "!foo 'a'"; "!<!foo> a" ]
+        expectOneKey [ "!!binary abc"; "!<tag:yaml.org,2002:binary> abc" ]
+        expectDistinctKeys [ "!foo 1"; "!foo 01"; "!foo a"; "!bar a"; "a" ]
+        // A %TAG directive spells the same tag with a handle.
+        let directive = parseRoot "%TAG !e! tag:example.com,2000:\n---\n? !e!x a\n: 1\n? !<tag:example.com,2000:x> a\n: 2\n"
+        expectError (Decode.uniqueKeys Decode.node) directive [] (span 5 3 5 30) "The key a occurs twice"
+
+    // yaml@2.6.1 compares a collection key by its object and finds [1, a] and [0x1, 'a'] distinct, and {a: 1, b: 2} and {b: 2, a: 1}. YAML 1.2.2 compares the
+    // items of a sequence in order and the entries of a mapping in any order (section 3.2.1.3).
+    testCase "a sequence key compares its items in order and a mapping key its entries in any order" <| fun _ ->
+        expectOneKey [ "[1, a]"; "[0x1, 'a']"; "!!seq [1, a]"; "! [+1, \"a\"]" ]
+        expectOneKey [ "[]"; "!!seq []" ]
+        expectOneKey [ "{a: 1, b: 2}"; "{b: 2, a: 1}"; "{\"b\": 02, a: +1}"; "!!map {b: 2, a: 1}" ]
+        expectOneKey [ "{a: [1, {b: c}]}"; "{a: [0x1, {'b': c}]}" ]
+        expectOneKey [ "!foo [1]"; "!foo [0x1]" ]
+        expectDistinctKeys [ "[1, a]"; "[a, 1]"; "[1]"; "[1, 1]"; "[]"; "{}"; "{a: 1}"; "{a: 2}"; "{a: 1, b: 2}"; "!foo [1]"; "[[1]]" ]
+
+    // yaml@2.6.1 reads `!!int nonsense` as the string with TAG_RESOLVE_FAILED. Here an explicit tag of the core schema needs a text of its type and a node of its kind.
+    testCase "an explicit tag of the core schema needs a text of its type and a node of its kind" <| fun _ ->
+        let check = Decode.uniqueKeys Decode.node
+        expectError check (parseRoot "!!int nonsense: 1\n") [] (span 1 1 1 15) "The tag !!int needs an int of the core schema, found \"nonsense\"."
+        expectError check (parseRoot "!!float 0x1: 1\n") [] (span 1 1 1 12) "The tag !!float needs a float of the core schema, found \"0x1\"."
+        expectError check (parseRoot "!!bool yes: 1\n") [] (span 1 1 1 11) "The tag !!bool needs true, True, TRUE, false, False or FALSE, found \"yes\"."
+        expectError check (parseRoot "!!null foo: 1\n") [] (span 1 1 1 11) "The tag !!null needs null, Null, NULL, ~ or an empty text, found \"foo\"."
+        expectError check (parseRoot "!!seq a: 1\n") [] (span 1 1 1 8) "The tag !!seq needs a sequence, found \"a\"."
+        expectError check (parseRoot "!!map a: 1\n") [] (span 1 1 1 8) "The tag !!map needs a mapping, found \"a\"."
+        expectError check (parseRoot "? !!str [a]\n: 1\n") [] (span 1 3 1 12) "The tag !!str needs a scalar, found a sequence."
+        expectError check (parseRoot "? !!map [a]\n: 1\n") [] (span 1 3 1 12) "The tag !!map needs a mapping, found a sequence."
+        expectError check (parseRoot "? !!seq {a: 1}\n: 1\n") [] (span 1 3 1 15) "The tag !!seq needs a sequence, found a mapping."
+        expectError check (parseRoot "? [!!int x]\n: 1\n") [] (span 1 4 1 11) "The tag !!int needs an int of the core schema"
+
+    // yaml@2.6.1 resolves an alias key to its value. Aliases stay symbolic here, so an alias as a key or inside a key is an error.
+    testCase "an alias as a key or inside a key is an error at the alias" <| fun _ ->
+        let check = Decode.uniqueKeys Decode.node
+        expectError check (parseRoot "&a x: 1\n*a : 2\n") [] (span 2 1 2 3) "The alias *a at line 2, column 1 cannot be read as a value."
+        expectError check (parseRoot "&a x: 1\n[*a]: 2\n") [] (span 2 2 2 4) "The alias *a at line 2, column 2"
+        expectError check (parseRoot "&a x: 1\n{k: *a}: 2\n") [] (span 2 5 2 7) "The alias *a at line 2, column 5"
+        // An alias as a value is no key, so the check passes it.
+        Expect.isTrue (passes check (parseRoot "a: &x {k: 1}\nb: *x\n")) "An alias value"
+
+    // yaml@2.6.1 rejects the mapping inside the key with DUPLICATE_KEY.
+    testCase "a mapping inside a key with two equal keys is an error at the second one" <| fun _ ->
+        let check = Decode.uniqueKeys Decode.node
+        expectError check (parseRoot "? {a: 1, a: 2}\n: v\n") [] (span 1 10 1 11) "The key a occurs twice, at line 1, column 4 and at line 1, column 10."
+        expectError check (parseRoot "? [{1: 1, 0x1: 2}]\n: v\n") [] (span 1 11 1 14) "The key 0x1 at line 1, column 11 repeats the key 1 at line 1, column 5."
+
+    testCase "a collection key nested 10000 levels deep needs no deep call stack" <| fun _ ->
+        let check = Decode.uniqueKeys Decode.node
+        let sequences = YamlNode.mapping [ YamlNode.entry (deepSequence 10000 "a") (sc "1"); YamlNode.entry (deepSequence 10000 "a") (sc "2") ]
+        expectError check sequences [] None "The key (sequence) occurs twice, at an earlier entry and at a later entry."
+        let differ = YamlNode.mapping [ YamlNode.entry (deepSequence 10000 "a") (sc "1"); YamlNode.entry (deepSequence 10000 "b") (sc "2") ]
+        Expect.isTrue (passes check differ) "Two deep sequences that differ at the bottom"
+        let mappings = YamlNode.mapping [ YamlNode.entry (deepMapping 10000 "a") (sc "1"); YamlNode.entry (deepMapping 10000 "a") (sc "2") ]
+        expectError check mappings [] None "The key (mapping) occurs twice"
+        expectError (Decode.object (fun _ -> 0)) mappings [] None "The key (mapping) occurs twice"
+]
+
+let private uniqueKeysTests = testList "Decode.uniqueKeys" [
+    // yaml@2.6.1 rejects the repeated x inside the ignored value b with DUPLICATE_KEY.
+    testCase "finds a repeated key in a value that the decoder ignores" <| fun _ ->
+        let text = "a: 1\nb:\n  - x: 1\n    y: 2\n    x: 3\n"
+        let decoder = Decode.object (fun get -> get.Required.Field "a" Decode.int)
+        Expect.equal (decoder (parseRoot text)) 1 "The decoder alone reads the field"
+        expectError (Decode.uniqueKeys decoder) (parseRoot text) [ "{b}"; "[0]" ] (span 5 5 5 6) "The key x occurs twice, at line 3, column 5 and at line 5, column 5."
+
+    testCase "returns what the decoder returns when every mapping has distinct keys" <| fun _ ->
+        let decoder = Decode.object (fun get -> get.Required.Field "a" Decode.int)
+        Expect.equal (Decode.uniqueKeys decoder (parseRoot "a: 1\nb: {x: 1, y: [{x: 2}]}\n")) 1 "The value"
+        let node = parseRoot "a: 1\n"
+        Expect.isTrue (LanguagePrimitives.PhysicalEquality (Decode.uniqueKeys Decode.node node) node) "The node decoder returns the node"
+        // An error of the decoder comes after the check.
+        expectError (Decode.uniqueKeys decoder) (parseRoot "a: x\n") [ "a" ] (span 1 4 1 5) "Expected an int"
+
+    testCase "checks a mapping before the mappings inside it, and the mappings in the order of the text" <| fun _ ->
+        let nested = "a:\n  x: 1\n  x: 2\nb:\n  y: 1\n  y: 2\n"
+        expectError (Decode.uniqueKeys Decode.node) (parseRoot (nested + "0x1: c\n1: d\n")) [] (span 8 1 8 2) "The key 1 at line 8, column 1 repeats the key 0x1 at line 7, column 1."
+        expectError (Decode.uniqueKeys Decode.node) (parseRoot nested) [ "{a}" ] (span 3 3 3 4) "The key x occurs twice, at line 2, column 3 and at line 3, column 3."
+        expectError (Decode.uniqueKeys Decode.node) (parseRoot "a: [{k: 1}, {k: 1, k: 2}]\n") [ "{a}"; "[1]" ] (span 1 20 1 21) "The key k occurs twice"
+
+    testCase "walks a value nested 10000 levels deep with its own stack" <| fun _ ->
+        let mutable node = YamlNode.mapping [ YamlNode.entry (sc "x") (sc "1"); YamlNode.entry (sc "x") (sc "2") ]
+        for _ in 1 .. 10000 do
+            node <- YamlNode.mapping [ YamlNode.entry (sc "k") (flowSeq [ node ]) ]
+        let error = decodeError (Decode.uniqueKeys Decode.node) node
+        Expect.equal error.Path.Length 20000 "A field and an item for each level"
+        Expect.equal error.Path.Head "{k}" "The path starts at the root"
+        Expect.equal (List.last error.Path) "[0]" "The path ends at the item that holds the mapping"
+        Expect.stringContains error.Message "The key x occurs twice" "The message"
+
+    // yaml@2.6.1 reports the repeated key while it parses. The presentation checks of Validate do not look at the values of keys.
+    testCase "Validate.document keeps its presentation checks" <| fun _ ->
+        Expect.equal (Validate.document (parseDocument "a: 1\na: 2\n")) [] "A repeated key breaks no rule of the presentation"
+]
+
 let Main =
     testList "Decode" [
         stringTests
+        scalarTextTests
         kindTests
         intTests
         floatTests
@@ -974,6 +1302,8 @@ let Main =
         tupleTests
         valuesTests
         mapTests
+        keyIdentityTests
+        uniqueKeysTests
         nodeTests
         getterTests
         flowTests

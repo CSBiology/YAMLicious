@@ -70,7 +70,9 @@ printfn "%A" (docValidation.Packages |> List.map (fun package -> package.Name, p
 [("package1", Some "1.0.0"); ("package2", Some "2.0.0"); ("package3", None)]
 ```
 
-The scalar decoders follow the YAML 1.2 core schema. A plain `1` is an int and a quoted `"1"` is a string. `yes` is a string too, and `Decode.string` reads the text of any scalar. `CoreSchema.resolveKind` gives a plain scalar text its core schema kind whatever its size, and `CoreSchema.integerToFloat` converts an integer text of any size and radix to the nearest float.
+The scalar decoders follow the YAML 1.2 core schema. A plain `1` is an int and a quoted `"1"` is a string. `yes` is a string too. `Decode.string` reads a string of the core schema, so it rejects a plain `1`, `true` or `null` and a missing value, and `Decode.scalarText` reads the text of any scalar. `CoreSchema.resolveKind` gives a plain scalar text its core schema kind whatever its size, and `CoreSchema.integerToFloat` converts an integer text of any size and radix to the nearest float.
+
+The keys of a mapping are YAML values. The decoders of a whole mapping reject two keys that are the same value in any spelling, such as `1` and `0x1` or `1.0` and `10e-1`, and `Decode.object` reads string keys only. `Decode.uniqueKeys decoder` checks every mapping of a node, also the ones that the decoder skips, before the decoder runs.
 
 ### Errors with positions
 
