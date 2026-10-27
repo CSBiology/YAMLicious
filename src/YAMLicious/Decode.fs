@@ -955,7 +955,9 @@ module Decode =
                 result.[key] <- value
             result
 
-    /// The entries of a mapping in source order, with their comments and spans.
+    /// The entries of a mapping in source order, with their comments and spans. The decoder returns every entry as
+    /// written, repeated keys included. `uniqueKeys` checks the keys of a node, and `object` checks them as it decodes,
+    /// like `map` and `dict`.
     let entries (node: YamlNode) : MappingEntry list = mappingEntries "a mapping" node
 
     /// The node itself. It also accepts an alias.
