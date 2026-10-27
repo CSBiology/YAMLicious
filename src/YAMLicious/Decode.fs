@@ -262,7 +262,7 @@ module internal DecodeSupport =
     //
     // A key node has a token, a string that two keys share exactly when they are equal YAML values (YAML 1.2.2,
     // section 3.2.1.3). The first character tells the kind. A string is "s" and its cooked text, a null is "n", a
-    // bool is "btrue" or "bfalse", an int is "i" and the digits of `CoreSchema.canonicalInteger`, and a float is
+    // bool is "btrue" or "bfalse", an int is "i" and its name in `CoreSchema.IntegerNames`, and a float is
     // "f" and the form of `CoreSchema.canonicalFloat`. A scalar under any other tag is "x", the length of the tag,
     // a colon, the tag and the cooked text. A collection is "q" for a sequence or "m" for a mapping, then its tag in the same
     // way and the numbers of the tokens of its children in an index that the check shares. A sequence lists them in
@@ -270,6 +270,14 @@ module internal DecodeSupport =
     // entries does not count. Every part has its length or its end, so no two values share a token.
 
     let private coreTag (suffix: string) : string = YamlTag.coreNamespace + suffix
+
+    /// The state that the tokens of one check share. `Numbers` numbers the tokens of the children of collection
+    /// keys, and `Integers` names the ints, so the token of an int costs time that grows with its length except
+    /// for the one conversion that `CoreSchema.IntegerNames` describes.
+    [<Sealed>]
+    type KeyIndex() =
+        member val Numbers = Dictionary<string, int>()
+        member val Integers = CoreSchema.IntegerNames()
 
     let private scalarTagSuffixes = [ "str"; "null"; "bool"; "int"; "float" ]
 
@@ -296,7 +304,7 @@ module internal DecodeSupport =
         fail message second
 
     /// The token of a scalar key. A tag of the core schema needs a text of its type.
-    let private scalarToken (node: YamlNode) (scalar: YamlScalar) : string =
+    let private scalarToken (integers: CoreSchema.IntegerNames) (node: YamlNode) (scalar: YamlScalar) : string =
         let text = scalar.Value
         if CoreSchema.isString node.Properties.Tag scalar then
             "s" + text
@@ -321,8 +329,8 @@ module internal DecodeSupport =
                 | "false" | "False" | "FALSE" -> "bfalse"
                 | _ -> wrong "true, True, TRUE, false, False or FALSE"
             elif identifier = coreTag "int" then
-                match CoreSchema.canonicalInteger text with
-                | Some digits -> "i" + digits
+                match integers.Name text with
+                | Some name -> "i" + name
                 | None -> wrong "an int of the core schema"
             elif identifier = coreTag "float" then
                 match CoreSchema.canonicalFloat text with
@@ -361,7 +369,8 @@ module internal DecodeSupport =
 
     /// The token of a key node of any depth. The walk keeps its own stack. A mapping inside the key that holds two
     /// equal keys is an error at the second one, and so is an alias.
-    let private nodeToken (interned: Dictionary<string, int>) (root: YamlNode) : string =
+    let private nodeToken (index: KeyIndex) (root: YamlNode) : string =
+        let interned = index.Numbers
         let numberOf (token: string) : int =
             match interned.TryGetValue token with
             | true, number -> number
@@ -378,7 +387,7 @@ module internal DecodeSupport =
             match step with
             | TokenStep.Visit node ->
                 match node.Kind with
-                | YamlNodeKind.Scalar scalar -> tokens.Add(scalarToken node scalar)
+                | YamlNodeKind.Scalar scalar -> tokens.Add(scalarToken index.Integers node scalar)
                 | YamlNodeKind.Alias name -> failAlias name node
                 | YamlNodeKind.Sequence collection ->
                     let items = List.toArray collection.Items
@@ -421,17 +430,16 @@ module internal DecodeSupport =
         tokens.[0]
 
     /// The tokens of the keys of the entries, in their order. Two keys with the same token are an error at the
-    /// second one. `interned` numbers the tokens of the children of collection keys, and a walk over many mappings
-    /// can share it.
-    let keyTokens (interned: Dictionary<string, int>) (entries: MappingEntry[]) : string[] =
+    /// second one. A walk over many mappings can share the index.
+    let keyTokens (index: KeyIndex) (entries: MappingEntry[]) : string[] =
         let tokens: string[] = Array.zeroCreate entries.Length
         let first = Dictionary<string, int>()
         for i in 0 .. entries.Length - 1 do
             let key = entries.[i].Key
             let token =
                 match key.Kind with
-                | YamlNodeKind.Scalar scalar -> scalarToken key scalar
-                | _ -> nodeToken interned key
+                | YamlNodeKind.Scalar scalar -> scalarToken index.Integers key scalar
+                | _ -> nodeToken index key
             if first.ContainsKey token then
                 failRepeatedKey entries.[first.[token]].Key key
             first.[token] <- i
@@ -466,7 +474,7 @@ module internal DecodeSupport =
     /// through the values and the items with its own stack, and the token of a collection key checks the mappings
     /// inside that key.
     let checkKeysBelow (root: YamlNode) : unit =
-        let interned = Dictionary<string, int>()
+        let index = KeyIndex()
         let stack = ResizeArray<YamlNode * KeyWalkPlace option>()
         stack.Add((root, None))
         while stack.Count > 0 do
@@ -476,7 +484,7 @@ module internal DecodeSupport =
             | YamlNodeKind.Mapping collection ->
                 let entries = List.toArray collection.Items
                 try
-                    keyTokens interned entries |> ignore
+                    keyTokens index entries |> ignore
                 with YamlDecodeException error ->
                     raise (YamlDecodeException { error with Path = pathOf place @ error.Path })
                 for i in entries.Length - 1 .. -1 .. 0 do
@@ -507,7 +515,7 @@ module internal DecodeSupport =
         (node: YamlNode)
         : ResizeArray<'K * 'V> =
         let entries = List.toArray (mappingEntries "a mapping" node)
-        keyTokens (Dictionary<string, int>()) entries |> ignore
+        keyTokens (KeyIndex()) entries |> ignore
         let pairs = ResizeArray<'K * 'V>()
         let seen = Dictionary<PairKey<'K>, YamlNode>()
         for entry in entries do
@@ -688,7 +696,7 @@ module Decode =
     let private createGetters (mapping: YamlNode) : IGetters =
         let entryList = mappingEntries "a mapping" mapping
         let entries = List.toArray entryList
-        let tokens = keyTokens (Dictionary<string, int>()) entries
+        let tokens = keyTokens (KeyIndex()) entries
         let names: string[] = Array.zeroCreate entries.Length
         let index = Dictionary<string, int>()
         for i in 0 .. entries.Length - 1 do

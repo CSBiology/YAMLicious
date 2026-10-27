@@ -401,12 +401,69 @@ module CoreSchema =
                 | _ -> negativeB, subtractMagnitudes magnitudeB magnitudeA
         if negative && magnitude <> "0" then "-" + magnitude else magnitude
 
+    /// The hexadecimal digits of an octal or hexadecimal text in lower case and without leading zeros, and "0"
+    /// for zero. Octal digits regroup from three bits to four, so the time grows with the length of the text.
+    let private powerOfTwoDigits (text: string) (radix: int) : string =
+        if radix = 16 then
+            withoutLeadingZeros (text.Substring(2).ToLowerInvariant())
+        else
+            let hexDigits = "0123456789abcdef"
+            let reversed = ResizeArray<char>()
+            let mutable bits = 0
+            let mutable count = 0
+            for index in text.Length - 1 .. -1 .. 2 do
+                bits <- bits ||| (digitValue text.[index] <<< count)
+                count <- count + 3
+                while count >= 4 do
+                    reversed.Add hexDigits.[bits &&& 15]
+                    bits <- bits >>> 4
+                    count <- count - 4
+            if count > 0 then
+                reversed.Add hexDigits.[bits]
+            let sb = System.Text.StringBuilder(reversed.Count)
+            for i in reversed.Count - 1 .. -1 .. 0 do
+                sb.Append(reversed.[i]) |> ignore
+            withoutLeadingZeros (sb.ToString())
+
+    /// The decimal digits of hexadecimal digits without leading zeros. Each step multiplies every limb, so the
+    /// time grows with the square of the length.
+    let private decimalOfHex (hex: string) : string =
+        // Little-endian limbs of four decimal digits. A step takes up to three hexadecimal digits, so a limb times
+        // 4096 plus a carry of at most 4096 stays below 2^26 in the 32-bit int of each target.
+        let limbs = ResizeArray<int>()
+        let mutable index = 0
+        let mutable width = if hex.Length % 3 = 0 then 3 else hex.Length % 3
+        while index < hex.Length do
+            let mutable carry = 0
+            for k in index .. index + width - 1 do
+                carry <- carry * 16 + digitValue hex.[k]
+            let factor = 1 <<< (4 * width)
+            for limb in 0 .. limbs.Count - 1 do
+                let product = limbs.[limb] * factor + carry
+                limbs.[limb] <- product % 10000
+                carry <- product / 10000
+            while carry > 0 do
+                limbs.Add(carry % 10000)
+                carry <- carry / 10000
+            index <- index + width
+            width <- 3
+        if limbs.Count = 0 then
+            "0"
+        else
+            let sb = System.Text.StringBuilder()
+            sb.Append(string limbs.[limbs.Count - 1]) |> ignore
+            for limb in limbs.Count - 2 .. -1 .. 0 do
+                let text = string limbs.[limb]
+                sb.Append(String.replicate (4 - text.Length) "0").Append(text) |> ignore
+            sb.ToString()
+
     /// The integer of a core integer text as signed decimal digits: a `-` in front of a negative number, no `+`
     /// and no leading zero. Every zero is "0", and an octal or hexadecimal text converts exactly, so `1`, `+1`,
     /// `01`, `0o1` and `0x1` all give "1". The text has any length. None when `resolveKind` gives no `Integer`
     /// for the text.
     ///
     /// The conversion of an octal or hexadecimal text takes time that grows with the square of its length.
+    /// `IntegerNames` compares ints of any length without that cost.
     let internal canonicalInteger (text: string) : string option =
         match integerRadix text with
         | 0 -> None
@@ -415,27 +472,127 @@ module CoreSchema =
             let start = if text.[0] = '-' || text.[0] = '+' then 1 else 0
             let magnitude = withoutLeadingZeros (text.Substring start)
             Some (if negative && magnitude <> "0" then "-" + magnitude else magnitude)
-        | radix ->
-            // Little-endian limbs of four decimal digits. A limb times 16 plus a carry below 16 stays below 2^18.
-            let limbs = ResizeArray<int>()
-            for index in 2 .. text.Length - 1 do
-                let mutable carry = digitValue text.[index]
-                for limb in 0 .. limbs.Count - 1 do
-                    let product = limbs.[limb] * radix + carry
-                    limbs.[limb] <- product % 10000
-                    carry <- product / 10000
-                while carry > 0 do
-                    limbs.Add(carry % 10000)
-                    carry <- carry / 10000
-            if limbs.Count = 0 then
-                Some "0"
-            else
-                let sb = System.Text.StringBuilder()
-                sb.Append(string limbs.[limbs.Count - 1]) |> ignore
-                for limb in limbs.Count - 2 .. -1 .. 0 do
-                    let text = string limbs.[limb]
-                    sb.Append(String.replicate (4 - text.Length) "0").Append(text) |> ignore
-                Some (sb.ToString())
+        | radix -> Some (decimalOfHex (powerOfTwoDigits text radix))
+
+    // An octal or hexadecimal int of up to 32 hexadecimal digits converts to decimal at a small fixed cost. A
+    // larger one is at least 16^32, which has 39 decimal digits, so a decimal int of up to 38 digits never equals it.
+    let private smallHexDigits = 32
+    let private smallDecimalDigits = 38
+
+    /// log10 16, the decimal digits of one hexadecimal digit.
+    let private decimalDigitsPerHexDigit = 1.2041199826559248
+
+    /// The value of digits in a radix modulo two fixed primes below 2^23, so each step stays below 2^27.
+    let private residues (digits: string) (radix: int) : string =
+        let mutable first = 0
+        let mutable second = 0
+        for index in 0 .. digits.Length - 1 do
+            let digit = digitValue digits.[index]
+            first <- (first * radix + digit) % 8388593
+            second <- (second * radix + digit) % 8388587
+        string first + ":" + string second
+
+    /// The large ints of one residue class of `IntegerNames`. `Names` maps "d" and decimal digits, and "x" and
+    /// hexadecimal digits, to the name of the value. `Unconverted` holds the hexadecimal digits of the octal and
+    /// hexadecimal ints that have no decimal form yet, by their length.
+    [<NoEquality; NoComparison>]
+    type internal IntegerClass =
+        { Names: Collections.Generic.Dictionary<string, string>
+          DecimalLengths: Collections.Generic.HashSet<int>
+          Unconverted: Collections.Generic.Dictionary<int, ResizeArray<string>> }
+
+    /// Names the ints of core integer texts, so that two texts get the same name exactly when they are the same
+    /// int, in any radix and of any length. The name of a value is its signed decimal digits, or "x" and its
+    /// hexadecimal digits when an octal or hexadecimal text of more than 32 significant digits named it first.
+    /// Names compare only within one instance.
+    ///
+    /// `Name` takes time that grows with the length of the text, with one exception. An octal or hexadecimal
+    /// int of more than 32 significant digits converts to decimal when a decimal int of a similar length has the
+    /// same value modulo two fixed primes. The conversion takes time that grows with the square of the length, and
+    /// each value converts at most once in an instance. Equal ints in decimal and in octal or hexadecimal meet that
+    /// condition, and so do ints that someone built to share the residues.
+    [<Sealed>]
+    type internal IntegerNames() =
+        let classes = Collections.Generic.Dictionary<string, IntegerClass>()
+
+        let classOf (key: string) : IntegerClass =
+            match classes.TryGetValue key with
+            | true, found -> found
+            | _ ->
+                let created =
+                    { Names = Collections.Generic.Dictionary<string, string>()
+                      DecimalLengths = Collections.Generic.HashSet<int>()
+                      Unconverted = Collections.Generic.Dictionary<int, ResizeArray<string>>() }
+                classes.[key] <- created
+                created
+
+        // A decimal int of more than 38 digits takes the name of an equal octal or hexadecimal int, or its digits.
+        // The octal and hexadecimal ints of a similar length in its class convert first, each one once.
+        let nameDecimal (digits: string) : string =
+            let entry = classOf (residues digits 10)
+            let length = digits.Length
+            // A number of h hexadecimal digits has more than (h - 1) * log10 16 and at most h * log10 16 + 1
+            // decimal digits. The bounds leave a margin of one for the rounding of the float.
+            let low = int (float (length - 1) / decimalDigitsPerHexDigit) - 1
+            let high = int (float length / decimalDigitsPerHexDigit) + 2
+            for hexLength in low .. high do
+                match entry.Unconverted.TryGetValue hexLength with
+                | true, waiting ->
+                    for hex in waiting do
+                        entry.Names.["d" + decimalOfHex hex] <- entry.Names.["x" + hex]
+                    entry.Unconverted.Remove hexLength |> ignore
+                | _ -> ()
+            entry.DecimalLengths.Add length |> ignore
+            match entry.Names.TryGetValue("d" + digits) with
+            | true, name -> name
+            | _ ->
+                entry.Names.["d" + digits] <- digits
+                digits
+
+        // An octal or hexadecimal int of more than 32 significant digits takes the name of an equal decimal int,
+        // or "x" and its digits. It converts only when its class holds a decimal int of a similar length.
+        let nameHex (hex: string) : string =
+            let entry = classOf (residues hex 16)
+            match entry.Names.TryGetValue("x" + hex) with
+            | true, name -> name
+            | _ ->
+                let length = hex.Length
+                let low = int (float (length - 1) * decimalDigitsPerHexDigit) - 1
+                let high = int (float length * decimalDigitsPerHexDigit) + 2
+                let mutable similar = false
+                for decimalLength in low .. high do
+                    if entry.DecimalLengths.Contains decimalLength then
+                        similar <- true
+                let name =
+                    if similar then
+                        let converted = "d" + decimalOfHex hex
+                        match entry.Names.TryGetValue converted with
+                        | true, name -> name
+                        | _ ->
+                            entry.Names.[converted] <- "x" + hex
+                            "x" + hex
+                    else
+                        match entry.Unconverted.TryGetValue length with
+                        | true, waiting -> waiting.Add hex
+                        | _ -> entry.Unconverted.[length] <- ResizeArray [ hex ]
+                        "x" + hex
+                entry.Names.["x" + hex] <- name
+                name
+
+        /// The name of the int of a core integer text, or None when `resolveKind` gives no `Integer` for the text.
+        member _.Name(text: string) : string option =
+            match integerRadix text with
+            | 0 -> None
+            | 10 ->
+                let negative = text.[0] = '-'
+                let start = if text.[0] = '-' || text.[0] = '+' then 1 else 0
+                let magnitude = withoutLeadingZeros (text.Substring start)
+                if negative && magnitude <> "0" then Some ("-" + magnitude)
+                elif magnitude.Length <= smallDecimalDigits then Some magnitude
+                else Some (nameDecimal magnitude)
+            | radix ->
+                let hex = powerOfTwoDigits text radix
+                if hex.Length <= smallHexDigits then Some (decimalOfHex hex) else Some (nameHex hex)
 
     /// The value of a core float text in one form per value. A finite number is its sign, its decimal digits
     /// without leading and trailing zeros, `e` and the exponent of the last digit, so `1.0`, `1.00`, `10e-1` and

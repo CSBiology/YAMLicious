@@ -1153,6 +1153,37 @@ let private keyIdentityTests = testList "The identity of keys" [
         expectOneKey [ "-123456789012345678901234567890"; "-0123456789012345678901234567890" ]
         expectDistinctKeys [ "1"; "2"; "-1"; "123456789012345678901234567890"; "123456789012345678901234567891"; "-123456789012345678901234567890"; "0x10"; "0o10"; "10" ]
 
+    // yaml@2.6.1 with { intAsBigInt: true } finds the hexadecimal, upper-case, octal and decimal spellings of the 60 digits pairwise a DUPLICATE_KEY,
+    // and the three spellings of 2^128 and of 2^128 - 1. It finds the two keys that differ by the product of the primes distinct, and the sequence keys
+    // too, since it compares a collection key by its object. 0xabc is 0o5274, so the repeated groups spell one value in both radixes.
+    testCase "an int beyond 32 hexadecimal digits is one key in every radix and in either order" <| fun _ ->
+        let hex = "0x" + String.replicate 20 "abc"
+        let decimal = (CoreSchema.canonicalInteger hex).Value
+        expectOneKey [ hex; "0x" + String.replicate 20 "ABC"; "0o" + String.replicate 20 "5274"; decimal; "+00" + decimal; "!!int \"" + hex + "\"" ]
+        expectOneKey [ "[" + hex + "]"; "[" + decimal + "]"; "[0o" + String.replicate 20 "5274" + "]" ]
+        // 2^128 is the first value whose hexadecimal digits pass 32, and 2^128 - 1 the last one below.
+        expectOneKey [ "0x1" + String.replicate 32 "0"; "340282366920938463463374607431768211456"; "0o4" + String.replicate 42 "0" ]
+        expectOneKey [ "0x" + String.replicate 32 "f"; "340282366920938463463374607431768211455"; "0o3" + String.replicate 42 "7" ]
+        expectDistinctKeys [ "0x1" + String.replicate 32 "0"; "0x" + String.replicate 32 "f"; "340282366920938463463374607431768211457"; "-340282366920938463463374607431768211456" ]
+        // The keys differ by 70368442188091, the product of the two primes of the residues, so they share the residues and the length, and the
+        // comparison converts the hexadecimal key to tell them apart.
+        let low = "0x" + String.replicate 20 "abc" + String.replicate 13 "0"
+        let high = "0x" + String.replicate 20 "abc" + "03fffee00013b"
+        expectOneKey [ high; (CoreSchema.canonicalInteger high).Value ]
+        expectDistinctKeys [ low; (CoreSchema.canonicalInteger high).Value ]
+        expectDistinctKeys [ (CoreSchema.canonicalInteger low).Value; high ]
+        expectDistinctKeys [ low; high ]
+
+    // yaml@2.6.1 with { intAsBigInt: true } reads the 200 KB hexadecimal key and the 200 KB octal key as two keys.
+    testCase "a hexadecimal key and an octal key of 200 KB decode as two keys" <| fun _ ->
+        let hex = "0x" + String.replicate 200000 "f"
+        let octal = "0o" + String.replicate 200000 "7"
+        let node = YamlNode.mapping [ YamlNode.entry (sc hex) (sc "1"); YamlNode.entry (sc octal) (sc "2") ]
+        let decoded = Decode.map Decode.scalarText Decode.int node
+        Expect.equal decoded.Count 2 "Two keys"
+        Expect.equal decoded.[octal] 2 "The octal key"
+        Expect.isTrue (passes (Decode.uniqueKeys Decode.node) node) "Distinct keys"
+
     // yaml@2.6.1 finds 1.0, 1.00, 10e-1 and 0.1e1 duplicates, and 0.0 and -0.0. It finds `!!float 1` distinct from 1.0 and `!!float 0` distinct from 0.0, and
     // 1e400 and 1e401 duplicates, because both are Infinity. The identity here is the exact decimal value, so 1e400 and 1e401 differ, and so do 1e-400 and
     // 2e-400, which both round to zero.
