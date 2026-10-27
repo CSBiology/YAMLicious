@@ -1028,141 +1028,6 @@ let private apiTests = testList "Lexer API" [
         | None -> failwith "The input is invalid"
 ]
 
-/// One plain scalar over the given number of lines.
-let private plainScalarInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: start\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "  line %d with $(f(inputs.a, \"x\", 1)) and more words\n" i) |> ignore
-    sb.Append("j: 1\n") |> ignore
-    sb.ToString()
-
-/// Lines with quoted scalars that hold escapes, a comment behind the scalar and, in every fifth line, a
-/// double-quoted scalar over two lines with an escaped line break.
-let private quotedInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        let text =
-            match i % 5 with
-            | 0 -> sprintf "k%d: \"esc \\t \\u00e9 \\\"x\\\" \\U0001F600 %d\" # c%d" i i i
-            | 1 -> sprintf "k%d: 'it''s %d'" i i
-            | 2 -> sprintf "k%d: \"first %d\n  second \\\n  third\"" i i
-            | 3 -> sprintf "k%d: 'a\n\n  b %d'" i i
-            | _ -> sprintf "k%d: plain %d # c" i i
-        sb.Append(text).Append("\n") |> ignore
-    sb.ToString()
-
-/// A literal block scalar and a folded block scalar of the given number of lines each, with more indented
-/// lines, empty lines and lines of spaces among them. A third part holds one block scalar for every line,
-/// each with a comment behind its header, with and without content and with every chomping sign. The
-/// scalar without content ends at its header in front of the comment, which once sent the tracker of the
-/// marks back to the start of the text.
-let private blockInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for header in [ "a: |+"; "b: >" ] do
-        sb.Append(header).Append("\n") |> ignore
-        for i in 0 .. lines - 1 do
-            let text =
-                match i % 7 with
-                | 0 -> sprintf "  line %d" i
-                | 1 -> sprintf "    deeper %d" i
-                | 2 -> ""
-                | 3 -> "   "
-                | 4 -> sprintf "  # hash %d" i
-                | _ -> sprintf "  line %d with 'quotes' and \"more\"" i
-            sb.Append(text).Append("\n") |> ignore
-    for i in 0 .. lines - 1 do
-        let text =
-            match i % 8 with
-            | 0 -> sprintf "h%d: | # c%d" i i
-            | 1 -> sprintf "h%d: >- # c%d" i i
-            | 2 -> sprintf "h%d: |+ # c%d" i i
-            | 3 -> sprintf "h%d: >+ # c%d" i i
-            | 4 -> sprintf "h%d: | # c%d\n  body %d" i i i
-            | 5 -> sprintf "h%d: >- # c%d\n  body %d" i i i
-            | 6 -> sprintf "h%d: |+ # c%d\n  body %d\n" i i i
-            | _ -> sprintf "h%d: >+ # c%d\n  body %d\n\n" i i i
-        sb.Append(text).Append("\n") |> ignore
-    sb.ToString()
-
-/// Lines of the same width, so that the index of a line is its number times the width.
-let private lineWidth = 11
-
-let private fixedWidthInput (lines: int) = String.replicate lines "key: value\n"
-
-/// The line of the last mark, in a cell that outlives the call so that the compiler keeps the loop.
-let private markedLine = ref 0
-
-/// Takes a snapshot at every line, looks a few lines ahead and restores. The restore puts the tracker of the
-/// marks back to the line, so the mark of the next line lies ahead of it again.
-let private rewindMarks (input: string) =
-    let cursor = Cursor(input)
-    for i in 0 .. input.Length / lineWidth - 1 do
-        let mark = cursor.MarkAt(i * lineWidth)
-        let state = cursor.Snapshot()
-        cursor.MarkAt(min input.Length (i * lineWidth + 3 * lineWidth)) |> ignore
-        cursor.Restore state
-        markedLine.Value <- mark.Line
-
-/// Comment lines with indentation and a blank line in between now and then.
-let private commentRunInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("root:\n  a: |\n    x\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# comment %d\n" i) |> ignore
-        if i % 7 = 0 then sb.Append("\n") |> ignore
-    sb.Append("  b: 1\n") |> ignore
-    sb.ToString()
-
-/// A plain scalar, then a run of blank lines that the plain scalar looks over, then a key.
-let private blankRunInput (lines: int) =
-    "k: a\n" + String.replicate lines "\n" + "j: b\n" + String.replicate lines "  \n" + "i: c\n"
-
-/// A flow sequence over the given number of lines with quoted scalars, comments and nested collections.
-let private flowInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: [\n") |> ignore
-    for i in 0 .. lines - 1 do
-        let text =
-            match i % 5 with
-            | 0 -> sprintf "  \"quoted %d\"," i
-            | 1 -> sprintf "  plain %d, # comment %d" i i
-            | 2 -> sprintf "  [nested %d, {a: 1, b: *x}]," i
-            | 3 -> sprintf "  first %d" i
-            | _ -> sprintf "  second %d," i
-        sb.Append(text).Append("\n") |> ignore
-    sb.Append("]\n") |> ignore
-    sb.ToString()
-
-/// Many short entries with properties.
-let private entriesInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        let text =
-            match i % 4 with
-            | 0 -> sprintf "k%d: v%d" i i
-            | 1 -> sprintf "- !!str &a%d item %d" i i
-            | 2 -> sprintf "? key %d\n: *a%d" i i
-            | _ -> sprintf "- - nested %d" i
-        sb.Append(text).Append("\n") |> ignore
-    sb.ToString()
-
-/// One plain scalar and one quoted scalar of the given number of characters on a single line each.
-let private longLineInput (lines: int) =
-    "k: " + String.replicate lines "word " + "\nj: \"" + String.replicate lines "word " + "\"\n"
-
-/// Lines with unbalanced quotes inside plain scalars. No quote stands at a node start, so none of them opens a scalar.
-let private plainQuoteInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        let text =
-            match i % 3 with
-            | 0 -> sprintf "k%d: it's a 'quoted word %d" i i
-            | 1 -> sprintf "k%d: 3\" wide \"x %d" i i
-            | _ -> sprintf "k%d: rock 'n' roll %d" i i
-        sb.Append(text).Append("\n") |> ignore
-    sb.ToString()
-
 /// Groups of six lines with four quoted scalars, one comment, a plain scalar with an apostrophe in a word and a long plain scalar.
 let private oldQuotedInput (lines: int) =
     let sb = System.Text.StringBuilder()
@@ -1178,55 +1043,52 @@ let private oldQuotedInput (lines: int) =
         sb.Append(text).Append("\n") |> ignore
     sb.ToString()
 
+/// The input of the scaling test, one document for each part. The share of a part is in ten-thousandths of the lines. A part that is cheap for the lexer has a large share,
+/// so that each of the eight groups of constructs in the list takes about an eighth of the time, and a quadratic cost in one group moves the ratio of the whole run.
+let private mixedInput (lines: int) =
+    let part = partOf lines
+    documentsOf [
+        // block collections
+        entriesInput (part 272)
+        // flow collections
+        flowLineInput (part 336)
+        flowMappingInput (part 88)
+        flowNestedInput (part 57)
+        flowLinesInput (part 302)
+        // comments
+        interleavedCommentInput (part 200)
+        commentRunsInput (part 444)
+        // block scalars
+        blockScalarRunInput (part 422)
+        blockScalarUnitsInput (part 207)
+        // plain and quoted scalars
+        plainContinuationInput (part 571)
+        quotedInput (part 113)
+        quotedRunInput (part 431)
+        longLineInput (part 767)
+        // aliases
+        aliasEntriesInput (part 271)
+        // documents
+        documentsInput (part 422)
+        // blank lines
+        blankLinesInput (part 1900)
+    ]
+
 let private performanceTests = testList "Lexer performance" [
-    // The lexer reads the text once. The empty lines behind a plain scalar are read twice at most, once by the look for a continuation line and once
-    // as blank lines. The reference is a single pass over the characters.
-    testCase "the time grows linearly with the lines of a plain scalar" <| fun _ ->
-        expectLinear "The lexer on a plain scalar over many lines" (countLexemes >> ignore) countLineBreaks plainScalarInput
+    // The lexer reads the text once. The input holds the constructs of the lexer in shares that take about the same time.
+    testCase "the time grows linearly with the length of a mixed input" <| fun _ ->
+        expectLinear "The lexer on a mixed input" (countLexemes >> ignore) mixedInput
 
-    testCase "the time grows linearly with the number of quoted scalars" <| fun _ ->
-        expectLinear "The lexer on quoted scalars with escapes" (countLexemes >> ignore) countLineBreaks quotedInput
-
-    testCase "the time grows linearly with the lines of block scalars" <| fun _ ->
-        expectLinear "The lexer on block scalars" (countLexemes >> ignore) countLineBreaks blockInput
-
-    testCase "the time grows linearly with a run of comments" <| fun _ ->
-        expectLinear "The lexer on a run of comments" (countLexemes >> ignore) countLineBreaks commentRunInput
-
-    testCase "the time grows linearly with a run of blank lines behind a plain scalar" <| fun _ ->
-        expectLinear "The lexer on a run of blank lines" (countLexemes >> ignore) countLineBreaks blankRunInput
-
-    testCase "the time grows linearly with the lines of a flow collection" <| fun _ ->
-        expectLinear "The lexer on a flow collection" (countLexemes >> ignore) countLineBreaks flowInput
-
-    testCase "the time grows linearly with the number of entries" <| fun _ ->
-        expectLinear "The lexer on many entries" (countLexemes >> ignore) countLineBreaks entriesInput
-
-    testCase "the time grows linearly with the length of a line" <| fun _ ->
-        expectLinear "The lexer on a long line" (countLexemes >> ignore) countLineBreaks longLineInput
-
-    testCase "the marks of the spans cost no more than a pass over the text" <| fun _ ->
-        expectLinear "The driver with spans" (fun input -> lexWith false input |> ignore) countLineBreaks entriesInput
-
-    testCase "a restore does not send the marks back to the start of the text" <| fun _ ->
-        expectLinear "Marks around a snapshot and a restore" rewindMarks countLineBreaks fixedWidthInput
-
-    // Earlier tests "the time grows linearly with unbalanced quotes inside plain scalars" and "a long input of quoted scalars keeps every string and comment". The old tests counted the string
-    // table and the comment table of the scanner. The lexer returns the quoted scalars and the comments as lexemes, so the test counts those.
-    testCase "unbalanced quotes inside plain scalars open no scalar and take time linear in the length of the input" <| fun _ ->
-        let styles = scalarsOf (plainQuoteInput 600) |> List.map (fun scalar -> scalar.Style)
-        Expect.isTrue (styles |> List.forall (fun style -> style = ScalarStyle.Plain)) "No quote stands at a node start, so no scalar is quoted"
-        expectLinear "The lexer on unbalanced quotes" (countLexemes >> ignore) countLineBreaks plainQuoteInput
-
+    // Earlier test "a long input of quoted scalars keeps every string and comment". The old test counted the string table and the comment table of the scanner. The lexer returns the quoted
+    // scalars and the comments as lexemes, so the test counts those.
     testCase "a long input of quoted scalars keeps every scalar and comment" <| fun _ ->
-        let lines = 6000
+        let lines = 600
         let lexemes = lex (oldQuotedInput lines)
         let count (prefix: string) = lexemes |> List.filter (fun lexeme -> lexeme.StartsWith prefix) |> List.length
         Expect.equal (count "single:" + count "double:") (lines / 6 * 4) "Four quoted scalars in each group of six lines"
         Expect.equal (count "#") (lines / 6) "One comment in each group of six lines"
         Expect.isTrue (List.contains "plain:don't stop 3" lexemes) "The apostrophe in a word stays text"
         Expect.isTrue (List.contains ("plain:plain " + System.String('x', 120)) lexemes) "A plain scalar behind the quoted ones stays plain"
-        expectLinear "The lexer on the old quoted scalars" (countLexemes >> ignore) countLineBreaks oldQuotedInput
 ]
 
 let Main = testList "Lexer" [

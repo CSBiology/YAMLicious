@@ -1059,47 +1059,72 @@ let private repeated (text: string) (count: int) : string =
         sb.Append(text) |> ignore
     sb.ToString()
 
-/// A parse of the text that the operation reuses, so the timing measures the write.
-let private cachedStreams = System.Collections.Generic.Dictionary<string, YamlStream>()
-
-let private streamOfText (text: string) : YamlStream =
-    match cachedStreams.TryGetValue text with
-    | true, stream -> stream
-    | _ ->
-        let stream = parseOk text
-        cachedStreams.[text] <- stream
-        stream
-
-let private writeText (text: string) = Writer.writeDocuments defaults (streamOfText text) |> ignore
-
-/// Writes a flow sequence with one scalar for each two characters of the text, which is one line of the input `x`.
-let private writeFlowOfText (text: string) =
-    let items = [ for _ in 1 .. text.Length / 2 -> YamlNode.item (sc "x") ]
-    Writer.writeNode defaults (YamlNode.flowSequence items) |> ignore
-
-/// A block sequence nested 50 levels deep that holds one mapping for each eight characters of the text. Each mapping has a
-/// literal scalar with the chomping Clip and no final line feed in its value, and another entry behind it. The writer asks for
-/// each scalar whether it ends the text, and the answer has to take no walk through the 50 open collections. The indentation
-/// of a line grows with the depth, so the depth stays fixed and the number of scalars grows with the size of the text.
-let private writeClipScalarsAtDepth (text: string) =
+/// A block sequence nested 50 levels deep that holds one mapping for each of `count` scalars. Each mapping has a literal scalar with the chomping Clip and no final line feed
+/// in its value, and another entry behind it. The writer asks for each scalar whether it ends the text, and the answer has to take no walk through the 50 open collections.
+/// The indentation of a line grows with the depth, so the depth stays fixed and the number of scalars grows with the size of the text.
+let private clipScalarsAtDepth (count: int) : YamlNode =
     let clip = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "a"
-    let items = [ for _ in 1 .. text.Length / 8 -> YamlNode.item (mapOf [ "k", clip; "j", sc "1" ]) ]
+    let items = [ for _ in 1 .. count -> YamlNode.item (mapOf [ "k", clip; "j", sc "1" ]) ]
     let mutable node = YamlNode.sequence items
     for _ in 1 .. 50 do
         node <- YamlNode.sequence [ YamlNode.item node ]
-    Writer.writeNode defaults node |> ignore
+    node
 
-/// A block sequence nested 50 levels deep that holds one mapping for each eight characters of the text. Each mapping has a
-/// literal scalar with the chomping Clip and two line feeds in its value, which gets the chomping Keep, and a blank line stands in
-/// the Before of the next item. The writer asks for each scalar whether a blank line follows, and the answer takes a walk up
-/// from the scalar to the first open collection that has more to write, so the cost of a scalar does not grow with the text.
-let private writeKeepScalarsAtDepth (text: string) =
+/// A block sequence nested 50 levels deep that holds one mapping for each of `count` scalars. Each mapping has a literal scalar with the chomping Clip and two line feeds in its
+/// value, which gets the chomping Keep, and a blank line stands in the Before of the next item. The writer asks for each scalar whether a blank line follows, and the answer
+/// takes a walk up from the scalar to the first open collection that has more to write, so the cost of a scalar does not grow with the text.
+let private keepScalarsAtDepth (count: int) : YamlNode =
     let clip = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
-    let items = [ for i in 1 .. text.Length / 8 -> (if i = 1 then YamlNode.item else itemBefore [ blank ]) (mapOf [ "k", clip ]) ]
+    let items = [ for i in 1 .. count -> (if i = 1 then YamlNode.item else itemBefore [ blank ]) (mapOf [ "k", clip ]) ]
     let mutable node = YamlNode.sequence items
     for _ in 1 .. 50 do
         node <- YamlNode.sequence [ YamlNode.item node ]
-    Writer.writeNode defaults node |> ignore
+    node
+
+/// What the writer writes in one run of the scaling test: the stream that the parser reads from the mixed text, and the two deep trees. The input builder makes them outside the
+/// timed runs, so the timing measures the write.
+type private WriterInput = { Stream: YamlStream; Clipped: YamlNode; Kept: YamlNode }
+
+let private writerInputs = System.Collections.Generic.Dictionary<string, WriterInput>()
+
+/// The text of the scaling test, one document for each part. The share of a part is in ten-thousandths of the lines. A part that is cheap for the writer has a large share,
+/// so that each of the eight groups of constructs takes about an eighth of the time, and a quadratic cost in one group moves the ratio of the whole run. The two deep trees are
+/// the last group, and they come with the text in `writerInputs`.
+let private mixedInput (lines: int) : string =
+    let part = partOf lines
+    let text =
+        documentsOf [
+            // block collections
+            entriesInput (part 125)
+            // flow collections
+            flowLineInput (part 145)
+            flowMappingInput (part 33)
+            flowNestedInput (part 17)
+            flowLinesInput (part 165)
+            // comments
+            interleavedCommentInput (part 138)
+            commentRunsInput (part 512)
+            // block scalars
+            blockScalarRunInput (part 233)
+            blockScalarUnitsInput (part 123)
+            // plain and quoted scalars
+            plainContinuationInput (part 313)
+            quotedInput (part 58)
+            quotedRunInput (part 275)
+            longLineInput (part 517)
+            // aliases
+            aliasEntriesInput (part 103)
+            // documents
+            documentsInput (part 127)
+        ]
+    writerInputs.[text] <- { Stream = parseOk text; Clipped = clipScalarsAtDepth (part 28); Kept = keepScalarsAtDepth (part 51) }
+    text
+
+let private writeMixed (text: string) =
+    let input = writerInputs.[text]
+    Writer.writeDocuments defaults input.Stream |> ignore
+    Writer.writeNode defaults input.Clipped |> ignore
+    Writer.writeNode defaults input.Kept |> ignore
 
 let private styleTests = testList "Ported from ScalarStyles, BlockScalars and YamlRead" [
     // Tests.ScalarStyles "Writer emits styled inline sequence scalars with quotes". yaml@2.6.1 reads the text as {"items":["a","b"]}. The old writer chose the inline form for
@@ -1814,27 +1839,6 @@ let private depthTests = testList "Deep trees and linear time" [
             node <- if level % 2 = 0 then YamlNode.sequence [ YamlNode.item node ] else flowSeq [ node ]
         Expect.isTrue ((writeNode node).Length > depth) "The text is written"
 
-    testCase "writing block mappings takes time linear in the number of entries" <| fun _ ->
-        expectLinear "write of block mappings" writeText countLineBreaks (fun lines -> repeated "key: value\n" lines)
-
-    testCase "writing block sequences takes time linear in the number of items" <| fun _ ->
-        expectLinear "write of block sequences" writeText countLineBreaks (fun lines -> repeated "- item\n" lines)
-
-    testCase "writing comments and blank lines takes time linear in their number" <| fun _ ->
-        expectLinear "write of comments" writeText countLineBreaks (fun lines -> repeated "# c\n\na: 1 # t\n" (lines / 3))
-
-    testCase "writing block scalars takes time linear in their size" <| fun _ ->
-        expectLinear "write of block scalars" writeText countLineBreaks (fun lines -> repeated "k: |\n  text\n  more\n" (lines / 3))
-
-    testCase "writing flow collections takes time linear in their size" <| fun _ ->
-        expectLinear "write of a flow sequence" writeFlowOfText countLineBreaks (fun lines -> repeated "x\n" lines)
-
-    testCase "writing literal scalars without a final line feed at depth takes time linear in their number" <| fun _ ->
-        expectLinear "write of Clip scalars at depth" writeClipScalarsAtDepth countLineBreaks (fun lines -> repeated "x\n" lines)
-
-    testCase "writing Keep scalars that a blank line follows at depth takes time linear in their number" <| fun _ ->
-        expectLinear "write of Keep scalars with a blank line behind them at depth" writeKeepScalarsAtDepth countLineBreaks (fun lines -> repeated "x\n" lines)
-
     // The blank line behind the scalar is found through 10000 open collections, which have nothing more to write.
     testCase "a blank line behind a scalar with the chomping Keep nested 10000 levels deep" <| fun _ ->
         let clipped = blockScalar BlockScalarStyle.Literal ChompingMode.Clip None "x\n\n"
@@ -1861,8 +1865,9 @@ let private depthTests = testList "Deep trees and linear time" [
         Expect.isTrue (strip.StartsWith(repeated "- " (depth - 1) + "- |-\n")) "The chomping is Strip"
         Expect.isTrue (strip.EndsWith "- b\n") "The text ends with a line break"
 
-    testCase "writing nested block collections takes time linear in their number" <| fun _ ->
-        expectLinear "write of nested collections" writeText countLineBreaks (fun lines -> repeated "a:\n  - b: 1\n    c: d\n" (lines / 3))
+    testCase "writing a mixed input takes time linear in its length" <| fun _ ->
+        expectLinear "write of a mixed input" writeMixed mixedInput
+        writerInputs.Clear()
 ]
 
 let Main =

@@ -398,27 +398,94 @@ let private depthTests = testList "Deep trees" [
         Expect.equal copy.Properties.Anchor (Some "a") "The anchor of the copy"
 ]
 
-// The inputs of the scaling tests. The reference is a single pass over the characters.
+// The input of the scaling test.
 
-/// A line for each entry, with an alias to an early anchor, an anchor and an alias to the anchor of the same line.
-let private aliasLinesInput (lines: int) =
-    let sb = StringBuilder()
-    sb.Append("base: &base [a, b]\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "k%d: [*base, &x%d v%d, *x%d]\n" i i i i) |> ignore
-    sb.ToString()
+/// An anchored scalar with aliases to it as values and in flow sequences.
+let private scalarAliasInput (count: int) =
+    "s: &s text\nn: &n 12\n"
+    + units count (fun i ->
+        match i % 3 with
+        | 0 -> sprintf "k%d: *s\n" i
+        | 1 -> sprintf "m%d: *n\n" i
+        | _ -> sprintf "l%d: [*s, *n, *s]\n" i)
 
-let private expandOnly (input: string) =
-    match Parser.parseStream input with
-    | Ok stream ->
-        match Aliases.expandStream { AliasOptions.defaults with MaxCopiedNodes = Int32.MaxValue } stream with
-        | Ok _ -> ()
-        | Error error -> failwithf "The expansion fails: %s" error.Message
-    | Error error -> failwithf "The parser fails: %s" error.Message
+/// Anchored collections with aliases to them as values and as items, some with a comment behind the alias.
+let private collectionAliasInput (count: int) =
+    "m: &m\n  a: 1\n  b: [x, y]\nq: &q\n- 1\n- two\nr: &r {u: 1, v: [2, 3]}\n"
+    + units count (fun i ->
+        match i % 6 with
+        | 0 -> sprintf "k%d: *m\n" i
+        | 1 -> sprintf "l%d: *q # note %d\n" i i
+        | 2 -> sprintf "n%d: *r\n" i
+        | 3 -> sprintf "o%d: *m # note %d\n" i i
+        | 4 -> sprintf "p%d: *q\n" i
+        | _ -> sprintf "u%d:\n  - *m\n  - *r\n" i)
+
+/// Anchors that hold aliases, and aliases to those anchors, in three links.
+let private chainAliasInput (count: int) =
+    "base: &base [a, b]\n"
+    + units count (fun i ->
+        sprintf "c%d: &c%d [*base, *base]\nd%d: &d%d {x: *c%d, y: [*c%d, *base]}\ne%d: [*d%d, *d%d]\n" i i i i i i i i i)
+
+/// A flow sequence with an alias for each item on one line, and a block sequence with an alias for each line.
+let private aliasRunInput (items: int) =
+    "base: &base x\nall: [" + String.concat ", " [ for _ in 1 .. items -> "*base" ] + "]\nlist:\n" + String.replicate items "- *base\n"
+
+/// Documents with an anchor and the aliases to it.
+let private aliasDocumentsInput (count: int) =
+    String.concat "---\n" [ for i in 0 .. count - 1 -> sprintf "a: &x [%d, 2]\nb: *x\nc: {d: *x}\n" i ]
+
+/// Anchored block scalars with aliases to them: a scalar that keeps its empty lines, which the copy writes in double quotes, and scalars with a comment behind the alias or an
+/// alias in a flow sequence.
+let private blockScalarAliasInput (count: int) =
+    units count (fun i ->
+        match i % 3 with
+        | 0 -> sprintf "s%d: &s%d |+\n  text %d\n\nt%d: *s%d # note\n" i i i i i
+        | 1 -> sprintf "u%d: &u%d |\n  x\nv%d: *u%d # note\n" i i i i
+        | _ -> sprintf "w%d: &w%d >-\n  folded %d\nz%d: [*w%d]\n" i i i i i)
+
+/// The stream that the parser reads from an input of the scaling test, made outside the timed runs so that the timing measures the expansion.
+let private expandedStreams = System.Collections.Generic.Dictionary<string, YamlStream>()
+
+/// The input of the scaling test, one document for each part. The share of a part is in ten-thousandths of the lines. A part that is cheap for the expansion has a large share,
+/// so that each of the eight parts takes about an eighth of the time, and a quadratic cost in one kind of alias moves the ratio of the whole run. The last part holds no alias,
+/// and the expansion only walks its nodes.
+let private mixedInput (lines: int) =
+    let part = partOf lines
+    let text =
+        documentsOf [
+            // an anchored scalar
+            scalarAliasInput (part 1450)
+            // anchored collections
+            collectionAliasInput (part 1740)
+            // anchors in flow collections and anchors that a later anchor replaces
+            aliasEntriesInput (part 779)
+            // chains of anchors that hold aliases
+            chainAliasInput (part 213)
+            // runs of aliases
+            aliasRunInput (part 1860)
+            // documents with an anchor
+            aliasDocumentsInput (part 378)
+            // anchored block scalars
+            blockScalarAliasInput (part 899)
+            // no alias
+            entriesInput (part 1870)
+        ]
+    expandedStreams.[text] <-
+        match Parser.parseStream text with
+        | Ok stream -> stream
+        | Error error -> failwithf "The parser fails: %s" error.Message
+    text
+
+let private expandOnly (text: string) =
+    match Aliases.expandStream { AliasOptions.defaults with MaxCopiedNodes = Int32.MaxValue } expandedStreams.[text] with
+    | Ok _ -> ()
+    | Error error -> failwithf "The expansion fails: %s" error.Message
 
 let private performanceTests = testList "Alias expansion performance" [
-    testCase "the expansion of many aliases takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The expansion on many aliases" expandOnly countLineBreaks aliasLinesInput
+    testCase "the expansion of a mixed input takes time linear in its length" <| fun _ ->
+        expectLinear "The expansion on a mixed input" expandOnly mixedInput
+        expandedStreams.Clear()
 ]
 
 let Main =

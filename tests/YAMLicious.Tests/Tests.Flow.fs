@@ -917,77 +917,6 @@ let private depthTests = testList "Depth" [
         Expect.equal (error.Related |> List.map showSpan) [ "1:10000-1:10001" ] "The innermost opener"
 ]
 
-// The inputs of the scaling tests. The reference is a single pass over the characters.
-
-/// A flow sequence of `lines` short items on one line.
-let private longSequenceInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: [") |> ignore
-    for i in 0 .. lines - 1 do
-        if i > 0 then sb.Append(", ") |> ignore
-        sb.Append(sprintf "item%d" i) |> ignore
-    sb.Append("]\n") |> ignore
-    sb.ToString()
-
-/// A flow mapping with one entry on each line, with comments, quoted keys and pairs.
-let private longMappingInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: {\n") |> ignore
-    for i in 0 .. lines - 1 do
-        if i % 5 = 0 then sb.Append(sprintf "  # comment %d\n" i) |> ignore
-        if i % 3 = 0 then sb.Append(sprintf "  \"key%d\": [a, b: c], # trailing\n" i) |> ignore
-        elif i % 7 = 1 then sb.Append(sprintf "  ? &a%d !!str key%d : !!str value,\n" i i) |> ignore
-        else sb.Append(sprintf "  key%d: value %d,\n" i i) |> ignore
-    sb.Append("}\n") |> ignore
-    sb.ToString()
-
-/// Flow collections that nest to a depth of 4 and repeat. Deeper nesting is covered by the depth tests, and the scaling test would take minutes on Python.
-let private nestedInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append("- ") |> ignore
-        sb.Append(String.replicate 2 "[a, {b: ") |> ignore
-        sb.Append(sprintf "v%d" i) |> ignore
-        sb.Append(String.replicate 2 "}]") |> ignore
-        sb.Append("\n") |> ignore
-    sb.ToString()
-
-/// Documents that hold a flow collection as the root.
-let private flowDocumentInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "--- [%d, {a: b}]\n" i) |> ignore
-    sb.ToString()
-
-/// Plain scalars over many lines inside a flow sequence.
-let private foldedInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: [\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "  word%d\n" i) |> ignore
-    sb.Append("]\n") |> ignore
-    sb.ToString()
-
-let private parseOnly (input: string) = Parser.parseStream input |> ignore
-
-let private performanceTests = testList "Flow performance" [
-    testCase "a long flow sequence on one line takes time linear in its length" <| fun _ ->
-        expectLinear "The parser on a one-line flow sequence" parseOnly countLineBreaks longSequenceInput
-
-    // Earlier tests "the read time grows linearly with the lines of a flow collection" and "the time grows linearly with the entries of a flow mapping with explicit keys and properties".
-    testCase "a flow mapping over many lines takes time linear in the number of lines" <| fun _ ->
-        expectLinear "The parser on a multi-line flow mapping" parseOnly countLineBreaks longMappingInput
-
-    testCase "nested flow collections take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on nested flow collections" parseOnly countLineBreaks nestedInput
-
-    testCase "a stream of documents with flow roots takes time linear in the number of documents" <| fun _ ->
-        expectLinear "The parser on documents with flow roots" parseOnly countLineBreaks flowDocumentInput
-
-    testCase "a plain scalar over many lines in a flow sequence takes time linear in the number of lines" <| fun _ ->
-        expectLinear "The parser on a folded scalar in a flow sequence" parseOnly countLineBreaks foldedInput
-]
-
 let Main =
     testList "Flow" [
         valueTests
@@ -1000,5 +929,4 @@ let Main =
         propertyTests
         errorTests
         depthTests
-        performanceTests
     ]

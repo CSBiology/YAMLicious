@@ -239,7 +239,7 @@ let lexIn (grammar: GrammarContext) (parentIndent: int) (simpleKey: bool) (input
 
 /// Lexes the whole input with the parent indentation 0, in the context BlockOut and, between the brackets of
 /// a flow collection, in the context FlowIn. It counts the lexemes without keeping them, which is what the
-/// timing tests measure.
+/// timing test measures.
 let countLexemes (input: string) : int =
     let cursor = Cursor(input)
     let mutable depth = 0
@@ -404,18 +404,6 @@ let withEnd (trivia: Trivia list) (node: YamlNode) : YamlNode =
     | YamlNodeKind.Mapping collection -> { node with Kind = YamlNodeKind.Mapping { collection with End = trivia } }
     | YamlNodeKind.Sequence collection -> { node with Kind = YamlNodeKind.Sequence { collection with End = trivia } }
     | _ -> failwith "Only a collection has an end."
-
-/// The reference of the scaling tests, a single pass over the characters of the input. The count goes to
-/// a cell that outlives the call, so the compiler cannot drop the loop.
-let lineBreakCount = ref 0
-
-let countLineBreaks (input: string) =
-    let mutable count = 0
-    let mutable i = 0
-    while i < input.Length do
-        if input.[i] = '\n' then count <- count + 1
-        i <- i + 1
-    lineBreakCount.Value <- count
 
 /// The collection with trivia in front of its first entry or item, as a blank line at the top of the text
 /// gives the first entry of a root mapping (rules R3 and R4).
@@ -583,3 +571,162 @@ let expectYamlValues (rows: (string * string * string) list) =
                   yield sprintf "%s: %A reads as %s and not as %s" reference input actual expected ]
     if not differences.IsEmpty then
         failwith (String.concat "\n" differences)
+
+// ---------------------------------------------------------------------------------------------
+// The inputs of the scaling tests
+
+/// A mapping whose first value is a plain scalar of the given number of continuation lines.
+let plainContinuationInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("k: start\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("j: 1\n") |> ignore
+    sb.ToString()
+
+/// A literal block scalar of the given number of lines in front of a sibling.
+let blockBodyInput (lines: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("a: |\n") |> ignore
+    for i in 0 .. lines - 1 do
+        sb.Append(sprintf "  line %d\n" i) |> ignore
+    sb.Append("b: 1\n") |> ignore
+    sb.ToString()
+
+/// A run of comments at columns 0 to 8 with a blank line now and then, between a block scalar and its sibling.
+let commentRunInput (comments: int) =
+    let sb = System.Text.StringBuilder()
+    sb.Append("root:\n  a: |\n    x\n") |> ignore
+    for i in 0 .. comments - 1 do
+        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# c%d\n" i) |> ignore
+        if i % 7 = 0 then sb.Append("\n") |> ignore
+    sb.Append("  b: 1\nc: 2\n") |> ignore
+    sb.ToString()
+
+// The parts of the mixed inputs of the scaling tests. Each part is a text of one document, and `documentsOf` joins parts behind `---` lines. The count of a part is
+// the number of its units or of the lines of its run.
+
+/// The count of a part in a mixed input of `lines` lines, rounded. The share is in ten-thousandths of the lines, and a part has at least one unit.
+let partOf (lines: int) (share: int) = max 1 (int ((int64 lines * int64 share + 5000L) / 10000L))
+
+/// The parts as the documents of one text.
+let documentsOf (parts: string list) : string = String.concat "---\n" parts
+
+/// Block mappings and sequences in several nestings, with tags and anchors.
+let entriesInput (count: int) =
+    units count (fun i ->
+        match i % 6 with
+        | 0 -> sprintf "n%d:\n  a: 1\n  b: two words\n" i
+        | 1 -> sprintf "s%d:\n- id: %d\n  name: tool\n- item %d\n" i i i
+        | 2 -> sprintf "c%d:\n  - - nested %d\n    - x\n  - k: !!str &p%d v\n" i i i
+        | 3 -> sprintf "t%d: !!str &t%d tagged %d\n" i i i
+        | _ -> sprintf "key%d: value %d\n" i i)
+
+/// Aliases to a mapping, aliases in flow collections, an anchor that a later anchor of the same name replaces, and an anchor in a flow mapping.
+let aliasEntriesInput (count: int) =
+    "base: &base\n  a: 1\n  b: [x, y]\n"
+    + units count (fun i ->
+        match i % 4 with
+        | 0 -> sprintf "r%d: *base\n" i
+        | 1 -> sprintf "k%d: [*base, &x%d v%d, *x%d]\n" i i i i
+        | 2 -> sprintf "a%d: &a v%d\nb%d: *a\n" i i i
+        | _ -> sprintf "q%d: {m: *base, n: &y%d [1, 2], o: *y%d}\n" i i i)
+
+/// A flow sequence of `items` short items on one line.
+let flowLineInput (items: int) =
+    "k: [" + String.concat ", " [ for i in 0 .. items - 1 -> sprintf "item%d" i ] + "]\n"
+
+/// A flow mapping with one entry on each line, with comments, quoted keys, pairs and explicit keys with properties.
+let flowMappingInput (lines: int) =
+    "k: {\n"
+    + units lines (fun i ->
+        (if i % 5 = 0 then sprintf "  # comment %d\n" i else "")
+        + (if i % 3 = 0 then sprintf "  \"key%d\": [a, b: c], # trailing\n" i
+           elif i % 7 = 1 then sprintf "  ? &a%d !!str key%d : !!str value,\n" i i
+           else sprintf "  key%d: value %d,\n" i i))
+    + "}\n"
+
+/// A block sequence of flow collections that nest to a depth of 4. The depth tests cover deeper nesting.
+let flowNestedInput (count: int) =
+    units count (fun i -> sprintf "- [a, {b: [a, {b: v%d}]}]\n" i)
+
+/// A flow sequence over many lines with a plain scalar of one word on each line, which is one scalar, and then a run of comments in front of the closer.
+let flowLinesInput (lines: int) =
+    "k: [\n" + units lines (fun i -> sprintf "  word%d\n" i) + units lines (fun i -> sprintf "# c%d\n" i) + "]\n"
+
+/// A comment in front of every entry and a comment behind its value.
+let interleavedCommentInput (lines: int) =
+    units lines (fun i -> sprintf "# about %d\nk%d: v # trailing %d\n" i i i)
+
+/// A run of comments behind a block scalar, and a run of comments at the end of a nested block, with a blank line among them.
+let commentRunsInput (comments: int) =
+    commentRunInput comments
+    + "d:\n  e:\n    f: 1\n"
+    + units comments (fun i ->
+        match i % 3 with
+        | 0 -> sprintf "      # comment %d\n" i
+        | 1 -> "\n"
+        | _ -> sprintf "  # comment %d\n" i)
+
+/// A literal and a folded block scalar of `lines` lines each, with more indented lines, empty lines, lines of spaces and lines of a hash.
+let blockScalarRunInput (lines: int) =
+    let body (header: string) =
+        header + "\n"
+        + units lines (fun i ->
+            match i % 7 with
+            | 0 -> sprintf "  line %d\n" i
+            | 1 -> sprintf "    deeper %d\n" i
+            | 2 -> "\n"
+            | 3 -> "   \n"
+            | 4 -> sprintf "  # hash %d\n" i
+            | _ -> sprintf "  line %d with 'quotes' and \"more\"\n" i)
+    body "a: |+" + body "b: >"
+
+/// Entries with a block scalar in every chomping, behind a header with a comment, with and without content, and a block scalar with a comment behind it.
+let blockScalarUnitsInput (count: int) =
+    units count (fun i ->
+        match i % 10 with
+        | 0 -> sprintf "h%d: | # c%d\n" i i
+        | 1 -> sprintf "h%d: >- # c%d\n" i i
+        | 2 -> sprintf "h%d: |+ # c%d\n" i i
+        | 3 -> sprintf "h%d: >+ # c%d\n" i i
+        | 4 -> sprintf "h%d: | # c%d\n  body %d\n" i i i
+        | 5 -> sprintf "h%d: >- # c%d\n  body %d\n" i i i
+        | 6 -> sprintf "h%d: |+ # c%d\n  body %d\n\n" i i i
+        | 7 -> sprintf "h%d: >+ # c%d\n  body %d\n\n\n" i i i
+        | 8 -> sprintf "k%d: |\n  line a %d\n  line b\n" i i
+        | _ -> sprintf "k%d: |\n  x\n# c\n" i)
+
+/// Quoted scalars with escapes and a comment behind them, a double-quoted scalar over three lines with an escaped line break, a single-quoted
+/// scalar with a blank line, and plain scalars with quotes inside.
+let quotedInput (count: int) =
+    units count (fun i ->
+        match i % 8 with
+        | 0 -> sprintf "k%d: \"esc \\t \\u00e9 \\\"x\\\" \\U0001F600 %d\" # c%d\n" i i i
+        | 1 -> sprintf "k%d: 'it''s %d'\n" i i
+        | 2 -> sprintf "k%d: \"first %d\n  second \\\n  third\"\n" i i
+        | 3 -> sprintf "k%d: 'a\n\n  b %d'\n" i i
+        | 4 -> sprintf "k%d: it's a 'quoted word %d\n" i i
+        | 5 -> sprintf "k%d: 3\" wide \"x %d\n" i i
+        | 6 -> sprintf "k%d: rock 'n' roll %d\n" i i
+        | _ -> sprintf "k%d: don't stop %d # c\n" i i)
+
+/// A single-quoted and a double-quoted scalar over the given number of lines each, the double-quoted one with escaped line breaks.
+let quotedRunInput (lines: int) =
+    "a: 'w\n" + String.replicate lines "  word\n" + "  end'\nb: \"w\\n" + String.replicate lines "  word\\n" + "  end\"\n"
+
+/// A plain scalar and a quoted scalar of `words` words on one line each.
+let longLineInput (words: int) =
+    "k: " + String.replicate words "word " + "\nj: \"" + String.replicate words "word " + "\"\n"
+
+/// Runs of blank lines in the middle and at the end of nested mappings, behind a plain scalar and made of spaces.
+let blankLinesInput (blanks: int) =
+    "k: a\n" + String.replicate blanks "\n" + "j: b\n" + String.replicate blanks "  \n" + "i: c\n"
+    + "a:\n  b: 1\n" + String.replicate blanks "\n" + "  c: 2\nd: 3\n" + String.replicate blanks "\n"
+
+/// Documents with a block root and documents with a flow root on the marker line.
+let documentsInput (count: int) =
+    units count (fun i ->
+        if i = 0 then "k: 0\n"
+        elif i % 2 = 0 then sprintf "---\nk: %d\n" i
+        else sprintf "--- [%d, {a: b}]\n" i)

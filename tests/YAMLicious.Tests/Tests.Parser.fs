@@ -845,112 +845,11 @@ let private depthTests = testList "Depth" [
         Expect.stringContains (Projection.data stream) "\"maxDepth\":1000" "The depth"
 ]
 
-// The inputs of the scaling tests. The reference is a single pass over the characters.
-
-let private mappingInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        if i % 10 = 0 then
-            sb.Append(sprintf "n%d:\n  a: 1\n  b: two words\n" i) |> ignore
-        else
-            sb.Append(sprintf "key%d: value %d\n" i i) |> ignore
-    sb.ToString()
-
-let private sequenceInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("items:\n") |> ignore
-    for i in 0 .. lines - 1 do
-        if i % 10 = 0 then
-            sb.Append(sprintf "- id: %d\n  run: tool.cwl\n" i) |> ignore
-        else
-            sb.Append(sprintf "- item %d\n" i) |> ignore
-    sb.ToString()
-
-let private commentInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("a:\n  b:\n    c: 1\n") |> ignore
-    for i in 0 .. lines - 1 do
-        if i % 3 = 0 then sb.Append(sprintf "      # comment %d\n" i) |> ignore
-        elif i % 3 = 1 then sb.Append("\n") |> ignore
-        else sb.Append(sprintf "  # comment %d\n" i) |> ignore
-    sb.ToString()
-
-let private interleavedCommentInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "# about %d\nk%d: v # trailing %d\n" i i i) |> ignore
-    sb.ToString()
-
-let private blockScalarInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "k%d: |\n  line a %d\n  line b\n" i i) |> ignore
-    sb.ToString()
-
-let private documentInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "---\nk: %d\n" i) |> ignore
-    sb.ToString()
-
-let private propertyInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("base: &base\n  a: 1\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "k%d: !!str &a%d value\nr%d: *base\n" i i i) |> ignore
-    sb.ToString()
-
-/// A mapping whose first value is a plain scalar of the given number of continuation lines.
-let private plainContinuationInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("k: start\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "  line %d\n" i) |> ignore
-    sb.Append("j: 1\n") |> ignore
-    sb.ToString()
-
-/// A literal block scalar of the given number of lines in front of a sibling.
-let private blockBodyInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("a: |\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "  line %d\n" i) |> ignore
-    sb.Append("b: 1\n") |> ignore
-    sb.ToString()
-
-/// A run of comments at columns 0 to 8 with a blank line now and then, between a block scalar and its sibling.
-let private commentRunInput (comments: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("root:\n  a: |\n    x\n") |> ignore
-    for i in 0 .. comments - 1 do
-        sb.Append(String.replicate (i % 5 * 2) " ").Append(sprintf "# c%d\n" i) |> ignore
-        if i % 7 = 0 then sb.Append("\n") |> ignore
-    sb.Append("  b: 1\nc: 2\n") |> ignore
-    sb.ToString()
-
-/// A flow sequence in a block sequence with a run of comments in front of its closer.
-let private flowCloserCommentInput (comments: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("a:\n  - [\n    1,\n") |> ignore
-    for i in 0 .. comments - 1 do
-        sb.Append(sprintf "# c%d\n" i) |> ignore
-    sb.Append("    ]\n") |> ignore
-    sb.ToString()
-
-/// Runs of blank lines in the middle and at the end of nested mappings.
-let private blankLinesInput (blanks: int) =
-    "a:\n  b: 1\n" + String.replicate blanks "\n" + "  c: 2\nd: 3\n" + String.replicate blanks "\n"
-
-/// Many block scalars, each followed by a comment.
-let private scalarThenCommentInput (scalars: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. scalars / 3 - 1 do
-        sb.Append(sprintf "k%d: |\n  x\n# c\n" i) |> ignore
-    sb.ToString()
+// The input of the scaling test.
 
 let private parseOnly (input: string) = Parser.parseStream input |> ignore
 
-/// The builder of a scaling test with a check that the parser accepts its input and that the tree passes Validate.stream. expectLinear builds each input once,
+/// The builder of the scaling test with a check that the parser accepts its input and that the tree passes Validate.stream. expectLinear builds each input once,
 /// outside the timed runs, and the timed runs ignore the result of the parser.
 let private accepted (build: int -> string) : int -> string =
     fun lines ->
@@ -958,42 +857,40 @@ let private accepted (build: int -> string) : int -> string =
         parseOk input |> ignore
         input
 
+/// The input of the scaling test, one document for each part. The share of a part is in ten-thousandths of the lines. A part that is cheap for the parser has a large share,
+/// so that each of the eight groups of constructs in the list takes about an eighth of the time, and a quadratic cost in one group moves the ratio of the whole run.
+let private mixedInput (lines: int) =
+    let part = partOf lines
+    documentsOf [
+        // block collections
+        entriesInput (part 134)
+        // flow collections
+        flowLineInput (part 143)
+        flowMappingInput (part 37)
+        flowNestedInput (part 17)
+        flowLinesInput (part 251)
+        // comments
+        interleavedCommentInput (part 110)
+        commentRunsInput (part 267)
+        // block scalars
+        blockScalarRunInput (part 412)
+        blockScalarUnitsInput (part 125)
+        // plain and quoted scalars
+        plainContinuationInput (part 524)
+        quotedInput (part 67)
+        quotedRunInput (part 414)
+        longLineInput (part 699)
+        // aliases
+        aliasEntriesInput (part 103)
+        // documents
+        documentsInput (part 143)
+        // blank lines
+        blankLinesInput (part 642)
+    ]
+
 let private performanceTests = testList "Parser performance" [
-    testCase "block mappings take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block mappings" parseOnly countLineBreaks (accepted mappingInput)
-
-    testCase "block sequences take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block sequences" parseOnly countLineBreaks (accepted sequenceInput)
-
-    testCase "comments at the end of a nested block take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on trailing comments" parseOnly countLineBreaks (accepted commentInput)
-
-    testCase "a comment in front of every entry takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on interleaved comments" parseOnly countLineBreaks (accepted interleavedCommentInput)
-
-    testCase "block scalars take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block scalars" parseOnly countLineBreaks (accepted blockScalarInput)
-
-    testCase "a stream of many documents takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on many documents" parseOnly countLineBreaks (accepted documentInput)
-
-    testCase "properties and aliases take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on properties and aliases" parseOnly countLineBreaks (accepted propertyInput)
-
-    // Tests.BlockScalars "The time grows linearly with a run of comments in front of a flow closer", "The time grows linearly with a run of blank lines" and "The time grows linearly with the
-    // number of scalars and comments", the earlier test "the read time grows linearly with the lines of a plain scalar". The old tests timed the preprocessing against the scanner. These tests
-    // time the parser against a pass over the characters.
-    testCase "a run of comments in front of a flow closer takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on comments in front of a flow closer" parseOnly countLineBreaks (accepted flowCloserCommentInput)
-
-    testCase "runs of blank lines take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on runs of blank lines" parseOnly countLineBreaks (accepted blankLinesInput)
-
-    testCase "many block scalars with a comment behind them take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on block scalars and comments" parseOnly countLineBreaks (accepted scalarThenCommentInput)
-
-    testCase "a plain scalar over many lines takes time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on a plain scalar over many lines" parseOnly countLineBreaks (accepted plainContinuationInput)
+    testCase "a mixed input takes time linear in its length" <| fun _ ->
+        expectLinear "The parser on a mixed input" parseOnly (accepted mixedInput)
 ]
 
 let rec private hasStructuredKey (node: YamlNode) : bool =

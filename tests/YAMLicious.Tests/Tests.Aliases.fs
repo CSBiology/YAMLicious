@@ -124,50 +124,9 @@ let private errorTests = testList "Alias errors" [
         expectError (anchored + "l: [*a [b]]") "missing-flow-comma@2"
 ]
 
-// The inputs of the scaling tests. The reference is a single pass over the characters.
-
-/// A line for each entry, with an anchor, an alias to an earlier anchor and an alias to the anchor of the same line.
-let private aliasLinesInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("base: &base {a: 1}\n") |> ignore
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "k%d: [*base, &x%d v%d, *x%d]\n" i i i i) |> ignore
-    sb.ToString()
-
-/// One flow sequence with an alias for each item.
-let private aliasItemsInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    sb.Append("base: &base x\nall: [") |> ignore
-    for i in 0 .. lines - 1 do
-        if i > 0 then sb.Append(", ") |> ignore
-        sb.Append("*base") |> ignore
-    sb.Append("]\n") |> ignore
-    sb.ToString()
-
-/// Many redefinitions of one anchor, each followed by an alias.
-let private redefinitionInput (lines: int) =
-    let sb = System.Text.StringBuilder()
-    for i in 0 .. lines - 1 do
-        sb.Append(sprintf "- &a v%d\n- *a\n" i) |> ignore
-    sb.ToString()
-
-let private parseOnly (input: string) = Parser.parseStream input |> ignore
-
-let private performanceTests = testList "Alias performance" [
-    testCase "anchors and aliases in many flow collections take time linear in the length of the input" <| fun _ ->
-        expectLinear "The parser on anchors and aliases in flow collections" parseOnly countLineBreaks aliasLinesInput
-
-    testCase "a flow sequence of many aliases takes time linear in the number of items" <| fun _ ->
-        expectLinear "The parser on a flow sequence of aliases" parseOnly countLineBreaks aliasItemsInput
-
-    testCase "many redefinitions of one anchor take time linear in their number" <| fun _ ->
-        expectLinear "The parser on redefined anchors" parseOnly countLineBreaks redefinitionInput
-]
-
 let Main =
     testList "Aliases" [
         placeTests
         definitionTests
         errorTests
-        performanceTests
     ]

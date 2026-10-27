@@ -42,55 +42,50 @@ let errorOf (action: unit -> unit) =
 /// A comment with the given text, as in `comment " c"` for `# c`.
 let comment (text: string) = YamlComment.create text
 
-/// Runs the action repeatedly for a fixed time and returns the milliseconds of one run. Fable has no
-/// Stopwatch, so the clock is the system time, and a window of 50 ms holds many runs of a short action.
-let private sampleMilliseconds (action: unit -> unit) =
-    let startTime = System.DateTime.UtcNow
-    let mutable runs = 0
-    let mutable elapsed = 0.0
-    while elapsed < 50.0 do
-        action ()
-        runs <- runs + 1
-        elapsed <- (System.DateTime.UtcNow - startTime).TotalMilliseconds
-    elapsed / float runs
+/// The texts that `piece` gives for 0 to `count` - 1, one behind the other.
+let units (count: int) (piece: int -> string) : string =
+    let sb = System.Text.StringBuilder()
+    for i in 0 .. count - 1 do
+        sb.Append(piece i) |> ignore
+    sb.ToString()
 
-/// The lines of the small and the large input in the scaling tests. Fable Python runs far slower than
-/// the other targets, so it keeps a shorter large input to hold the time of the suite down.
-let private smallLines = 2000
+/// The lines of the small input in the scaling tests. The only clock that Fable offers on every target is the system time, with a resolution
+/// of a millisecond on JavaScript. So each target gets a small input whose single run takes at least 20 ms in each of the four tests, and the
+/// counts differ with the speed of the target. A builder turns the lines into the counts of its parts. The large input has ten times as many lines.
 #if FABLE_COMPILER_PYTHON
-let private largeLines = 16000
+let private smallLines = 1300
 #else
-let private largeLines = 32000
+#if FABLE_COMPILER_JAVASCRIPT
+let private smallLines = 40000
+#else
+let private smallLines = 56000
+#endif
 #endif
 
-/// Compares how the time of `operation` grows from the small to the large input with how the time of
-/// `reference`, a linear pass, grows on the same inputs. A linear operation scores about 1 and a quadratic
-/// one about the ratio of the two sizes. The reference absorbs the cost that a large input pays for the
-/// garbage collector and the caches. Every round measures the four series one after the other, so a load
-/// on the machine hits the operation and the reference alike. The first round warms up the code and is
-/// dropped. The fastest of the five rounds after it keeps a pause of the garbage collector out of the result.
-/// The test prints the milliseconds, so a log shows how much headroom the limit leaves.
-let expectLinear (name: string) (operation: string -> unit) (reference: string -> unit) (build: int -> string) =
+let private sizeRatio = 10
+
+/// Compares how the time of `operation` grows from the small to the large input. Each input takes one run of the operation, timed once. A linear
+/// operation scores about 1 and a quadratic one about the size ratio, and the limit is the geometric mean of the two, the middle on a log scale.
+/// The builder runs outside the timed runs, so it can parse the input or build trees for the operation. On .NET a collection in front of
+/// each run keeps the garbage and the young trees of the builders out of the time. The test prints the milliseconds, so a log shows how much
+/// headroom the limit leaves.
+let expectLinear (name: string) (operation: string -> unit) (build: int -> string) =
+    let largeLines = smallLines * sizeRatio
     let smallInput = build smallLines
     let largeInput = build largeLines
-    let actions: (unit -> unit)[] = [|
-        fun () -> operation smallInput
-        fun () -> operation largeInput
-        fun () -> reference smallInput
-        fun () -> reference largeInput
-    |]
-    let fastest = Array.create actions.Length infinity
-    for round in 0 .. 5 do
-        for i in 0 .. actions.Length - 1 do
-            let milliseconds = sampleMilliseconds actions.[i]
-            if round > 0 then fastest.[i] <- min fastest.[i] milliseconds
-    let operationRatio = fastest.[1] / fastest.[0]
-    let referenceRatio = fastest.[3] / fastest.[2]
-    let normalized = operationRatio / referenceRatio
-    // The limit is the geometric mean of 1 (linear) and the size ratio (quadratic), the middle on a log scale.
-    let limit = sqrt (float largeLines / float smallLines)
+    let time (input: string) =
+#if !FABLE_COMPILER
+        System.GC.Collect()
+#endif
+        let startTime = System.DateTime.UtcNow
+        operation input
+        (System.DateTime.UtcNow - startTime).TotalMilliseconds
+    let small = time smallInput
+    let large = time largeInput
+    let normalized = large / small / float sizeRatio
+    let limit = sqrt (float sizeRatio)
     let report =
-        sprintf "%s took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. The reference took %.3f ms and %.3f ms, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
-            name fastest.[0] smallLines fastest.[1] largeLines operationRatio fastest.[2] fastest.[3] referenceRatio normalized limit
+        sprintf "%s took %.3f ms for %d lines and %.3f ms for %d lines, a ratio of %.2f. Normalized: %.2f, limit: %.2f"
+            name small smallLines large largeLines (large / small) normalized limit
     printfn "Timing: %s" report
     Fable.Pyxpecto.Expect.isTrue (normalized < limit) report

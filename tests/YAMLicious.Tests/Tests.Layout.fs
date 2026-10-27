@@ -440,7 +440,7 @@ let private textTests = testList "Characters next to the boundaries" [
 ]
 
 let private sizeTests = testList "Large scalars" [
-    // The reader and the writer take time linear in the number of lines. The writer keeps the layout of a scalar with 10000 lines, and a scalar with 10000 boundaries.
+    // The writer keeps the layout of a scalar with 10000 lines, and a scalar with 10000 boundaries.
     testCase "a scalar over 10000 lines goes back to its lines" <| fun _ ->
         let lines = [ for i in 1 .. 10000 -> "w" + string i ]
         let folded = "a: >\n" + String.concat "" [ for line in lines -> "  " + line + "\n" ]
@@ -451,14 +451,6 @@ let private sizeTests = testList "Large scalars" [
             let scalar = firstValue input
             Expect.equal scalar.Layout.Value.Boundaries.Length 9999 "The boundaries"
             expectKept input
-
-    testCase "writing a scalar with many boundaries takes time linear in the number of lines" <| fun _ ->
-        let countLineBreaks (text: string) = text |> Seq.filter (fun c -> c = '\n') |> Seq.length |> ignore
-        let writeFolded (text: string) = Writer.writeDocuments defaults (parseOk text) |> ignore
-        expectLinear "write of folded scalars" writeFolded countLineBreaks (fun lines -> "a: >\n" + String.replicate lines "  word\n")
-        expectLinear "write of plain scalars" writeFolded countLineBreaks (fun lines -> "a: w\n" + String.replicate lines "  word\n")
-        expectLinear "write of single-quoted scalars" writeFolded countLineBreaks (fun lines -> "a: 'w\n" + String.replicate lines "  word\n" + "  end'\n")
-        expectLinear "write of double-quoted scalars" writeFolded countLineBreaks (fun lines -> "a: \"w\\\n" + String.replicate lines "  word\\\n" + "  end\"\n")
 ]
 
 let private editTests = testList "Edits through withScalarValue" [

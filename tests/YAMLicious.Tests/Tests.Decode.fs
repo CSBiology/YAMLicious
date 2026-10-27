@@ -959,62 +959,6 @@ let private oldSuiteTests = testList "Tests of the old suite" [
         Expect.equal decoded ([ "participants" ], [ ("id", "path") ]) "The operation behind the braces key"
 ]
 
-// -------------------------------------------------------------------------------------------------------------------
-// Linear time
-
-/// The parsed root of a text, kept by the length of the text so that the timed operation decodes and does not parse. The first call of a size
-/// parses, and the warm-up round of `expectLinear` absorbs it.
-let private cachedRoot (cache: System.Collections.Generic.Dictionary<int, YamlNode>) (input: string) : YamlNode =
-    match cache.TryGetValue input.Length with
-    | true, root -> root
-    | _ ->
-        let root = parseRoot input
-        cache.[input.Length] <- root
-        root
-
-let private sink = ref 0
-
-let private linearTests = testList "Time grows with the size of the node" [
-    testCase "Decode.object reads a mapping with n fields in linear time, lookups included" <| fun _ ->
-        let cache = System.Collections.Generic.Dictionary<int, YamlNode>()
-        let build (count: int) =
-            let sb = System.Text.StringBuilder()
-            for i in 0 .. count - 1 do
-                sb.Append("key").Append(i).Append(": ").Append(i).Append('\n') |> ignore
-            sb.ToString()
-        // The builder asks for every field by its name, so n lookups happen, and then for the entries that it does not know.
-        let decoder =
-            Decode.object (fun get ->
-                let mutable total = 0
-                let mutable index = 0
-                for _ in get.Entries do
-                    total <- total + get.Required.Field ("key" + string index) Decode.int
-                    index <- index + 1
-                total + (get.Overflow.FieldList [ "key0" ]).Length + (get.MultipleOptional.FieldList [ "key0" ]).Length)
-        let operation (input: string) = sink.Value <- decoder (cachedRoot cache input)
-        expectLinear "Decode.object" operation countLineBreaks build
-
-    testCase "Decode.list reads a sequence with n items in linear time" <| fun _ ->
-        let cache = System.Collections.Generic.Dictionary<int, YamlNode>()
-        let build (count: int) =
-            let sb = System.Text.StringBuilder()
-            for i in 0 .. count - 1 do
-                sb.Append("- ").Append(i).Append('\n') |> ignore
-            sb.ToString()
-        let operation (input: string) = sink.Value <- (Decode.list Decode.int (cachedRoot cache input)).Length
-        expectLinear "Decode.list" operation countLineBreaks build
-
-    testCase "Decode.map reads a mapping with n entries in linear time" <| fun _ ->
-        let cache = System.Collections.Generic.Dictionary<int, YamlNode>()
-        let build (count: int) =
-            let sb = System.Text.StringBuilder()
-            for i in 0 .. count - 1 do
-                sb.Append("key").Append(i).Append(": ").Append(i).Append('\n') |> ignore
-            sb.ToString()
-        let operation (input: string) = sink.Value <- (Decode.map Decode.string Decode.int (cachedRoot cache input)).Count
-        expectLinear "Decode.map" operation countLineBreaks build
-]
-
 let Main =
     testList "Decode" [
         stringTests
@@ -1034,5 +978,4 @@ let Main =
         getterTests
         flowTests
         oldSuiteTests
-        linearTests
     ]
