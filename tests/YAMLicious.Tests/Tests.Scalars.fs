@@ -706,6 +706,14 @@ let private lineBreakTests = testList "Line breaks in scalars" [
         expectScalars "k: |-\n  a" [ pl "k"; blk BlockScalarStyle.Literal ChompingMode.Strip None "a" ]
         expectScalars "k: a\n  b" [ pl "k"; pl "a b" ]
 
+    // The cases JEF9/02 and L24T/01 of the YAML test suite (data branch) end with a line of spaces and no line break. The suite expects ["\n"] and {"foo":"x\n \n"},
+    // and yaml@2.6.1 reads the same. ruamel.yaml 0.19.1 and libyaml read [""] and {"foo":"x\n "}, as production [165] gives them, and so does the parser here: the
+    // last line of spaces is no empty line without its line break, and the last content line keeps no line feed. The written text reads as the same value.
+    testCase "the cases JEF9/02 and L24T/01 of the YAML test suite read without a final line feed" <| fun _ ->
+        for (name, input, expected) in [ "JEF9/02", "- |+\n   ", "[\"\"]"; "L24T/01", "foo: |\n  x\n   ", "{\"foo\":\"x\\n \"}" ] do
+            Expect.equal (yamlValueOf input) expected name
+            Expect.equal (yamlValueOf (Writer.writeDocuments WriterOptions.defaults (Reader.readDocuments input))) expected (name + " written again")
+
     // Deliberate difference from yaml@2.6.1, which reads `k: |\n  a` as {"k":"a\n"} and `k: |+\n  a` as {"k":"a\n"}. [165] b-chomped-last(t) is
     // b-as-line-feed or the end of the input for clip and keep, so a last content line that ends the input has no line break to keep. The value is
     // "a" for every chomping, and the line break is back as soon as the input has one.
