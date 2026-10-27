@@ -150,12 +150,10 @@ let private dateTests = testList "Encode.datetime and Encode.datetimeOffset" [
         Expect.isTrue ((scalarText (Encode.datetime moment)).StartsWith("2018-10-01T11:12:55")) (scalarText (Encode.datetime moment))
         Expect.nodeEqual (Encode.datetime moment) (sc (scalarText (Encode.datetime moment))) "The scalar is plain"
         let backMoment = Decode.datetime (Encode.datetime moment)
-        // Fable does not keep the UTC kind of a time with a Z, so the check compares the instant.
+        // On Fable the kind of a time with a Z depends on the time zone of the host, so the check compares the instant there.
         let backUtc = backMoment.ToUniversalTime()
         Expect.equal backUtc.Ticks moment.Ticks "The UTC time reads back"
-#if FABLE_COMPILER
-        Expect.notEqual backMoment.Kind System.DateTimeKind.Utc "Fable does not keep the UTC kind"
-#else
+#if !FABLE_COMPILER
         Expect.equal backMoment.Kind System.DateTimeKind.Utc "RoundtripKind keeps the UTC kind"
 #endif
         let utc = System.DateTimeOffset(2008, 1, 5, 6, 0, 0, System.TimeSpan.Zero)

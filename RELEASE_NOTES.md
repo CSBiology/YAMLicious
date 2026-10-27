@@ -62,7 +62,7 @@ The tests record the result of yaml@2.6.1 above each case. The parser differs fr
 * `Decode.object` needs keys that `Decode.string` reads, so a plain `1` as a key is an error at the key. `Decode.map` and `Decode.dict` also reject two distinct keys that the key decoder turns into the same key, as it turns `1` and `"1"` into one text under `Decode.scalarText`. `Decode.uniqueKeys decoder` checks the keys of every mapping of a node, the ones that the decoder skips included, and then runs the decoder.
 * Aliases stay symbolic and no decoder resolves an anchor. Every decoder except `Decode.alias` and `Decode.node` rejects an alias and names it. `Aliases.expandNode` replaces the aliases of a tree before the decoders run.
 * `Decode.datetime` and `Decode.datetimeOffset` read ISO 8601 forms only: a date, or a date and a time with a `T` or a blank between them. The time needs seconds and may have a fraction of one to seven digits and a zone. A date alone is midnight, and `Decode.datetimeOffset` needs the zone. Any other text is an error on every target, also `1`, `2020`, `5` and `12:00`, which the parse of a target would read. The YAML 1.1 timestamp forms are not read.
-* The kind of a `DateTime` and the offset of a `DateTimeOffset` depend on the target. .NET keeps the UTC kind of a `Z`, while Fable gives the kind Local on Python and Unspecified on JavaScript. .NET and Python keep the offset of the text, and JavaScript gives the offset of the machine.
+* The kind of a `DateTime` and the offset of a `DateTimeOffset` depend on the target. .NET keeps the UTC kind of a `Z`. On Fable the kind depends on the time zone of the host. .NET and Python keep the offset of the text, and JavaScript gives the offset of the machine.
 
 #### Aliases
 

@@ -774,7 +774,7 @@ module Decode =
     /// seconds and may have a fraction of one to seven digits. A zone may end it, which is `Z` or an offset of
     /// `+hh:mm` or `-hh:mm` up to 14:00. A date alone is midnight. Any other text is an error on every target, also `1`, `2020`, `5` and
     /// `12:00`, which the parse of a target would read. A text with a zone gives the same instant on every target.
-    /// .NET keeps the UTC kind of a `Z`. Fable gives the kind Local on Python and Unspecified on JavaScript.
+    /// .NET keeps the UTC kind of a `Z`. On Fable the kind depends on the time zone of the host.
     let datetime (node: YamlNode) : DateTime =
         let scalar = scalarOf "a DateTime" node
         match parseDateTime scalar.Value with
