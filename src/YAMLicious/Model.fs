@@ -380,6 +380,9 @@ type DocumentMarker =
 /// document whose root is missing keeps all its trivia in `BeforeRoot`. `AfterRoot` holds trivia behind the
 /// root only when the document ends at the end of the stream or in front of a `...`, and only when the root
 /// is not a block collection, because the trivia behind a block collection go to its `End` (rule R4).
+/// `AfterEndMarker` holds the trivia behind the `...` of the document when no document follows them, so up to
+/// the end of the stream or up to the next `...`. Trivia behind the `...` in front of a following document go to
+/// that document.
 [<NoEquality; NoComparison>]
 type YamlDocument =
     { Prelude: PreludeItem list
@@ -388,6 +391,7 @@ type YamlDocument =
       Root: YamlNode
       AfterRoot: Trivia list
       EndMarker: DocumentMarker option
+      AfterEndMarker: Trivia list
       Span: SourceSpan option }
 
 /// A piece of a stream.
@@ -402,13 +406,13 @@ type StreamPart =
 
 /// A stream of documents. It may hold no document.
 ///
-/// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds trivia that stand behind a `...`
-/// and in front of no document. That includes the trivia between a `...` and an `ExtraEndMarker` and the trivia in
-/// front of an `ExtraEndMarker` that no document precedes, as in `# c` followed by `...` and a document. A `...`
-/// is the end marker of a document part or an `ExtraEndMarker` part. When the stream has no document,
-/// `StreamPart.Trivia` holds the whole input. Trivia behind a `...` and in front of a following document go
-/// to that document, to its `Prelude` when it has directives or a `---` and otherwise by the rule on
-/// `YamlDocument`.
+/// Rule R3 (trivia that belong to no document). `StreamPart.Trivia` holds trivia that stand behind an
+/// `ExtraEndMarker` and in front of no document, and the trivia in front of an `ExtraEndMarker` that no document
+/// precedes, as in `# c` followed by `...` and a document. The trivia behind the `...` of a document and in front
+/// of no document go to its `AfterEndMarker`. A `...` is the end marker of a document part or an `ExtraEndMarker`
+/// part. When the stream has no document, `StreamPart.Trivia` holds the whole input. Trivia behind a `...` and
+/// in front of a following document go to that document, to its `Prelude` when it has directives or a `---`
+/// and otherwise by the rule on `YamlDocument`.
 ///
 /// yaml@2.6.1 keeps the trivia in front of a following `---` in the document before. The model gives them
 /// to the next document. Both write the same text when the stream is written again.

@@ -59,13 +59,13 @@ let private singleTests = testList "Single documents" [
         expectStream "key: value\n..." [ document (closed (plainDocument (mapOf [ "key", sc "value" ]))) ]
         expectStream "key: value\n... # end" [ document { plainDocument (mapOf [ "key", sc "value" ]) with EndMarker = Some(marker (Some " end")) } ]
 
-    // Tests.YamlRead "Reader.read stops at document end marker". yaml@2.6.1 reads both inputs as {"key":"value"}. A comment behind the end marker is trivia that
-    // belongs to no document.
-    testCase "a comment behind an end marker belongs to no document" <| fun _ ->
+    // Tests.YamlRead "Reader.read stops at document end marker". yaml@2.6.1 reads both inputs as {"key":"value"} and keeps the comment behind the end marker as
+    // the comment of the document. The comment goes to the AfterEndMarker of the document here.
+    testCase "a comment behind the end marker of the last document stays with that document" <| fun _ ->
         expectStream "---\nkey: value\n...\n" [ document (closed (explicitDocument (mapOf [ "key", sc "value" ]))) ]
         expectStream
             "---\nkey: value\n...\n# c\n"
-            [ document (closed (explicitDocument (mapOf [ "key", sc "value" ]))); StreamPart.Trivia(note " c") ]
+            [ document { closed (explicitDocument (mapOf [ "key", sc "value" ])) with AfterEndMarker = [ note " c" ] } ]
         // Text behind the end marker is a second document.
         expectStream
             "---\nkey: value\n...\ntrailing: ignored"
@@ -275,18 +275,18 @@ let private rootTriviaTests = testList "Trivia around the root (rule R3)" [
 let private suffixTests = testList "End markers without a document" [
     // Spec example 9.3. yaml@2.6.1 reads `a`, `...`, `# c`, `...` as the two documents "a" and null. YAML 1.2.2 (9.2) has a document suffix
     // without a document: l-yaml-stream is l-document-prefix* l-any-document? (l-document-suffix+ l-document-prefix* l-any-document? | l-document-prefix* l-explicit-document?)*,
-    // and only a `---` or a bare node makes a document. So the second `...` is a suffix with no document in front of it, and the stream has one document, the comment and an extra end marker.
+    // and only a `---` or a bare node makes a document. So the second `...` is a suffix with no document in front of it, and the stream has one document with the comment
+    // behind its end marker, and an extra end marker.
     testCase "a second end marker with a comment between is an extra end marker and no document" <| fun _ ->
         expectStream
             "a\n...\n# c\n...\n"
-            [ document (closed (plainDocument (sc "a"))); StreamPart.Trivia(note " c"); StreamPart.ExtraEndMarker(marker None) ]
+            [ document { closed (plainDocument (sc "a")) with AfterEndMarker = [ note " c" ] }; StreamPart.ExtraEndMarker(marker None) ]
 
     // Spec example 9.3, "Bare documents". yaml@2.6.1 reads three documents: "Bare document", null and "%!PS-Adobe-2.0 # Not the first line\n". The specification has two.
     testCase "example 9.3 has two documents, a comment and an extra end marker" <| fun _ ->
         expectStream
             "Bare\ndocument\n...\n# No document\n...\n|\n%!PS-Adobe-2.0 # Not the first line\n"
-            [ document (closed (plainDocument (scLines [ "Bare"; "document" ])))
-              StreamPart.Trivia(note " No document")
+            [ document { closed (plainDocument (scLines [ "Bare"; "document" ])) with AfterEndMarker = [ note " No document" ] }
               StreamPart.ExtraEndMarker(marker None)
               document (plainDocument (lit "%!PS-Adobe-2.0 # Not the first line\n")) ]
 
@@ -296,7 +296,8 @@ let private suffixTests = testList "End markers without a document" [
         expectStream "...\n..." [ StreamPart.ExtraEndMarker(marker None); StreamPart.ExtraEndMarker(marker None) ]
         expectStream "...\na: 1" [ StreamPart.ExtraEndMarker(marker None); document (plainDocument (mapOf [ "a", sc "1" ])) ]
         expectStream "# c\n...\n" [ StreamPart.Trivia(note " c"); StreamPart.ExtraEndMarker(marker None) ]
-        expectStream "a\n...\n\n# c\n" [ document (closed (plainDocument (sc "a"))); StreamPart.Trivia blank; StreamPart.Trivia(note " c") ]
+        expectStream "a\n...\n\n# c\n" [ document { closed (plainDocument (sc "a")) with AfterEndMarker = [ blank; note " c" ] } ]
+        expectStream "a\n...\n...\n# c\n" [ document (closed (plainDocument (sc "a"))); StreamPart.ExtraEndMarker(marker None); StreamPart.Trivia(note " c") ]
         expectStream "a\n...\n... # e\n" [ document (closed (plainDocument (sc "a"))); StreamPart.ExtraEndMarker(marker (Some " e")) ]
 
     // By [211] `# c`, `...` and a bare document are l-document-prefix* (no document), l-document-suffix and a bare document, so the comment in front of a `...` that ends no document belongs to

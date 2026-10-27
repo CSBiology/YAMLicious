@@ -90,7 +90,8 @@ module internal NodePath =
 ///   the End of the root collection.
 /// - A document: `BeforeRoot` is empty in front of a block collection without a property and `AfterRoot`
 ///   is empty behind a block collection, behind a missing root and in front of a document that follows
-///   without a `...` between (R3).
+///   without a `...` between. `AfterEndMarker` is empty without an end marker and in front of a document that
+///   follows (R3).
 /// - A block scalar with the chomping Keep (R5): when the stored Keep is the chomping that the writer writes for
 ///   the value, no blank line follows its last line directly when more content follows, because l-chomped-empty
 ///   makes that line part of the value ([165] to [169]). The stored Keep is that chomping when the value can stand
@@ -102,7 +103,8 @@ module internal NodePath =
 ///   document. Only trivia and markers follow there, and the parser reads a line that holds a byte order mark as the
 ///   blank line that ends the scalar, and so a line that holds a tab behind a root scalar.
 /// - A stream: `StreamPart.Trivia` does not stand in front of a document, and in a stream with a document
-///   it stands behind a `...` or at the start of the stream in front of an `ExtraEndMarker` only (R3). An
+///   it stands behind an `ExtraEndMarker` or at the start of the stream in front of one only. The trivia behind
+///   the `...` of a document belong to its `AfterEndMarker` (R3). An
 ///   `ExtraEndMarker` stands at the start of the stream or behind a part that ends with a `...`, because
 ///   behind a document without one the parser reads the `...` as the end marker of that document (R3).
 ///
@@ -669,6 +671,7 @@ module Validate =
         checkComment report "EndMarker.TrailingComment" (markerComment document.EndMarker)
         checkTrivia report "BeforeRoot" document.BeforeRoot
         checkTrivia report "AfterRoot" document.AfterRoot
+        checkTrivia report "AfterEndMarker" document.AfterEndMarker
         if not document.BeforeRoot.IsEmpty && isBareBlockCollection root then
             errors.Add(prefix + "BeforeRoot: the trivia belong to the Before of the first entry or item of the root collection (R3)")
         // Behind the root only trivia and markers follow, see `blankInTail`.
@@ -684,6 +687,11 @@ module Validate =
                 errors.Add(prefix + "AfterRoot: a document whose root is missing keeps all its trivia in BeforeRoot (R3)")
             elif followedByDocument && document.EndMarker.IsNone then
                 errors.Add(prefix + "AfterRoot: the trivia in front of the next document belong to its Prelude when no `...` stands between (R3)")
+        if not document.AfterEndMarker.IsEmpty then
+            if document.EndMarker.IsNone then
+                errors.Add(prefix + "AfterEndMarker: a document without a `...` keeps the trivia behind its root in AfterRoot or in the End of the root collection (R3)")
+            elif followedByDocument then
+                errors.Add(prefix + "AfterEndMarker: the trivia in front of the next document belong to that document (R3)")
 
     /// The problems of a document, in the order of the tree. The list is empty when the document is valid.
     let document (document: YamlDocument) : string list =
@@ -743,19 +751,25 @@ module Validate =
                     match following.[i] with
                     | Some (StreamPart.Document _) -> true
                     | _ -> false
-                let behindMarker =
+                let behindExtraEndMarker =
                     match previous with
-                    | Some part -> endsWithMarker part
-                    | None -> false
+                    | Some (StreamPart.ExtraEndMarker _) -> true
+                    | _ -> false
+                let behindEndMarker =
+                    match previous with
+                    | Some (StreamPart.Document document) -> document.EndMarker.IsSome
+                    | _ -> false
                 // A `...` that ends no document makes an ExtraEndMarker, and the trivia in front of it belong to no document
                 // either, but only at the start of the stream. Behind a document without a `...` the marker would end that
-                // document, and behind another marker `behindMarker` has accepted the trivia already.
+                // document, and behind another extra marker `behindExtraEndMarker` has accepted the trivia already.
                 let beforeExtraEndMarker =
                     match following.[i] with
                     | Some (StreamPart.ExtraEndMarker _) -> previous.IsNone
                     | _ -> false
                 if beforeDocument then
                     errors.Add(at + ": trivia in front of a document belong to that document (R3)")
-                elif hasDocument && not behindMarker && not beforeExtraEndMarker then
-                    errors.Add(at + ": trivia stand in the stream only behind a `...` or at the start of the stream in front of an extra end marker, and otherwise they belong to a document (R3)")
+                elif behindEndMarker then
+                    errors.Add(at + ": trivia behind the `...` of a document belong to its AfterEndMarker (R3)")
+                elif hasDocument && not behindExtraEndMarker && not beforeExtraEndMarker then
+                    errors.Add(at + ": trivia stand in the stream only behind an extra end marker or at the start of the stream in front of one, and otherwise they belong to a document (R3)")
         List.ofSeq errors

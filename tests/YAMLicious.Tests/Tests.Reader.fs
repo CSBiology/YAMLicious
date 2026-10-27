@@ -72,15 +72,52 @@ let private singleTests = testList "A single document" [
         expectDocument (Reader.read text) expected "read"
         Expect.nodeEqual (Reader.readRoot text) expected.Root "readRoot"
 
-    // yaml@2.6.1 reads `a: 1` followed by `...`, with or without a comment behind it, as {"a":1}. A comment behind the end marker belongs to no document, so
-    // read drops it and readDocuments keeps it.
-    testCase "an end marker closes the only document and a comment behind it is no document" <| fun _ ->
+    // yaml@2.6.1 reads `a: 1` followed by `...`, with or without a comment behind it, as {"a":1}, and keeps the comment as the comment of the document. The comment goes
+    // to the AfterEndMarker of the document, in read and in readDocuments.
+    testCase "an end marker closes the only document and the comment behind it stays with the document" <| fun _ ->
         let closed = { YamlDocument.create (mapOf [ "a", sc "1" ]) with EndMarker = Some(marker None) }
         expectDocument (Reader.read "a: 1\n...\n") closed "An end marker"
-        expectDocument (Reader.read "a: 1\n...\n# c\n") closed "A comment behind the end marker"
+        expectDocument (Reader.read "a: 1\n...\n# c\n") { closed with AfterEndMarker = [ note " c" ] } "A comment behind the end marker"
         match (Reader.readDocuments "a: 1\n...\n# c\n").Parts with
-        | [ StreamPart.Document _; StreamPart.Trivia _ ] -> ()
-        | parts -> failwith (sprintf "The stream holds %d parts, not a document and a comment" parts.Length)
+        | [ StreamPart.Document document ] -> expectDocument document { closed with AfterEndMarker = [ note " c" ] } "The document of the stream"
+        | parts -> failwith (sprintf "The stream holds %d parts, not one document" parts.Length)
+
+    // yaml@2.6.1 writes `a: 1`, `...` and `# trailer` back as `a: 1` and `... # trailer`, and `a`, `... # e`, `# c` and `# d` as `a`, `...` and the three comments
+    // on their own lines. It drops the blank lines.
+    testCase "read and write give back the comments and blank lines behind the end marker" <| fun _ ->
+        let texts =
+            [ "a: 1\n...\n# trailer\n"
+              "a: 1\n...\n\n# trailer\n\n"
+              "a\n... # e\n# c\n# d\n"
+              "|\n  x\n...\n# c\n"
+              "|+\n  x\n\n...\n\n# c\n"
+              "---\n...\n# c\n"
+              "[a]\n# t\n...\n# u\n"
+              "a:\n  b: 1\n  # e\n...\n# f\n" ]
+        for text in texts do
+            let document = Reader.read text
+            Expect.equal (Writer.write WriterOptions.defaults document) text (sprintf "write of %A" text)
+            match Reader.documents (Reader.readDocuments text) with
+            | [ single ] -> expectDocument single document (sprintf "readDocuments of %A" text)
+            | documents -> failwith (sprintf "%A holds %d documents" text documents.Length)
+
+    // yaml@2.6.1 writes `a: 1`, `...`, `# c`, `---` and `b: 2` back unchanged. It reads the second text as three documents, {"a":1}, null and "b", where the model
+    // has two documents with an extra end marker between them.
+    testCase "the trivia behind an end marker go to the next document when one follows" <| fun _ ->
+        let marker = Some(marker None)
+        let stream = Reader.readDocuments "a: 1\n...\n# c\n---\nb: 2\n"
+        match stream.Parts with
+        | [ StreamPart.Document first; StreamPart.Document second ] ->
+            Expect.isTrue first.AfterEndMarker.IsEmpty "Nothing behind the first end marker"
+            expectDocument second { YamlDocument.create (mapOf [ "b", sc "2" ]) with Prelude = [ PreludeItem.PreludeTrivia(note " c") ]; StartMarker = marker } "The comment in the prelude"
+        | parts -> failwith (sprintf "The stream holds %d parts, not two documents" parts.Length)
+        for text in [ "a: 1\n...\n# c\n---\nb: 2\n"; "a: 1\n...\n# c\n\n...\n# d\n--- b\n" ] do
+            Expect.equal (Writer.writeDocuments WriterOptions.defaults (Reader.readDocuments text)) text (sprintf "writeDocuments of %A" text)
+        match (Reader.readDocuments "a: 1\n...\n# c\n\n...\n# d\n--- b\n").Parts with
+        | [ StreamPart.Document first; StreamPart.ExtraEndMarker _; StreamPart.Document second ] ->
+            expectDocument first { YamlDocument.create (mapOf [ "a", sc "1" ]) with EndMarker = marker; AfterEndMarker = [ note " c"; blank ] } "Behind the first end marker"
+            expectDocument second { YamlDocument.create (sc "b") with Prelude = [ PreludeItem.PreludeTrivia(note " d") ]; StartMarker = marker } "In front of the second document"
+        | parts -> failwith (sprintf "The stream holds %d parts, not a document, an extra end marker and a document" parts.Length)
 
     // `# c`, `...` and `a: 1`: yaml@2.6.1 reads the documents null and {"a":1}. YAML 1.2.2 (9.2) has a document suffix without a document, so the
     // model has one document, the comment and an extra end marker. read returns the only document.
@@ -224,7 +261,7 @@ let private streamTests = testList "Streams" [
     // Spec example 9.3: two documents with a comment and an extra end marker between them. Reader.documents lists the documents only.
     testCase "documents leaves out the trivia and the extra end markers" <| fun _ ->
         let stream = Reader.readDocuments "Bare\ndocument\n...\n# No document\n...\n|\n%!PS-Adobe-2.0 # Not the first line\n"
-        Expect.equal (List.length stream.Parts) 4 "A document, a comment, an extra end marker and a document"
+        Expect.equal (List.length stream.Parts) 3 "A document with a comment behind its end marker, an extra end marker and a document"
         let documents = Reader.documents stream
         Expect.equal (List.length documents) 2 "Two documents"
         Expect.nodeEqual documents.Head.Root (scLines [ "Bare"; "document" ]) "The first root"

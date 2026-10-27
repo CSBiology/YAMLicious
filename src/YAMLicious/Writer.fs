@@ -1833,6 +1833,7 @@ type internal Engine(options: WriterOptions) =
         if document.EndMarker.IsSome then
             this.WriteMarker("...", document.EndMarker)
             out.EndLine()
+            this.WriteTrivia(document.AfterEndMarker, 0)
 
     member this.WriteStream(stream: YamlStream, prefixParts: bool) =
         let mutable open_ = false

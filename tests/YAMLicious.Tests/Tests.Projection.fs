@@ -367,6 +367,7 @@ let tests_comments = testList "Presentation projection: comments and blank lines
               Root = root
               AfterRoot = [ BlankLine None; FullLineComment (comment " ar") ]
               EndMarker = marker " e"
+              AfterEndMarker = [ FullLineComment (comment " ae") ]
               Span = None }
         let text = Projection.presentation (streamOf [ StreamPart.Document doc ])
         let trivia =
@@ -378,7 +379,8 @@ let tests_comments = testList "Presentation projection: comments and blank lines
             + """{"kind":"comment","text":" root","line":null,"col":null,"placement":"endOfLine","slot":"root.TrailingComment","path":"","doc":0},"""
             + """{"kind":"blank","text":null,"line":null,"col":null,"placement":"ownLine","slot":"AfterRoot[0]","path":"","doc":0},"""
             + """{"kind":"comment","text":" ar","line":null,"col":null,"placement":"ownLine","slot":"AfterRoot[1]","path":"","doc":0},"""
-            + """{"kind":"comment","text":" e","line":null,"col":null,"placement":"endOfLine","slot":"EndMarker.TrailingComment","path":"","doc":0}"""
+            + """{"kind":"comment","text":" e","line":null,"col":null,"placement":"endOfLine","slot":"EndMarker.TrailingComment","path":"","doc":0},"""
+            + """{"kind":"comment","text":" ae","line":null,"col":null,"placement":"ownLine","slot":"AfterEndMarker[0]","path":"","doc":0}"""
         let expected =
             """{"docCount":1,"docs":[{"styles":[{"path":"","role":"value","style":"plain"}],"collections":[],"layouts":[],"""
             + """"directives":{"yaml":"1.2","tags":[["!e!","tag:example.com,2000:"]],"reserved":[["FOO",["a","b"]]]},"docStart":true,"docEnd":true}],"trivia":["""

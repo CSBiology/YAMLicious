@@ -305,6 +305,7 @@ let tests_documents = testList "Document equality" [
               "after root", { bare with AfterRoot = [ FullLineComment (comment " c") ] }
               "end marker", { bare with EndMarker = marker None None }
               "end marker comment", { bare with EndMarker = marker (Some (comment " c")) None }
+              "after end marker", { bare with EndMarker = marker None None; AfterEndMarker = [ FullLineComment (comment " c") ] }
               "other root", YamlDocument.create (YamlNode.plain "other") ]
         Expect.isTrue (YamlDocument.equalIgnoringSpans bare (YamlDocument.create root)) "The bare document equals its copy"
         for (name, variant) in variants do
@@ -324,6 +325,7 @@ let tests_documents = testList "Document equality" [
               Root = { root with Span = span }
               AfterRoot = []
               EndMarker = marker (Some (comment " e")) span
+              AfterEndMarker = [ FullLineComment { Text = " f"; Span = span } ]
               Span = span }
         Expect.isTrue (YamlDocument.equalIgnoringSpans (build (Some someSpan)) (build None)) "with and without spans"
         Expect.isTrue (YamlDocument.equalIgnoringSpans (build (Some someSpan)) (build (Some otherSpan))) "other spans"
@@ -414,6 +416,7 @@ let tests_show = testList "show" [
               Root = YamlNode.plain "a"
               AfterRoot = [ FullLineComment (comment " z") ]
               EndMarker = marker (Some (comment " e")) None
+              AfterEndMarker = [ BlankLine None; FullLineComment (comment " f") ]
               Span = None }
         let expected =
             "document\n"
@@ -424,6 +427,7 @@ let tests_show = testList "show" [
             + "  root: scalar plain \"a\"\n"
             + "  after-root=[#\" z\"]\n"
             + "  end-marker comment=#\" e\"\n"
+            + "  after-end-marker=[blank; #\" f\"]\n"
         Expect.equal (YamlDocument.show document) expected "document"
 
     testCase "anchor, alias and tag names are escaped like the text of a scalar" <| fun _ ->

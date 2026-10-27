@@ -1631,6 +1631,7 @@ type internal YamlParser(cursor: Cursor) =
                   Root = docRoot
                   AfterRoot = List.ofSeq docAfter
                   EndMarker = endMarker
+                  AfterEndMarker = []
                   Span = Some (spanBetween docStart finish) }
         )
         docPrelude.Clear()
@@ -1653,6 +1654,19 @@ type internal YamlParser(cursor: Cursor) =
         | _ ->
             this.Unread next
             None
+
+    /// Places the trivia behind a `...` that another `...` or the end of the text follows. They go to the
+    /// `AfterEndMarker` of the document that the first `...` ended, and to the stream behind an extra end marker
+    /// or without a document in front (rule R3).
+    member private _.FlushPendingBehindEnd() =
+        if pending.Count > 0 then
+            match (if parts.Count > 0 then Some parts.[parts.Count - 1] else None) with
+            | Some (StreamPart.Document document) ->
+                parts.[parts.Count - 1] <- StreamPart.Document { document with AfterEndMarker = List.ofSeq pending }
+            | _ ->
+                for trivia in pending do
+                    parts.Add(StreamPart.Trivia trivia)
+            pending.Clear()
 
     member private this.FlushPendingToPrelude() =
         for trivia in pending do
@@ -1715,9 +1729,7 @@ type internal YamlParser(cursor: Cursor) =
             else
                 if hasDirective then
                     failWith YamlErrorCode.DirectiveWithoutDocumentStart "A directive needs a `---` behind it." tok.Span []
-                for trivia in pending do
-                    parts.Add(StreamPart.Trivia trivia)
-                pending.Clear()
+                this.FlushPendingBehindEnd()
                 parts.Add(StreamPart.ExtraEndMarker marker)
         | Lexeme.StreamEnd ->
             if docOpen then
@@ -1725,9 +1737,7 @@ type internal YamlParser(cursor: Cursor) =
             else
                 if hasDirective then
                     failWith YamlErrorCode.DirectiveWithoutDocumentStart "A directive needs a `---` behind it." tok.Span []
-                for trivia in pending do
-                    parts.Add(StreamPart.Trivia trivia)
-                pending.Clear()
+                this.FlushPendingBehindEnd()
             finished <- true
         | _ -> failWith YamlErrorCode.UnexpectedContent "A document marker or the end of the text was expected." tok.Span []
 

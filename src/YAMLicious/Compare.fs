@@ -147,6 +147,7 @@ module internal NodeComparison =
         && triviaListEqual left.BeforeRoot right.BeforeRoot
         && triviaListEqual left.AfterRoot right.AfterRoot
         && markerEqual left.EndMarker right.EndMarker
+        && triviaListEqual left.AfterEndMarker right.AfterEndMarker
         && nodesEqualIgnoringSpans left.Root right.Root
 
     let private partEqual (a: StreamPart) (b: StreamPart) =
@@ -390,6 +391,8 @@ module internal NodeComparison =
         if not document.AfterRoot.IsEmpty then
             output.Append("  after-root=").Append(showTriviaList document.AfterRoot).Append('\n') |> ignore
         appendMarker output "  " "end-marker" document.EndMarker
+        if not document.AfterEndMarker.IsEmpty then
+            output.Append("  after-end-marker=").Append(showTriviaList document.AfterEndMarker).Append('\n') |> ignore
 
     /// A readable printout of the document, without spans.
     let showDocument (document: YamlDocument) : string =

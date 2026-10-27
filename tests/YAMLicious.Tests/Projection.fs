@@ -590,7 +590,7 @@ module Projection =
     /// items are in source order. `slot` names the field of the model that holds the item, for example
     /// `root.entries[2].Before[0]`, `root.TrailingComment` or `root.entries[0].Colon.Comment`. The slots outside the
     /// tree are `Prelude[i]`, `Prelude[i].TrailingComment`, `StartMarker.TrailingComment`, `BeforeRoot[i]`,
-    /// `AfterRoot[i]`, `EndMarker.TrailingComment`, `Parts[i]` and `Parts[i].TrailingComment`. `doc` is the index
+    /// `AfterRoot[i]`, `EndMarker.TrailingComment`, `AfterEndMarker[i]`, `Parts[i]` and `Parts[i].TrailingComment`. `doc` is the index
     /// of the document, or null for a part of the stream. A path of a node deeper than 64 levels shows `(N)`
     /// and its last 8 segments. The line and the column come from the span of the comment. A blank line has
     /// the line of its span, or a null line when a program constructed it.
@@ -607,7 +607,7 @@ module Projection =
             | StreamPart.Document document ->
                 trivia.Document <- count
                 let lists = newLists ()
-                // The order of the text: prelude, start marker, trivia in front of the root, the root, trivia behind it, end marker.
+                // The order of the text: prelude, start marker, trivia in front of the root, the root, trivia behind it, end marker, trivia behind that.
                 let mutable index = 0
                 for item in document.Prelude do
                     match item with
@@ -636,6 +636,7 @@ module Projection =
                     | Some comment -> appendComment trivia comment documentPath "EndMarker.TrailingComment" false
                     | None -> ()
                 | None -> ()
+                walkTriviaList trivia documentPath "AfterEndMarker" document.AfterEndMarker
                 trivia.Document <- -1
                 if count > 0 then documents.Append(',') |> ignore
                 documents.Append("{\"styles\":[").Append(lists.Styles.ToString()).Append("],\"collections\":[").Append(lists.Collections.ToString()).Append("],\"layouts\":[").Append(lists.Layouts.ToString()).Append("],") |> ignore

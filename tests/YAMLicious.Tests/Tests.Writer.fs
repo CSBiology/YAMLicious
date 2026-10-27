@@ -740,7 +740,9 @@ let private documentTests = testList "Documents" [
     testCase "an extra end marker and the trivia of a stream" <| fun _ ->
         let extra = StreamPart.ExtraEndMarker(marker (Some " e"))
         Expect.equal (writeStream [ StreamPart.Trivia(note " c"); extra; StreamPart.Document(document (sc "a")) ]) "# c\n... # e\na\n" "Trivia and a marker in front of a document"
-        Expect.equal (writeStream [ StreamPart.Document { document (sc "a") with EndMarker = Some(marker None) }; StreamPart.Trivia blank; StreamPart.Trivia(note " t") ]) "a\n...\n\n# t\n" "Trivia behind a document"
+        Expect.equal (writeStream [ StreamPart.Document { document (sc "a") with EndMarker = Some(marker None); AfterEndMarker = [ blank; note " t" ] } ]) "a\n...\n\n# t\n" "Trivia behind a document"
+        Expect.equal (writeStream [ StreamPart.Document { document (sc "a") with EndMarker = Some(marker None) }; extra; StreamPart.Trivia(note " t") ]) "a\n...\n... # e\n# t\n" "Trivia behind an extra end marker"
+        Expect.equal (Writer.write defaults { document (sc "a") with EndMarker = Some(marker None); AfterEndMarker = [ note " t" ] }) "a\n...\n# t\n" "Trivia behind the end marker of a single document"
 
     // yaml@2.6.1 reads the expected texts as "a", "a".
     testCase "the trivia behind the root of a scalar document stay behind it" <| fun _ ->

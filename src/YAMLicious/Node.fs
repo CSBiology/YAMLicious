@@ -365,6 +365,7 @@ module YamlDocument =
           Root = root
           AfterRoot = []
           EndMarker = None
+          AfterEndMarker = []
           Span = None }
 
     /// True when both documents are equal except for their source spans. This is the comparison for

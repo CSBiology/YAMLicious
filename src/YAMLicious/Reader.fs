@@ -64,8 +64,9 @@ module Reader =
     /// missing root that keeps every comment and blank line of the stream in `BeforeRoot`. The first `...` of
     /// such a text is its end marker, and the others are lost with their comments. A single document cannot hold
     /// the shape of `# a`, `...`, `# b` and `...`, which has two comments with an end marker after each, so the
-    /// position of the second comment and the second marker are lost. The trivia of the stream around a single
-    /// document are not part of the document either. `readDocuments` keeps all of them.
+    /// position of the second comment and the second marker are lost. A single document keeps the trivia behind
+    /// its `...` in `AfterEndMarker`, so `Writer.write` gives them back. A second `...` behind it is lost with the
+    /// trivia that follow that marker. `readDocuments` keeps all of them.
     let tryRead (text: string) : Result<YamlDocument, YamlError> =
         match tryReadDocuments text with
         | Error error -> Error error

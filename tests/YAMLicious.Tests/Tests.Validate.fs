@@ -281,7 +281,7 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOf (Validate.document { YamlDocument.create YamlNode.empty with AfterRoot = after })) [ "AfterRoot" ] "AfterRoot with a missing root"
         Expect.equal (Validate.document { YamlDocument.create YamlNode.empty with BeforeRoot = after }) [] "BeforeRoot with a missing root"
 
-    testCase "trivia of the stream stand behind a ... or at the start of the stream in front of an extra end marker and nowhere else" <| fun _ ->
+    testCase "trivia of the stream stand behind an extra end marker or at the start of the stream in front of one and nowhere else" <| fun _ ->
         let marker: DocumentMarker = { TrailingComment = None; Span = None }
         let document (text: string) = StreamPart.Document (YamlDocument.create (number text))
         let closed (text: string) = StreamPart.Document { YamlDocument.create (number text) with EndMarker = Some marker }
@@ -291,16 +291,17 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOfParts []) [] "empty stream"
         Expect.equal (slotsOfParts [ trivia ]) [] "only trivia"
         Expect.equal (slotsOfParts [ trivia; extra ]) [] "trivia and an extra end marker without a document"
-        Expect.equal (slotsOfParts [ closed "a"; trivia ]) [] "trivia behind the end marker of the last document"
-        Expect.equal (slotsOfParts [ closed "a"; trivia; trivia ]) [] "a run of trivia behind the end marker"
+        // The trivia behind the `...` of a document belong to its AfterEndMarker.
+        Expect.equal (slotsOfParts [ closed "a"; trivia ]) [ "Parts[1]" ] "trivia behind the end marker of the last document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; trivia ]) [ "Parts[1]"; "Parts[2]" ] "a run of trivia behind the end marker"
         Expect.equal (slotsOfParts [ closed "a"; extra; trivia ]) [] "trivia behind an extra end marker"
-        Expect.equal (slotsOfParts [ closed "a"; trivia; extra ]) [] "trivia between an end marker and an extra end marker"
-        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; trivia ]) [] "trivia on both sides of an extra end marker"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra ]) [ "Parts[1]" ] "trivia between an end marker and an extra end marker"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; trivia ]) [ "Parts[1]" ] "trivia on both sides of an extra end marker"
         Expect.equal (slotsOfParts [ document "a"; trivia ]) [ "Parts[1]" ] "trivia behind a document without a ..."
         Expect.equal (slotsOfParts [ trivia; document "a" ]) [ "Parts[0]" ] "trivia in front of a document"
         Expect.equal (slotsOfParts [ closed "a"; trivia; document "b" ]) [ "Parts[1]" ] "trivia between two documents"
         Expect.equal (slotsOfParts [ closed "a"; trivia; trivia; document "b" ]) [ "Parts[1]"; "Parts[2]" ] "a run of trivia in front of a document"
-        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; document "b" ]) [] "trivia between an end marker and an extra end marker, then a document"
+        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; document "b" ]) [ "Parts[1]" ] "trivia between an end marker and an extra end marker, then a document"
         // By [211] a stream is l-document-prefix* (no document) l-document-suffix and then a bare document, so the trivia in front of a `...` that ends no document belong to no document.
         Expect.equal (slotsOfParts [ trivia; extra; document "a" ]) [] "trivia in front of an extra end marker at the start of a stream with a document"
         Expect.equal (slotsOfParts [ trivia; trivia; extra; trivia; extra; document "b" ]) [] "trivia in front of two extra end markers, then a document"
@@ -314,6 +315,22 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOfParts [ trivia; withMarker ]) [ "Parts[0]" ] "trivia in front of a document with a start marker"
         let problems = Validate.stream { Parts = [ trivia; document "a" ] }
         Expect.stringContains problems.Head "(R3)" "rule"
+        Expect.stringContains (Validate.stream { Parts = [ closed "a"; trivia ] }).Head "AfterEndMarker" "The message names the slot"
+
+    testCase "AfterEndMarker holds trivia behind the ... of a document that no document follows" <| fun _ ->
+        let marker: DocumentMarker = { TrailingComment = None; Span = None }
+        let after = [ lineComment " t"; Trivia.BlankLine None ]
+        let closed = { YamlDocument.create (number "a") with EndMarker = Some marker; AfterEndMarker = after }
+        let slotsOfParts (parts: StreamPart list) = slotsOf (Validate.stream { Parts = parts })
+        Expect.equal (Validate.document closed) [] "behind the end marker of a single document"
+        Expect.equal (slotsOfParts [ StreamPart.Document closed ]) [] "at the end of the stream"
+        Expect.equal (slotsOfParts [ StreamPart.Document closed; StreamPart.ExtraEndMarker marker; StreamPart.Trivia (lineComment " u") ]) [] "in front of an extra end marker"
+        let missing = { YamlDocument.create YamlNode.empty with StartMarker = Some marker; EndMarker = Some marker; AfterEndMarker = after }
+        Expect.equal (Validate.document missing) [] "behind a document whose root is missing"
+        Expect.equal (slotsOf (Validate.document { closed with EndMarker = None })) [ "AfterEndMarker" ] "without an end marker"
+        let next = StreamPart.Document { YamlDocument.create (number "b") with StartMarker = Some marker }
+        Expect.equal (slotsOfParts [ StreamPart.Document closed; next ]) [ "Parts[0].AfterEndMarker" ] "in front of a document"
+        Expect.equal (slotsOf (Validate.document { closed with AfterEndMarker = [ lineComment " a\nb" ] })) [ "AfterEndMarker[0]" ] "the characters of a comment"
 
     // By [211] a `...` behind a document without an end marker is the end marker of that document, so the stream holds no extra end marker there.
     testCase "an extra end marker stands at the start of the stream or behind a ... and nowhere else" <| fun _ ->
@@ -327,7 +344,8 @@ let tests_rule_checks = testList "Validate: separations, documents and streams" 
         Expect.equal (slotsOfParts [ extra; extra; document "a" ]) [] "two extra end markers in front of a document"
         Expect.equal (slotsOfParts [ closed "a"; extra ]) [] "an extra end marker behind a document with an end marker"
         Expect.equal (slotsOfParts [ closed "a"; extra; extra; document "b" ]) [] "two extra end markers between two documents"
-        Expect.equal (slotsOfParts [ closed "a"; trivia; extra; document "b" ]) [] "trivia and an extra end marker between two documents"
+        let commented = StreamPart.Document { YamlDocument.create (number "a") with EndMarker = Some marker; AfterEndMarker = [ lineComment " t" ] }
+        Expect.equal (slotsOfParts [ commented; extra; document "b" ]) [] "trivia and an extra end marker between two documents"
         Expect.equal (slotsOfParts [ document "a"; extra ]) [ "Parts[1]" ] "an extra end marker behind a document without a ..."
         Expect.equal (slotsOfParts [ document "a"; extra; document "b" ]) [ "Parts[1]" ] "an extra end marker between two documents, the first without a ..."
         Expect.equal (slotsOfParts [ document "a"; extra; trivia ]) [ "Parts[1]" ] "trivia behind an extra end marker that follows a document without a ..."
@@ -511,8 +529,10 @@ let tests_rules = testList "Slot rules" [
         // a
         // ...
         // # t
-        let behindLast: YamlStream = { Parts = [ StreamPart.Document { first with EndMarker = marker }; StreamPart.Trivia (lineComment " t") ] }
+        let behindLast: YamlStream = { Parts = [ StreamPart.Document { first with EndMarker = marker; AfterEndMarker = [ lineComment " t" ] } ] }
         Expect.equal (Validate.stream behindLast) [] "trivia behind the last ..."
+        let inStream: YamlStream = { Parts = [ StreamPart.Document { first with EndMarker = marker }; StreamPart.Trivia (lineComment " t") ] }
+        Expect.equal (slotsOf (Validate.stream inStream)) [ "Parts[1]" ] "The trivia behind the last ... in the stream are wrong"
         // a
         // # t
         let noEnd: YamlStream = { Parts = [ StreamPart.Document { first with AfterRoot = [ lineComment " t" ] } ] }
