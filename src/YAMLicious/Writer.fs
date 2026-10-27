@@ -41,7 +41,15 @@ module WriterOptions =
 /// empty.
 type WriteError = { Message: string; Path: string list }
 
+/// Raised by the writer. On .NET `Message` is the message of the error, behind `At` and the segments of the path
+/// joined with `/` when the path has any. Fable compiles the override to a method that JavaScript and Python never
+/// call, so a caller on those targets reads the payload.
 exception YamlWriteException of WriteError
+    with
+        override this.Message =
+            match this.Data0.Path with
+            | [] -> this.Data0.Message
+            | path -> "At " + String.concat "/" path + ": " + this.Data0.Message
 
 /// The text rules of scalars. They say which characters stand raw and when a plain scalar is safe, and they spell
 /// the escapes of the quoted styles. The functions look at a value one character at a time and build no substring.

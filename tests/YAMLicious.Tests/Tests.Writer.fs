@@ -892,6 +892,34 @@ let private policyTests = testList "Style policies" [
         let inSequence = writeError (fun () -> requireStored (seqOf [ sc "a"; sc "- b" ]))
         Expect.equal inSequence.Path [ "1" ] "The path names the item"
 
+    testCase "YamlWriteException carries the error and names the path and the message" <| fun _ ->
+        let raised (action: unit -> string) : exn =
+            try
+                action () |> ignore
+                failwith "The writer accepted the tree"
+            with e ->
+                e
+        let withPath = raised (fun () -> requireStored (mapOf [ "a", mapOf [ "k", sc "x: y" ] ]))
+        let error =
+            match withPath with
+            | YamlWriteException error -> error
+            | other -> failwith ("Another exception: " + other.Message)
+        Expect.equal error.Path [ "a"; "k" ] "The payload holds the path"
+        Expect.stringContains error.Message "cannot stand as a plain scalar" "The payload holds the message"
+        let broken = raised (fun () -> writeNode { mapOf [ "k", sc "v" ] with TrailingComment = Some(comment " c") })
+        let invalid =
+            match broken with
+            | YamlWriteException error -> error
+            | other -> failwith ("Another exception: " + other.Message)
+        Expect.equal invalid.Path [] "An invalid tree has no path"
+        // The Message override of an F# exception reaches e.Message on .NET only. Fable compiles it to a method that JavaScript and Python never call, and
+        // e.Message is "" on JavaScript and "{  }" on Python.
+#if !FABLE_COMPILER
+        Expect.equal withPath.Message ("At a/k: " + error.Message) "The message names the path"
+        Expect.equal broken.Message invalid.Message "Without a path the message is the message of the error"
+        Expect.isTrue (broken.Message.StartsWith "The tree breaks the rules of the model:") "No record dump"
+#endif
+
     testCase "RequireStored raises for a single-quoted scalar, a block scalar and a block header that disagree with the value" <| fun _ ->
         let next = "j", sc "1"
         Expect.stringContains (writeError (fun () -> requireStored (mapOf [ "k", sq "a\u0001" ]))).Message "single quotes" "single"
