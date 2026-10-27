@@ -380,7 +380,7 @@ let private commentTests = testList "Lexer comments" [
         expectLexemes "a#c" [ "plain:a#c" ]
         expectLexemes "k: b#c" [ "plain:k"; ":"; "plain:b#c" ]
         expectLexemes "k: C#" [ "plain:k"; ":"; "plain:C#" ]
-        expectLexemes "k: tool.cwl#main" [ "plain:k"; ":"; "plain:tool.cwl#main" ]
+        expectLexemes "k: tool.yml#main" [ "plain:k"; ":"; "plain:tool.yml#main" ]
 
     // yaml@2.6.1 rejects `k: "b"#c`, `k: 'b'#c`, `k: [a]#c` and `k: {a: 1}#c` with MISSING_CHAR
     testCase "a hash right behind a closed quoted scalar or flow collection is an error" <| fun _ ->

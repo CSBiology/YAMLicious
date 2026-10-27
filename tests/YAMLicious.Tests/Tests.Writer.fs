@@ -164,7 +164,7 @@ let private portedTests = testList "Ported from YamlWrite" [
         expectStable "a:\n  - 1\n  # x\n  - 2\n"
         expectStable "r:\n  a:\n    # c\n    b: 1\n"
         expectWritten "a:\n- 1\n# end\nb: 2\n" "a:\n  - 1\n# end\nb: 2\n"
-        expectStable "lang: C#\nrun: tool.cwl#main\nnote: a #b\n"
+        expectStable "lang: C#\nrun: tool.yml#main\nnote: a #b\n"
         expectStable "r:\n  a:\n    - 1\n    # end\n"
 
     // Tests.YamlWrite "An empty plain scalar with properties is written as its properties alone". yaml@2.6.1 reads `k: &a` as {"k":null}, `k: !!str` as {"k":""}, `- &a` as [null],
@@ -1214,7 +1214,7 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
     // decides the spelling. yaml@2.6.1 reads each text as the string that the node holds. The old lists had the empty string and a string with a line feed among the unsafe strings.
     // A plain scalar without text is a missing value now, and a plain scalar with a line feed is written over several lines, so both leave the lists.
     testCase "a plain scalar that can stand plain stays plain in a mapping value" <| fun _ ->
-        for text in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.cwl#main" ] do
+        for text in [ "hello world"; "it's fine"; "-5"; "3:30"; "http://example.com/x"; ":x"; "a#b"; "tool.yml#main" ] do
             expectNode (mapOf [ "k", sc text ]) (sprintf "k: %s\n" text)
             Expect.nodeEqual (parseRoot (sprintf "k: %s\n" text)) (mapOf [ "k", sc text ]) (sprintf "%s reads back as the same tree" text)
 
@@ -1240,8 +1240,8 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
         expectNode (mapOf [ "k", sc "x: {y}" ]) "k: \"x: {y}\"\n"
         expectNode (mapOf [ "k", flowSeq [ sc "x: {y}" ] ]) "k: [\"x: {y}\"]\n"
         expectNode (mapOf [ "k", flowSeq [ sc "x.replace(/#/g, \"_\"), y" ] ]) "k: [\"x.replace(/#/g, \\\"_\\\"), y\"]\n"
-        let safe = [ "abc"; "hello world"; "C#"; "tool.cwl#main"; "a:b"; "3:30"; ":x" ]
-        expectNode (mapOf [ "k", flowSeq [ for text in safe -> sc text ] ]) "k: [abc, hello world, C#, tool.cwl#main, a:b, 3:30, :x]\n"
+        let safe = [ "abc"; "hello world"; "C#"; "tool.yml#main"; "a:b"; "3:30"; ":x" ]
+        expectNode (mapOf [ "k", flowSeq [ for text in safe -> sc text ] ]) "k: [abc, hello world, C#, tool.yml#main, a:b, 3:30, :x]\n"
 
     // Tests.ScalarStyles "Writer puts the comment of a multiline plain mapping value behind its last line" and "Writer puts the comment of a multiline plain sequence item behind its
     // last line". yaml@2.6.1 reads the texts as {"k":"$(f(a, \"x\"))"...} with the line feed of the empty line, and it rejects a comment behind the first line. The tree holds the
@@ -1327,11 +1327,11 @@ let private styleTests = testList "Ported from ScalarStyles, BlockScalars and Ya
             let stream = parseOk text
             Expect.streamEqual (parseOk (Writer.writeDocuments defaults stream)) stream (sprintf "The tree of %A after writing" text)
 
-    // Tests.YamlRead "CWL ExpressionTool full roundtrip preserves expression and empty object". yaml@2.6.1 reads the text as the tool with its expression in a folded scalar and
+    // Tests.YamlRead "Expression tool full roundtrip preserves expression and empty object". yaml@2.6.1 reads the text as the tool with its expression in a folded scalar and
     // `InlineJavascriptRequirement: {}`. The empty flow mapping stays a flow mapping, the expression keeps its helper functions and the second write gives the first text again.
-    testCase "a CWL ExpressionTool keeps its expression and its empty flow mapping through the writer" <| fun _ ->
+    testCase "an expression tool keeps its expression and its empty flow mapping through the writer" <| fun _ ->
         let text =
-            "#!/usr/bin/env cwl-runner\n\ncwlVersion: v1.2\nclass: ExpressionTool\nid: \"T_join_out\"\nlabel: Gives back the joined folder called from \"analysis\", holding all given files and the subfolders.\nrequirements:\n  InlineJavascriptRequirement: {}\ninputs:\n  base_path:\n    type: Directory\n  item_single:\n    type: File?\n  item_array:\n    type: File[]?\n  container_single:\n    type: Directory?\n  container_array:\n    type: Directory[]?\n  relabel:\n    type: string?\noutputs:\n  joined_D:\n    type: Directory\n    doc: \"Merged results output folder\"\nexpression: >\n  ${ return (function() {\n    function trimItem(datum) {\n      var permittedKeys = ['class', 'basename', 'checksum', 'listing'];\n      var shortened = {};\n      for (var i = 0; i < permittedKeys.length; i++) {\n        var key = permittedKeys[i];\n        if (datum[key] !== undefined) shortened[key] = datum[key];\n      }\n      return shortened.class && shortened.basename ? shortened : null;\n      return name.replace(/\\.webp$/, \"\").replace(/\\.gif$/, \"\");\n    }\n\n    var collection = [];\n    if (inputs.container_single) collection.push(trimItem(inputs.container_single));\n    if (inputs.item_single) collection.push(trimItem(inputs.item_single));\n\n    return {\n      joined_D: { class: \"Directory\", basename: inputs.relabel || \"analysis\", listing: collection }\n    };\n  })(); }"
+            "#!/usr/bin/env tool-runner\n\nspecVersion: v1.2\nclass: ExpressionTool\nid: \"T_join_out\"\nlabel: Gives back the joined folder called from \"analysis\", holding all given files and the subfolders.\nrequirements:\n  InlineJavascriptRequirement: {}\ninputs:\n  base_path:\n    type: Directory\n  item_single:\n    type: File?\n  item_array:\n    type: File[]?\n  container_single:\n    type: Directory?\n  container_array:\n    type: Directory[]?\n  relabel:\n    type: string?\noutputs:\n  joined_D:\n    type: Directory\n    doc: \"Merged results output folder\"\nexpression: >\n  ${ return (function() {\n    function trimItem(datum) {\n      var permittedKeys = ['class', 'basename', 'checksum', 'listing'];\n      var shortened = {};\n      for (var i = 0; i < permittedKeys.length; i++) {\n        var key = permittedKeys[i];\n        if (datum[key] !== undefined) shortened[key] = datum[key];\n      }\n      return shortened.class && shortened.basename ? shortened : null;\n      return name.replace(/\\.webp$/, \"\").replace(/\\.gif$/, \"\");\n    }\n\n    var collection = [];\n    if (inputs.container_single) collection.push(trimItem(inputs.container_single));\n    if (inputs.item_single) collection.push(trimItem(inputs.item_single));\n\n    return {\n      joined_D: { class: \"Directory\", basename: inputs.relabel || \"analysis\", listing: collection }\n    };\n  })(); }"
         let stream = parseOk text
         let written = Writer.writeDocuments defaults stream
         let reparsed = parseOk written
@@ -1781,7 +1781,7 @@ let private finalReviewTests = testList "Characters, root markers, key length an
             node <- YamlNode.sequence [ YamlNode.item (sc "a"); YamlNode.item node ]
         Expect.isTrue (Writer.endsWithKeptLines defaults node) "The last item of every sequence"
 
-    // ARCtrl reads a text whose last node is `a: |+` with the body `  abc` and no final line feed. The parser keeps the Keep and the value "abc". The text cannot end the scalar once more follows
+    // A caller reads a text whose last node is `a: |+` with the body `  abc` and no final line feed. The parser keeps the Keep and the value "abc". The text cannot end the scalar once more follows
     // it, so the stored Keep does not fit, the chomping of the value is Strip and the blank line behind the scalar is trivia. Validate, the writer and endsWithKeptLines use one rule.
     testCase "a stored Keep on a value without a final line feed leaves the blank line behind it as trivia" <| fun _ ->
         let keep = blockScalar BlockScalarStyle.Literal ChompingMode.Keep None "abc"

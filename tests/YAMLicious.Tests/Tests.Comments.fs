@@ -158,12 +158,12 @@ let private r4Tests = testList "R4 trivia in a block collection" [
 
     // Tests.YamlRead "Blank line before lower-indented comment keeps following entry in open block", "Comment before a dedented key belongs to that key",
     // "Comment after the last item of an unindented sequence belongs to the next key" and "Blank line before indented commented block does not create orphan
-    // indentation". yaml@2.6.1 reads {"steps":{"first":{"run":"tool.cwl"},"second":{"run":"tool.cwl"}}}, {"a":{"b":1},"c":2}, {"a":[1],"b":2} and
-    // {"steps":{"first":{"run":"tool.cwl"}},"meta":"value"}.
+    // indentation". yaml@2.6.1 reads {"steps":{"first":{"run":"tool.yml"},"second":{"run":"tool.yml"}}}, {"a":{"b":1},"c":2}, {"a":[1],"b":2} and
+    // {"steps":{"first":{"run":"tool.yml"}},"meta":"value"}.
     testCase "the trivia before a dedented key belong to that key" <| fun _ ->
-        let step = mapOf [ "run", sc "tool.cwl" ]
+        let step = mapOf [ "run", sc "tool.yml" ]
         expectRoot
-            "steps:\n  first:\n    run: tool.cwl\n\n# separator\n  second:\n    run: tool.cwl"
+            "steps:\n  first:\n    run: tool.yml\n\n# separator\n  second:\n    run: tool.yml"
             (mapOf [ "steps", YamlNode.mapping [ blockEntry (sc "first") step; entryBefore [ blank; note " separator" ] (sc "second") step ] ])
         expectRoot
             "a:\n  b: 1\n  # about c\nc: 2"
@@ -172,10 +172,10 @@ let private r4Tests = testList "R4 trivia in a block collection" [
             "a:\n- 1\n# end\nb: 2"
             (YamlNode.mapping [ blockEntry (sc "a") (seqOf [ sc "1" ]); entryBefore [ note " end" ] (sc "b") (sc "2") ])
         expectRoot
-            "steps:\n  first:\n    run: tool.cwl\n# disabled section\n\n  # disabled:\n  #   run: disabled.cwl\n# end\n\nmeta: value"
+            "steps:\n  first:\n    run: tool.yml\n# disabled section\n\n  # disabled:\n  #   run: disabled.yml\n# end\n\nmeta: value"
             (YamlNode.mapping [
                 blockEntry (sc "steps") (mapOf [ "first", step ])
-                entryBefore [ note " disabled section"; blank; note " disabled:"; note "   run: disabled.cwl"; note " end"; blank ] (sc "meta") (sc "value")
+                entryBefore [ note " disabled section"; blank; note " disabled:"; note "   run: disabled.yml"; note " end"; blank ] (sc "meta") (sc "value")
             ])
 
     // Tests.YamlRead "A blank line behind a key with a trailing comment opens the block of the key". yaml@2.6.1: {"a":{"b":1}}, {"x":1,"a":{"b":1},"z":2} and {"a":[1]}.
@@ -187,7 +187,7 @@ let private r4Tests = testList "R4 trivia in a block collection" [
         expectRoot "x: 1\na: # c\n\n  b: 1\nz: 2" (YamlNode.mapping [ YamlNode.entry (sc "x") (sc "1"); commented nested; YamlNode.entry (sc "z") (sc "2") ])
         expectRoot "a: # c\n\n  - 1" (YamlNode.mapping [ commented (YamlNode.sequence [ itemBefore [ blank ] (sc "1") ]) ])
 
-    // Tests.YamlRead "Commented-out block scalar header does not protect the following lines" and "Commented-out block scalar header inside a CWL requirements block".
+    // Tests.YamlRead "Commented-out block scalar header does not protect the following lines" and "Commented-out block scalar header inside a requirements block".
     // yaml@2.6.1: {"a":{"b":1,"d":2}} and {"requirements":{"DockerRequirement":{"dockerPull":"x","b":2}}}.
     testCase "a commented-out block scalar header is a comment in front of the next entry" <| fun _ ->
         expectRoot
@@ -517,7 +517,7 @@ let private cleanUpTests = testList "Comments of the old CommentCleanUp tests" [
             "My Key: # This is a comment\n  My Value1\n  <s f=0/>\n  My Value3 # :::: \"This is also a comment\""
             (YamlNode.mapping [ { YamlNode.entry (sc "My Key") (withNote " :::: \"This is also a comment\"" (scLines [ "My Value1"; "<s f=0/>"; "My Value3" ])) with Colon = Some(newLine (Some " This is a comment") []) } ])
         expectRoot "a: x <c f=0/>\nb: 1 # real\n" (mapOf [ "a", sc "x <c f=0/>"; "b", withNote " real" (sc "1") ])
-        expectRoot "a: tool.cwl#main # real" (mapOf [ "a", withNote " real" (sc "tool.cwl#main") ])
+        expectRoot "a: tool.yml#main # real" (mapOf [ "a", withNote " real" (sc "tool.yml#main") ])
         expectRoot
             "lang: C# # real\nother: C#\nc: a#b#c\n"
             (mapOf [ "lang", withNote " real" (sc "C#"); "other", sc "C#"; "c", sc "a#b#c" ])

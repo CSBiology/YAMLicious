@@ -67,7 +67,7 @@ let private mappingTests = testList "Block mappings" [
         let value = (YamlNode.entries (parseRoot "k:")).Head.Value
         Expect.equal (value.Span |> Option.map (fun span -> span.Start = span.Finish)) (Some true) "A span of no width"
 
-    // Tests.YamlRead "Namespaces", "A dollar key with a block sequence", "A CWL head with dollar keys and prefixed keys",
+    // Tests.YamlRead "Namespaces", "A dollar key with a block sequence", "A document head with dollar keys and prefixed keys",
     // "A dollar key with a value and a nested dollar key" and "A dollar key with a space or a colon in its name and a sibling
     // behind it". yaml@2.6.1 reads the dollar keys and the prefixed keys as ordinary keys.
     testCase "a key that starts with a dollar sign or holds a colon is a key like any other" <| fun _ ->
@@ -78,12 +78,12 @@ let private mappingTests = testList "Block mappings" [
         expectRoot "$schemas:\n  - https://x\n  - https://y\n" schemas
         expectRoot "$schemas:\n- https://x\n- https://y\n" schemas
         expectRoot
-            "id: x\n$namespaces:\n  s: https://schema.org/\n$schemas:\n  - https://schema.org/version/latest/termsonly-current-https.rdf\ncwlVersion: v1.2\ns:author:\n  - class: s:Person\n    s:name: Jane\n"
+            "id: x\n$namespaces:\n  s: https://schema.org/\n$schemas:\n  - https://schema.org/version/latest/termsonly-current-https.rdf\nspecVersion: v1.2\ns:author:\n  - class: s:Person\n    s:name: Jane\n"
             (mapOf [
                 "id", sc "x"
                 "$namespaces", mapOf [ "s", sc "https://schema.org/" ]
                 "$schemas", seqOf [ sc "https://schema.org/version/latest/termsonly-current-https.rdf" ]
-                "cwlVersion", sc "v1.2"
+                "specVersion", sc "v1.2"
                 "s:author", seqOf [ mapOf [ "class", sc "s:Person"; "s:name", sc "Jane" ] ]
             ])
         expectRoot "$a: 1\n" (mapOf [ "$a", sc "1" ])
@@ -130,15 +130,15 @@ let private mappingTests = testList "Block mappings" [
         Expect.equal (parseErrorOf "a: 1\rb") "missing-colon@2" "CR"
         Expect.equal (parseErrorOf "\uFEFFa: 1\nb") "missing-colon@2" "A byte order mark"
 
-    // Tests.YamlRead "Hash without preceding whitespace stays in the scalar". yaml@2.6.1: {"run":"tool.cwl#main","lang":"C#","url":"http://x.org/a#frag"}.
+    // Tests.YamlRead "Hash without preceding whitespace stays in the scalar". yaml@2.6.1: {"run":"tool.yml#main","lang":"C#","url":"http://x.org/a#frag"}.
     testCase "a hash without a blank in front of it stays in the scalar" <| fun _ ->
         expectRoot
-            "run: tool.cwl#main\nlang: C#\nurl: http://x.org/a#frag"
-            (mapOf [ "run", sc "tool.cwl#main"; "lang", sc "C#"; "url", sc "http://x.org/a#frag" ])
+            "run: tool.yml#main\nlang: C#\nurl: http://x.org/a#frag"
+            (mapOf [ "run", sc "tool.yml#main"; "lang", sc "C#"; "url", sc "http://x.org/a#frag" ])
 
-    // Tests.YamlRead "Comments in a CWL requirements block" (the structure). yaml@2.6.1: {"requirements":{"EnvVarRequirement":{"envDef":{"TOOL_RUN_SETTINGS":"-Da -Db"}},
+    // Tests.YamlRead "Comments in a requirements block" (the structure). yaml@2.6.1: {"requirements":{"EnvVarRequirement":{"envDef":{"TOOL_RUN_SETTINGS":"-Da -Db"}},
     // "InitialWorkDirRequirement":{"listing":[{"entryname":"src_data","writable":true}]}}}. The comment in front of a key goes to the Before of its entry.
-    testCase "a CWL requirements block keeps a comment in front of the first entry of a block" <| fun _ ->
+    testCase "a requirements block keeps a comment in front of the first entry of a block" <| fun _ ->
         let yaml =
             "requirements:\n  EnvVarRequirement:\n    envDef:\n      # Runner writes logs\n      TOOL_RUN_SETTINGS: >-\n        -Da\n        -Db\n  InitialWorkDirRequirement:\n    listing:\n      # Make an editable copy\n      - entryname: src_data\n        writable: true"
         let envDef =
@@ -227,7 +227,7 @@ let private sequenceTests = testList "Block sequences" [
         expectRoot "- - class: File\n    path: p\n  - z\n- w\n" (seqOf [ seqOf [ fileItem; sc "z" ]; sc "w" ])
         expectRoot "- - ? a\n    : b\n" (seqOf [ seqOf [ YamlNode.mapping [ explicitEntry (sc "a") (sc "b") ] ] ])
 
-    // Tests.YamlRead "A list of lists of CWL file records reads as nested sequences". yaml@2.6.1:
+    // Tests.YamlRead "A list of lists of file records reads as nested sequences". yaml@2.6.1:
     // {"fileCollectionSet":[[{"class":"File","path":"a_1.fq.gz"},{"class":"File","path":"a_2.fq.gz"}],[{"class":"File","path":"b_1.fq.gz"}]]}.
     testCase "a list of lists of records reads as nested sequences" <| fun _ ->
         let file (path: string) = mapOf [ "class", sc "File"; "path", sc path ]
@@ -1491,7 +1491,7 @@ let private oldParserRows : (string * string * string) list = [
     "Tokenizer a second colon behind a quoted part of the line is an error", "k: \"x\" : 1", "ERROR"
     "Tokenizer a second colon behind a quoted part of the line is an error", "k: 'x': 1", "ERROR"
     "Tokenizer a second colon behind a quoted part of the line is an error", "- \"a\": \"b\": c", "ERROR"
-    "YamlRead Lower-indented comment between nested workflow steps stays in open block", "steps:\n  first:\n    run: tool.cwl\n    in: []\n    out: []\n# separator\n  second:\n    run: tool.cwl\n    in: []\n    out: []", "{\"steps\":{\"first\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]},\"second\":{\"run\":\"tool.cwl\",\"in\":[],\"out\":[]}}}"
+    "YamlRead Lower-indented comment between nested workflow steps stays in open block", "steps:\n  first:\n    run: tool.yml\n    in: []\n    out: []\n# separator\n  second:\n    run: tool.yml\n    in: []\n    out: []", "{\"steps\":{\"first\":{\"run\":\"tool.yml\",\"in\":[],\"out\":[]},\"second\":{\"run\":\"tool.yml\",\"in\":[],\"out\":[]}}}"
     "YamlRead Comment under a nested key with sequence value", "r:\n  a:\n    # c\n    - 1", "{\"r\":{\"a\":[1]}}"
     "Tokenizer a block collection cannot start on the line of its key", "- - - a", "[[[\"a\"]]]"
     "Tokenizer the key of an entry in a flow mapping or behind a question mark may span lines", "{? !!str a\n b : c}", "{\"a b\":\"c\"}"

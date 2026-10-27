@@ -226,8 +226,8 @@ let private escapeTests = testList "Escapes" [
         expectScalars "- \"one\n  two\"\n- k" [ dq "one two"; pl "k" ]
         expectScalars "- \"one\n\n  two\"\n- k" [ dq "one\ntwo"; pl "k" ]
 
-    // Tests.Escapes "Decode.string returns the folded value of a multiline CWL valueFrom". yaml@2.6.1: {"inputBinding":{"valueFrom":"$(inputs.a + \"x y\")"}}
-    testCase "a multiline CWL expression folds in a double-quoted and in a plain scalar" <| fun _ ->
+    // Tests.Escapes "Decode.string returns the folded value of a multiline valueFrom". yaml@2.6.1: {"inputBinding":{"valueFrom":"$(inputs.a + \"x y\")"}}
+    testCase "a multiline expression folds in a double-quoted and in a plain scalar" <| fun _ ->
         expectScalars "inputBinding:\n  valueFrom: \"$(inputs.a + \\\"x\n    y\\\")\"" [ pl "inputBinding"; pl "valueFrom"; dq "$(inputs.a + \"x y\")" ]
         expectScalars "inputBinding:\n  valueFrom: $(inputs.a + \"x\n    y\")" [ pl "inputBinding"; pl "valueFrom"; pl "$(inputs.a + \"x y\")" ]
 
@@ -259,7 +259,7 @@ let private plainTests = testList "Plain scalars" [
     // Tests.YamlRead "Indented multiline plain scalar expression decodes as one string" and "Inline-start multiline plain scalar expression
     // decodes as one string". yaml@2.6.1: {"valueFrom":"${ var picks = null; if (this !== null) { picks = [this]; } return picks; }"} and
     // {"valueFrom":"${ var picks = null; return picks; }"}
-    testCase "a plain CWL expression over several lines is one scalar" <| fun _ ->
+    testCase "a plain expression over several lines is one scalar" <| fun _ ->
         expectScalars
             "valueFrom:\n  ${\n    var picks = null;\n    if (this !== null) { picks = [this]; }\n    return picks;\n  }"
             [ pl "valueFrom"; pl "${ var picks = null; if (this !== null) { picks = [this]; } return picks; }" ]
@@ -267,7 +267,7 @@ let private plainTests = testList "Plain scalars" [
 
     // Tests.YamlRead "Hash without preceding whitespace stays in the scalar"
     testCase "a hash that follows a character is part of a plain scalar" <| fun _ ->
-        expectScalars "run: tool.cwl#main\nlang: C#\nurl: http://x.org/a#frag" [ pl "run"; pl "tool.cwl#main"; pl "lang"; pl "C#"; pl "url"; pl "http://x.org/a#frag" ]
+        expectScalars "run: tool.yml#main\nlang: C#\nurl: http://x.org/a#frag" [ pl "run"; pl "tool.yml#main"; pl "lang"; pl "C#"; pl "url"; pl "http://x.org/a#frag" ]
 
     // Tests.YamlRead "Hash directly after a flow closer is an error". yaml@2.6.1 rejects both inputs with MISSING_CHAR.
     testCase "a hash directly behind a flow closer is an error" <| fun _ ->
@@ -287,9 +287,9 @@ let private plainTests = testList "Plain scalars" [
     testCase "a quote behind a tag is a quoted scalar" <| fun _ ->
         expectLexemes "k: !!str \"x\"" [ "plain:k"; ":"; "tag:!!|str"; "double:x" ]
 
-    // Tests.YamlRead "Decode.string keeps the quotes of a CWL expression" and "folds a plain CWL expression over two lines". yaml@2.6.1:
+    // Tests.YamlRead "Decode.string keeps the quotes of an expression" and "folds a plain expression over two lines". yaml@2.6.1:
     // {"valueFrom":"$(inputs[\"my-input\"].path)"}, {"valueFrom":"$(inputs.a + \"x\")"} and {"valueFrom":"$(f(inputs.a, \"x\", 1))"}
-    testCase "a plain CWL expression keeps its quotes and folds its lines" <| fun _ ->
+    testCase "a plain expression keeps its quotes and folds its lines" <| fun _ ->
         expectScalars "valueFrom: $(inputs[\"my-input\"].path)" [ pl "valueFrom"; pl "$(inputs[\"my-input\"].path)" ]
         expectScalars "valueFrom: $(inputs.a +\n  \"x\")" [ pl "valueFrom"; pl "$(inputs.a + \"x\")" ]
         expectScalars "valueFrom: $(f(inputs.a,\n  \"x\", 1))" [ pl "valueFrom"; pl "$(f(inputs.a, \"x\", 1))" ]
@@ -851,7 +851,7 @@ let private oldScalarRows : (string * string * string) list = [
     "Tokenizer placeholder spellings in a body stay text", "a: |\n  <s f=0/>\n  <c f=0/>\nb: 'q'\n", "{\"a\":\"<s f=0/>\\n<c f=0/>\\n\",\"b\":\"q\"}"
     "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: \"b\" #c", "{\"k\":\"b\"}"
     "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: C#", "{\"k\":\"C#\"}"
-    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: tool.cwl#main", "{\"k\":\"tool.cwl#main\"}"
+    "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: tool.yml#main", "{\"k\":\"tool.yml#main\"}"
     "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: a#b", "{\"k\":\"a#b\"}"
     "Tokenizer a hash behind a blank starts a comment and a hash inside a word is text", "k: a]#c", "{\"k\":\"a]#c\"}"
     "Tokenizer a folded block and a literal block after a multiline quote", "a: 'p\n  q'\nb: |\n  one\n  \"two\"\nc: >\n  three 'four'\nd: \"five\"\n", "{\"a\":\"p q\",\"b\":\"one\\n\\\"two\\\"\\n\",\"c\":\"three 'four'\\n\",\"d\":\"five\"}"
