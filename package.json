@@ -26,6 +26,6 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@fable-org/fable-library-js": "^2.9.0"
+    "@fable-org/fable-library-js": "^2.10.0"
   }
 }

@@ -151,8 +151,8 @@ The tests record the result of yaml@2.6.1 above each case. The parser differs fr
 
 #### Fable
 
-* The sources need Fable 5.23.0 or newer. The library is built and tested with Fable 5.23.0 and Fable.Core 5.5.0.
-* The NuGet package carries the F# sources in its `fable/` folder. The Python output needs `fable-library` in the range `>= 5.22.0, < 6.0.0`, because the output of Fable 5.23.0 imports names that older versions lack, such as `narrow`. The JavaScript output needs `@fable-org/fable-library-js` in the range `^2.9.0`.
+* The sources need Fable 5.23.0 or newer. The library is built and tested with Fable 5.24.0 and Fable.Core 5.5.0.
+* The NuGet package carries the F# sources in its `fable/` folder. The Python output needs `fable-library` in the range `>= 5.24.0, < 6.0.0`, the release that matches Fable 5.24.0. Versions before 5.22.0 lack names that the output imports, such as `narrow`. The JavaScript output needs `@fable-org/fable-library-js` in the range `^2.10.0`, the version that Fable 5.24.0 ships.
 * The .NET package depends on FSharp.Core 8.0.403 or newer, the lowest version that the library builds and tests with.
 
 ### 1.0.2 (Released 2026-07-23)
