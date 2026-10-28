@@ -1,29 +1,36 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Util.fs" />
-    <Compile Include="Tests.EncodingCleanUp.fs" />
-    <Compile Include="Tests.StringCleanUp.fs" />
-    <Compile Include="Tests.CommentCleanUp.fs" />
-    <Compile Include="Tests.FlowTokens.fs" />
-    <Compile Include="Tests.YamlGenericRead.fs" />
-    <Compile Include="Tests.YamlMatch.fs" />
-    <Compile Include="Tests.YamlRead.fs" />
-    <Compile Include="Tests.Escapes.fs" />
-    <Compile Include="Tests.BlockScalars.fs" />
-    <Compile Include="Tests.YamlWrite.fs" />
-    <Compile Include="Tests.EncoderDecoder.fs" />
-    <Compile Include="Tests.Directives.fs" />
-    <Compile Include="Tests.ReaderDocuments.fs" />
-    <Compile Include="Tests.AdvancedFeatures.fs" />
-    <Compile Include="Tests.ScalarStyles.fs" />
+    <Compile Include="Driver.fs" />
+    <Compile Include="Projection.fs" />
+    <Compile Include="Tests.Model.fs" />
+    <Compile Include="Tests.CoreSchema.fs" />
+    <Compile Include="Tests.Compare.fs" />
+    <Compile Include="Tests.Validate.fs" />
+    <Compile Include="Tests.Projection.fs" />
+    <Compile Include="Tests.Lexer.fs" />
+    <Compile Include="Tests.Scalars.fs" />
+    <Compile Include="Tests.Parser.fs" />
+    <Compile Include="Tests.Comments.fs" />
+    <Compile Include="Tests.Documents.fs" />
+    <Compile Include="Tests.Flow.fs" />
+    <Compile Include="Tests.Keys.fs" />
+    <Compile Include="Tests.Aliases.fs" />
+    <Compile Include="Tests.AliasExpansion.fs" />
+    <Compile Include="Tests.Decode.fs" />
+    <Compile Include="Tests.Encode.fs" />
+    <Compile Include="Tests.Reader.fs" />
+    <Compile Include="Tests.Writer.fs" />
+    <Compile Include="Tests.RoundTrip.fs" />
+    <Compile Include="Tests.Layout.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Fable.Python" Version="5.1.0" />
+    <PackageReference Include="Fable.Python" Version="5.5.0" />
     <PackageReference Include="Fable.Pyxpecto" Version="2.0.0" />
   </ItemGroup>
   <ItemGroup>

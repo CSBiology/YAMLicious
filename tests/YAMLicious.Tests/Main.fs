@@ -1,23 +1,28 @@
-﻿open Fable.Pyxpecto
+open Fable.Pyxpecto
 
 let all =
     testList
         "all"
-        [ Tests.EncodingCleanUp.Main
-          Tests.StringCleanUp.Main
-          Tests.CommentCleanUp.Main
-          Tests.FlowTokens.Main
-          Tests.YamlGenericRead.Main
-          Tests.YamlMatch.Main
-          Tests.YamlRead.Main
-          Tests.YamlWrite.Main
-          Tests.EncoderDecoder.Main
-          Tests.Directives.Main
-          Tests.ReaderDocuments.Main
-          Tests.Escapes.Main
-          Tests.BlockScalars.Main
-          Tests.AdvancedFeatures.Main
-          Tests.ScalarStyles.Main ]
+        [ Tests.Model.Main
+          Tests.CoreSchema.Main
+          Tests.Compare.Main
+          Tests.Validate.Main
+          Tests.Projection.Main
+          Tests.Lexer.Main
+          Tests.Scalars.Main
+          Tests.Parser.Main
+          Tests.Comments.Main
+          Tests.Documents.Main
+          Tests.Flow.Main
+          Tests.Keys.Main
+          Tests.Aliases.Main
+          Tests.AliasExpansion.Main
+          Tests.Decode.Main
+          Tests.Encode.Main
+          Tests.Reader.Main
+          Tests.Writer.Main
+          Tests.RoundTrip.Main
+          Tests.Layout.Main ]
 
 [<EntryPoint>]
 let main argv = Pyxpecto.runTests [||] all

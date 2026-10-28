@@ -1,9 +1,8 @@
 {
   "name": "YAMLicious",
-  "description": "placeholer",
+  "description": "A YAML 1.2.2 reader and writer with decoders and encoders in the style of Thoth.Json, compiled from F# by Fable.",
   "keywords": [],
-  "version": "1.0.2",
-  "main": "dist/js/Library.js",
+  "version": "2.0.0",
   "type": "module",
   "directories": {
     "test": "tests"
@@ -14,19 +13,19 @@
   "scripts": {},
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/{Owner}/YAMLicious.git"
+    "url": "git+https://github.com/CSBiology/YAMLicious.git"
   },
-  "author": "",
-  "license": "",
+  "author": "Caroline Ott, Kevin Frey",
+  "license": "MIT",
   "bugs": {
-    "url": "https://github.com/{Owner}/YAMLicious/issues"
+    "url": "https://github.com/CSBiology/YAMLicious/issues"
   },
-  "homepage": "https://github.com/{Owner}/YAMLicious#readme",
+  "homepage": "https://github.com/CSBiology/YAMLicious#readme",
   "devDependencies": {
     "mocha": "^10.4.0",
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@fable-org/fable-library-js": "^2.1.0"
+    "@fable-org/fable-library-js": "^2.10.0"
   }
 }

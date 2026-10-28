@@ -1,46 +1,57 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <Authors>Caroline Ott, Kevin Frey</Authors>
-    <Description>A encoder/decoder based YAML parser in Thoth.Json style!</Description>
+    <Description>A YAML 1.2.2 reader and writer for F#, transpiled by Fable to JavaScript and Python. The node model keeps comments, blank lines, scalar styles and source spans. Decoders and encoders follow the Thoth.Json style.</Description>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>YAMLicious</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>f# fsharp fable fable-library fable-javascript fable-python yaml parser</PackageTags>
     <PackageProjectUrl>https://github.com/CSBiology/YAMLicious</PackageProjectUrl>
     <RepositoryUrl>https://github.com/CSBiology/YAMLicious</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="*.fsproj; **\*.fs; **\*.fsi" PackagePath="fable\" />
+    <Content Include="*.fsproj; **\*.fs; **\*.fsi" Exclude="bin\**; obj\**" PackagePath="fable\" />
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="Interop\PyInterop.fs" />
-    <Compile Include="Interop\JsInterop.fs" />
-    <Compile Include="YAMLiciousTypes.fs" />
-    <Compile Include="Syntax.fs" />
-    <Compile Include="Persil.fs" />
-    <Compile Include="Escapes.fs" />
-    <Compile Include="Preprocessing.fs" />
-    <Compile Include="Regex.fs" />
-    <Compile Include="RegexActivePatterns.fs" />
-    <Compile Include="Reader.fs" />
-    <Compile Include="Writer.fs" />
-    <Compile Include="Encode.fs" />
+    <Compile Include="Model.fs" />
+    <Compile Include="Tag.fs" />
+    <Compile Include="CoreSchema.fs" />
+    <Compile Include="Layout.fs" />
+    <Compile Include="Compare.fs" />
+    <Compile Include="Node.fs" />
+    <Compile Include="Source.fs" />
+    <Compile Include="Lexeme.fs" />
+    <Compile Include="Lexer.fs" />
+    <Compile Include="Parser.fs" />
+    <Compile Include="Validate.fs" />
     <Compile Include="Decode.fs" />
-    <Compile Include="Library.fs" />
+    <Compile Include="Encode.fs" />
+    <Compile Include="Reader.fs" />
+    <Compile Include="TreeWalk.fs" />
+    <Compile Include="Aliases.fs" />
+    <Compile Include="Writer.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Fable.Core" Version="5.0.0" />
+    <!-- The lowest FSharp.Core that the library builds and tests with. The implicit reference is off, because it would declare the version of the SDK that packs the library, and a project with an older FSharp.Core would get the warning NU1605. -->
+    <PackageReference Include="FSharp.Core" Version="8.0.403" />
+    <PackageReference Include="Fable.Core" Version="5.5.0" />
   </ItemGroup>
 
   <PropertyGroup>
     <PythonDependencies>
-      <Package Name="fable-library" Version="&gt;= 5.1.0 &lt; 6.0.0" ResolutionStrategy="Max" />
+      <Package Name="fable-library" Version="&gt;= 5.22.0 &lt; 6.0.0" ResolutionStrategy="Max" />
     </PythonDependencies>
   </PropertyGroup>
 

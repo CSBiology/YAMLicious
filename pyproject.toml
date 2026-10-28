@@ -1,10 +1,10 @@
 [project]
 name = "yamlicious"
-version = "1.0.2"
-description = "Add your description here"
+version = "2.0.0"
+description = "A YAML 1.2.2 reader and writer with decoders and encoders in the style of Thoth.Json, compiled from F# by Fable."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "fable-library>=5.1.0,<6.0.0",
+    "fable-library>=5.24.0,<6.0.0",
     "pytest>=9.0.2",
 ]
