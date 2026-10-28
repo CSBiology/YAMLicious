@@ -1,4 +1,4 @@
-### 2.0.0 (Unreleased)
+### 2.0.0 (Released 2026-10-28)
 
 YAMLicious 2.0.0 replaces the element model of 1.x with a tree of nodes that keeps comments, blank lines, scalar styles, properties and source spans, and it replaces the reader and the writer with a strict YAML 1.2.2 parser and a writer for that tree. The decoders and the value encoders keep their names and their Thoth.Json style and work on the new nodes. The [README](README.md#how-it-reads-and-writes-yaml) describes how the library reads and writes YAML, and the sections below list what changed for callers of 1.x.
 
